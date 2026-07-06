@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   const history = await getChatHistory(10);
   const convo = history
     .slice(0, -1) // ไม่รวมข้อความล่าสุดที่เพิ่งบันทึก (จะใส่เป็นคำถามหลัก)
-    .map((m) => `${m.role === "user" ? "อาจารย์" : "เลขา AI"}: ${m.content}`)
+    .map((m) => `${m.role === "user" ? "พี่โด้" : "น้องวาน"}: ${m.content}`)
     .join("\n");
 
   const extraContext = convo ? `=== บทสนทนาก่อนหน้า ===\n${convo}` : undefined;

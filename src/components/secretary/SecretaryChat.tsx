@@ -70,10 +70,10 @@ export function SecretaryChat({ initialMessages }: { initialMessages: Msg[] }) {
                 <Bot className="h-7 w-7" />
               </span>
               <h2 className="font-display text-2xl font-semibold text-foreground mt-5">
-                สวัสดีครับอาจารย์ช้างโอ๋
+                สวัสดีค่ะพี่โด้
               </h2>
               <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto">
-                ผมเป็นเลขา AI ถามเรื่องทุนวิจัย ให้ช่วยตามงาน ร่างเอกสาร หรือสรุปภาพรวมได้เลยครับ
+                น้องวานเองค่ะ ถามเรื่องทุนวิจัย ให้ช่วยตามงาน ออกเอกสาร หรือสรุปภาพรวมได้เลยนะคะ
               </p>
               <div className="grid sm:grid-cols-2 gap-2.5 mt-8 max-w-xl mx-auto">
                 {SUGGESTIONS.map(({ icon: Icon, text }) => (
