@@ -111,15 +111,20 @@ async function processBatch(chatId, msgs) {
   const fromId = msgs[0]?.from?.id;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
 
-  // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก (ขึ้นต้น "วาน"/"น้องวาน", @mention, หรือตอบกลับข้อความบอท)
+  // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก (มีชื่อ "น้องวาน" ที่ไหนก็ได้, ขึ้นต้น "วาน", @mention, หรือ reply บอท)
   if (isGroup) {
     const repliedToBot = msgs.some((m) => m.reply_to_message?.from?.id === BOT_ID);
-    const mentioned = BOT_USERNAME && text.includes("@" + BOT_USERNAME);
-    const namePrefix = /^\s*(วาน|น้องวาน)\b[\s,:ๆ]*/i.test(text);
-    if (!repliedToBot && !mentioned && !namePrefix) return; // ไม่ได้ถูกเรียก — เงียบ
-    // ตัดคำเรียก/mention ออก
-    text = text.replace(/^\s*(วาน|น้องวาน)\b[\s,:ๆ]*/i, "").replace(new RegExp("@" + BOT_USERNAME, "gi"), "").trim();
-    if (!text) text = "สวัสดี";
+    const mentioned = BOT_USERNAME && text.toLowerCase().includes("@" + BOT_USERNAME.toLowerCase());
+    const calledByName = /น้องวาน/.test(text);          // เรียกชื่อที่ไหนก็ได้
+    const namePrefix = /^\s*วาน[\s,:ๆจ]/i.test(text);   // ขึ้นต้นด้วย "วาน"
+    if (!repliedToBot && !mentioned && !calledByName && !namePrefix) return; // ไม่ได้ถูกเรียก — เงียบ
+    // ตัดคำเรียก/mention ออก เหลือเนื้อความ
+    text = text
+      .replace(/น้องวาน/g, "")
+      .replace(/^\s*วาน[\s,:ๆจ]*/i, "")
+      .replace(new RegExp("@" + BOT_USERNAME, "gi"), "")
+      .trim();
+    if (!text || text.length < 2) text = "สวัสดี";
   }
 
   const files = msgs.map(extractFile).filter(Boolean);
