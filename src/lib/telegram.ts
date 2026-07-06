@@ -20,6 +20,35 @@ export async function setAllowedChatId(id: string) {
   });
 }
 
+// กลุ่มที่อนุญาตให้น้องวานทำงาน (เจ้าของผูกเอง)
+export async function getAllowedGroups(): Promise<string[]> {
+  const row = await db.setting.findUnique({ where: { key: "telegram_groups" } });
+  try {
+    return row ? JSON.parse(row.value) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function addAllowedGroup(id: string) {
+  const groups = await getAllowedGroups();
+  if (!groups.includes(id)) groups.push(id);
+  await db.setting.upsert({
+    where: { key: "telegram_groups" },
+    update: { value: JSON.stringify(groups) },
+    create: { key: "telegram_groups", value: JSON.stringify(groups) },
+  });
+}
+
+export async function removeAllowedGroup(id: string) {
+  const groups = (await getAllowedGroups()).filter((g) => g !== id);
+  await db.setting.upsert({
+    where: { key: "telegram_groups" },
+    update: { value: JSON.stringify(groups) },
+    create: { key: "telegram_groups", value: JSON.stringify(groups) },
+  });
+}
+
 export async function tgSendMessage(chatId: string | number, text: string, extra?: object) {
   const token = getBotToken();
   if (!token) throw new Error("ยังไม่ได้ตั้งค่า TELEGRAM_BOT_TOKEN");

@@ -20,6 +20,8 @@ const APP_URL = process.env.APP_URL || "http://localhost:3000";
 if (!TOKEN) { console.error("ไม่พบ TELEGRAM_BOT_TOKEN"); process.exit(1); }
 
 const API = (m) => `https://api.telegram.org/bot${TOKEN}/${m}`;
+let BOT_USERNAME = "";
+let BOT_ID = 0;
 async function tg(method, body) {
   const res = await fetch(API(method), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return res.json();
@@ -78,13 +80,13 @@ async function doMemo(chatId, text, files) {
   await fetch(API("sendDocument"), { method: "POST", body: form });
 }
 
-async function chatIngest(chatId, text) {
+async function chatIngest(chatId, text, fromId, isGroup) {
   await tg("sendChatAction", { chat_id: chatId, action: "typing" });
   let data;
   try {
     const res = await fetch(APP_URL + "/api/telegram/ingest", {
       method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), text }),
+      body: JSON.stringify({ chatId: String(chatId), text, fromId: String(fromId || ""), isGroup: !!isGroup }),
     });
     data = await res.json();
   } catch { await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านยังไม่พร้อมค่ะ (เช็คว่ารัน npm run dev แล้วนะคะ)" }); return; }
@@ -104,21 +106,40 @@ async function chatIngest(chatId, text) {
 }
 
 async function processBatch(chatId, msgs) {
-  const text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
+  const chatType = msgs[0]?.chat?.type || "private";
+  const isGroup = chatType === "group" || chatType === "supergroup";
+  const fromId = msgs[0]?.from?.id;
+  let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
+
+  // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก (ขึ้นต้น "วาน"/"น้องวาน", @mention, หรือตอบกลับข้อความบอท)
+  if (isGroup) {
+    const repliedToBot = msgs.some((m) => m.reply_to_message?.from?.id === BOT_ID);
+    const mentioned = BOT_USERNAME && text.includes("@" + BOT_USERNAME);
+    const namePrefix = /^\s*(วาน|น้องวาน)\b[\s,:ๆ]*/i.test(text);
+    if (!repliedToBot && !mentioned && !namePrefix) return; // ไม่ได้ถูกเรียก — เงียบ
+    // ตัดคำเรียก/mention ออก
+    text = text.replace(/^\s*(วาน|น้องวาน)\b[\s,:ๆ]*/i, "").replace(new RegExp("@" + BOT_USERNAME, "gi"), "").trim();
+    if (!text) text = "สวัสดี";
+  }
+
   const files = msgs.map(extractFile).filter(Boolean);
   const now = Date.now();
   recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < 180000);
   for (const f of files) recentFiles[chatId].push({ ...f, ts: now });
 
+  // ออกเอกสารจากไฟล์แนบ — เฉพาะแชทส่วนตัว (ข้อมูลลูกค้าไม่ควรอยู่ในกลุ่ม)
   if (text && MEMO_INTENT.test(text)) {
+    if (isGroup) {
+      await tg("sendMessage", { chat_id: chatId, text: "การออกเอกสารคืนเงินมีข้อมูลลูกค้า ขอทำในแชทส่วนตัวกับวานนะคะ ส่งรายละเอียด+ไฟล์มาที่แชทส่วนตัวได้เลยค่ะ" });
+      return;
+    }
     const seen = new Set();
     const all = recentFiles[chatId].filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
     recentFiles[chatId] = [];
     await doMemo(chatId, text, all);
     return;
   }
-  if (text) { await chatIngest(chatId, text); return; }
-  // ไฟล์อย่างเดียว (ยังไม่มีคำสั่ง) — เก็บไว้ในบัฟเฟอร์ รอข้อความสั่งงาน
+  if (text) { await chatIngest(chatId, text, fromId, isGroup); return; }
 }
 
 async function handleMessage(msg) {
@@ -163,7 +184,9 @@ async function handleCallback(cb) {
 async function main() {
   const me = await tg("getMe", {});
   if (!me.ok) { console.error("Token ไม่ถูกต้อง:", JSON.stringify(me)); process.exit(1); }
-  console.log(`น้องวานพร้อมทำงาน: @${me.result.username} · app ${APP_URL}`);
+  BOT_USERNAME = me.result.username;
+  BOT_ID = me.result.id;
+  console.log(`น้องวานพร้อมทำงาน: @${BOT_USERNAME} (id ${BOT_ID}) · app ${APP_URL}`);
   await tg("deleteWebhook", { drop_pending_updates: false });
   let offset = 0;
   while (true) {

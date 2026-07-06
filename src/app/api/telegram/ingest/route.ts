@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
-import { getAllowedChatId, setAllowedChatId } from "@/lib/telegram";
+import { getAllowedChatId, setAllowedChatId, getAllowedGroups, addAllowedGroup } from "@/lib/telegram";
 import { askBrain } from "@/lib/brain";
 import { saveChat } from "@/lib/secretary";
 import { generateDeck } from "@/lib/deck-generate";
@@ -37,21 +37,35 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const chatId = String(body.chatId || "");
   const text = String(body.text || "").trim();
+  const fromId = String(body.fromId || "");
+  const isGroup = Boolean(body.isGroup);
   if (!chatId || !text) return NextResponse.json({ sends: [] });
 
-  // ผูก chat แรกเป็นเจ้าของ
-  let allowed = await getAllowedChatId();
-  if (!allowed) {
-    await setAllowedChatId(chatId);
-    allowed = chatId;
-    return NextResponse.json({
-      sends: [{ kind: "text", text: `เชื่อมต่อสำเร็จ (chat id: ${chatId})\n\n${WELCOME}` }] as Send[],
-    });
-  }
-  if (chatId !== allowed) {
-    return NextResponse.json({
-      sends: [{ kind: "text", text: "ขออภัย บอทนี้ผูกกับบัญชีอื่นแล้ว" }] as Send[],
-    });
+  const owner = await getAllowedChatId();
+
+  if (isGroup) {
+    const isOwner = owner && fromId === String(owner);
+    // เจ้าของผูกกลุ่มนี้
+    if (/^\s*(ผูกกลุ่ม|bind)/i.test(text)) {
+      if (!isOwner) return NextResponse.json({ sends: [{ kind: "text", text: "ขอโทษค่ะ ต้องให้เจ้าของระบบเป็นคนผูกกลุ่มนะคะ" }] as Send[] });
+      await addAllowedGroup(chatId);
+      return NextResponse.json({ sends: [{ kind: "text", text: "ผูกกลุ่มนี้เรียบร้อยแล้วค่ะ เรียก \"วาน ...\" ได้เลยนะคะ เช่น \"วาน สรุปสถานะทุน\" หรือ \"วาน สร้างสไลด์สรุปเดือนนี้\"" }] as Send[] });
+    }
+    const groups = await getAllowedGroups();
+    if (!groups.includes(chatId) && !isOwner) {
+      return NextResponse.json({ sends: [] }); // กลุ่มยังไม่ได้รับอนุญาต — เงียบไว้
+    }
+  } else {
+    // แชทส่วนตัว — ผูก chat แรกเป็นเจ้าของ
+    if (!owner) {
+      await setAllowedChatId(chatId);
+      return NextResponse.json({
+        sends: [{ kind: "text", text: `เชื่อมต่อสำเร็จ (chat id: ${chatId})\n\n${WELCOME}` }] as Send[],
+      });
+    }
+    if (chatId !== owner) {
+      return NextResponse.json({ sends: [{ kind: "text", text: "ขออภัย บอทนี้ผูกกับบัญชีอื่นแล้ว" }] as Send[] });
+    }
   }
 
   // /start หรือทักทาย
