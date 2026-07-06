@@ -23,7 +23,14 @@ export async function GET() {
   const connections = {
     claude: { ok: true, detail: process.env.CLAUDE_CLI_PATH || "claude" },
     gemini: { ok: Boolean(process.env.GEMINI_CLI_PATH), detail: process.env.GEMINI_CLI_PATH || "ยังไม่ตั้งค่า" },
-    hermes: { ok: brain.hermes, detail: brain.hermes ? "เชื่อมแล้ว" : "ยังไม่ใส่ URL webhook" },
+    hermes: {
+      ok: brain.hermes,
+      detail: brain.hermes
+        ? process.env.HERMES_WEBHOOK_URL?.trim()
+          ? "เชื่อมแล้ว (webhook)"
+          : "เชื่อมแล้ว (Hermes CLI)"
+        : "ยังไม่ได้ติดตั้ง/ตั้งค่า",
+    },
     telegram: {
       ok: Boolean(getBotToken()) && Boolean(chatId),
       detail: !getBotToken() ? "ยังไม่มี token" : chatId ? `ผูกกับ chat ${chatId}` : "มี token แล้ว รอผูก (/start)",
