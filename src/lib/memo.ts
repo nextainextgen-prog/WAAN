@@ -103,15 +103,15 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   ${fontFace()}
   @page{size:A4;margin:0}
   *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:'Sarabun',sans-serif;color:${C.ink};font-size:14px;line-height:1.55;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{font-family:'Sarabun',sans-serif;color:${C.ink};font-size:10pt;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .page{width:210mm;height:297mm;padding:14mm 15mm 10mm;position:relative;page-break-after:always;background:#fff}
   .page:last-child{page-break-after:auto}
   .logo{height:40px;margin-bottom:6px}
-  .memo-h{text-align:center;font-weight:700;font-size:17px;margin:2px 0 8px;letter-spacing:.03em}
+  .memo-h{text-align:center;font-weight:700;font-size:13pt;margin:2px 0 8px;letter-spacing:.03em}
   /* frame */
   .frame{border:1.2px solid ${C.line}}
   .hrow{display:flex;border-bottom:1.2px solid ${C.line}}
-  .hcell{padding:6px 12px;font-size:13.5px}
+  .hcell{padding:6px 12px;font-size:10pt}
   .hcell.l{flex:0 0 63%;border-right:1.2px solid ${C.line}}
   .hcell.r{flex:1}
   .brow{display:flex;min-height:216mm}
@@ -126,7 +126,7 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   .sigblock .nm{margin-top:2px}
   .approver .dots{margin-bottom:2px}
   /* company footer */
-  .cfoot{position:absolute;left:15mm;right:15mm;bottom:8mm;font-size:10.5px;color:#3a3a3a;line-height:1.4}
+  .cfoot{position:absolute;left:15mm;right:15mm;bottom:8mm;font-size:8pt;color:#3a3a3a;line-height:1.4}
   .cfoot .pg{position:absolute;right:0;bottom:0;color:#666}
   /* attachment */
   .attach{padding:14mm 14mm 10mm}
