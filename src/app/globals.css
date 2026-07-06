@@ -1,26 +1,170 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Changoh System — Design Tokens
+   Style: "Trust & Authority" (professional, light, WCAG AAA)
+   Icons only (lucide). No emoji. Simple, readable.
+   ============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* surfaces */
+  --background: #f6f8fb;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --border: #e6ebf2;
+  --border-strong: #cbd5e1;
+
+  /* brand */
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-foreground: #ffffff;
+  --primary-soft: #eff4ff;
+
+  --accent: #059669;
+  --accent-hover: #047857;
+  --accent-foreground: #ffffff;
+  --accent-soft: #ecfdf5;
+
+  /* semantic */
+  --success: #059669;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --info: #2563eb;
+
+  --ring: #2563eb;
+
+  /* radii */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* elevation */
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06);
+  --shadow: 0 2px 4px -1px rgb(15 23 42 / 0.05), 0 4px 12px -2px rgb(15 23 42 / 0.08);
+  --shadow-lg: 0 8px 24px -6px rgb(15 23 42 / 0.12), 0 2px 6px -2px rgb(15 23 42 / 0.06);
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-ring: var(--ring);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --font-display: var(--font-display);
+  --font-sans: var(--font-thai);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-card: var(--shadow);
+  --shadow-lg: var(--shadow-lg);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ---- Branded display faces (drop real .woff2 in /public/fonts to activate) ----
+   Olimpico / Arriere Garde / Longhand LP Bold are licensed fonts.
+   Until the files are present, the stack falls back gracefully. */
+@font-face {
+  font-family: "Olimpico";
+  src: local("Olimpico"), url("/fonts/Olimpico.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Arriere Garde";
+  src: local("Arriere Garde"), url("/fonts/ArriereGarde.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Longhand LP";
+  src: local("Longhand LP Bold"), url("/fonts/LonghandLP-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-thai), "Noto Sans Thai", system-ui, sans-serif;
+}
+
+/* tabular numbers for money/counters */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-display {
+  font-family: "Olimpico", var(--font-display), var(--font-thai), sans-serif;
+  letter-spacing: -0.01em;
+}
+
+/* focus ring — visible for keyboard nav */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* subtle scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d5deea;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b8c4d6;
+  background-clip: content-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

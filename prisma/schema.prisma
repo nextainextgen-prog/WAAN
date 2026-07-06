@@ -1,0 +1,76 @@
+// Changoh System — Prisma schema (SQLite, local-first)
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("admin")
+  createdAt    DateTime @default(now())
+}
+
+// ทุนวิจัย — โครงสร้างยืดหยุ่นรองรับข้อมูลดิบ (field ว่างได้)
+model Grant {
+  id          String    @id @default(cuid())
+  projectName String                       // ชื่อโครงการ
+  ownerName   String?                       // อาจารย์เจ้าของทุน
+  source      String?                       // แหล่งทุน (TRF, สกสว, ฯลฯ)
+  amount      Float     @default(0)          // มูลค่าทุน (บาท)
+  status      String    @default("submitted") // สถานะปัจจุบัน (key)
+  nextDeadline DateTime?                     // deadline งวดถัดไป
+  note        String?                        // หมายเหตุ
+  orderIndex  Int       @default(0)          // ลำดับใน Kanban column
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// เป้า OKR ต่อปี
+model OkrTarget {
+  id           String @id @default(cuid())
+  year         Int    @unique
+  targetAmount Float  @default(10000000)
+}
+
+// สไตล์สไลด์ที่อาจารย์สอนผ่านแชท (Style Memory)
+model StyleMemory {
+  id        String   @id @default(cuid())
+  label     String   @default("default")
+  content   String                          // ข้อความอธิบายสไตล์เป็นภาษาไทย
+  updatedAt DateTime @updatedAt
+}
+
+// ประวัติแชทเลขา AI
+model ChatMessage {
+  id        String   @id @default(cuid())
+  role      String                          // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+// เอกสารในไปป์ไลน์อนุมัติ/เซ็น
+model Document {
+  id         String   @id @default(cuid())
+  filename   String
+  source     String?               // ที่มา เช่น ชื่อโฟลเดอร์/ผู้ส่ง
+  mimeType   String?
+  filePath   String                // path ไฟล์ต้นฉบับ (ในเครื่อง)
+  signedPath String?               // path ไฟล์ที่เซ็นแล้ว
+  summary    String?               // สรุปโดย Claude
+  status     String   @default("pending") // pending | approved | rejected
+  decidedAt  DateTime?
+  createdAt  DateTime @default(now())
+}

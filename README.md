@@ -1,36 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Changoh System — ระบบบริหารทุนวิจัย & เลขา AI
 
-## Getting Started
+ระบบบริหารทุนวิจัย OKR + เลขา AI สำหรับ **อาจารย์ช้างโอ๋** คณะบริหารธุรกิจ มหาวิทยาลัยขอนแก่น
+ทำงานแบบ local-first บน Mac ใช้ **Claude ผ่าน Max subscription (ไม่ใช้ API key)**
 
-First, run the development server:
+โค้ดเนม Telegram bot: **น้องวาน (@nong_waan_bot)**
+
+---
+
+## ความสามารถ
+
+| ส่วน | รายละเอียด |
+|------|-----------|
+| **OKR & Research Tracker** | Dashboard เป้า 10 ล้าน, Kanban ลากเปลี่ยนสถานะทุน, Timeline/Deadline, นำเข้า Excel/CSV ดิบ |
+| **เลขา AI (สมองหลายโมเดล)** | แชทถาม-ตอบจากข้อมูลจริง, ร่างเอกสาร — เลือกสมองได้: **Claude / Gemini / Hermes** + อ่านความรู้จาก **Obsidian** |
+| **Slide Generator** | สั่งผ่านแชท → ดึงข้อมูลจริง → สร้าง **.pptx + .pdf** ตาม Style Memory ที่สอนไว้ |
+| **Document Pipeline** | เฝ้าดูโฟลเดอร์ → สรุปด้วย AI → อนุมัติ/ไม่อนุมัติ (เว็บหรือ Telegram) → **เซ็น PDF** อัตโนมัติ |
+| **Telegram** | คุยกับเลขา, สั่งสไลด์, อนุมัติเอกสารด้วยปุ่ม, แจ้งเตือน deadline ทุกเช้า |
+| **Obsidian** | เชื่อม vault เดิม — AI เขียนเฉพาะโฟลเดอร์ `AI-Changoh` (แยกจากงาน/ส่วนตัว) |
+
+การออกแบบ: ธีมสว่าง "Trust & Authority" · ไอคอน lucide (ไม่มีอิโมจิ) · ฟอนต์ Noto Sans Thai + Sarabun (สไลด์/PDF)
+
+---
+
+## เริ่มใช้งาน
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env      # แล้วเติมค่า (ดูด้านล่าง)
+npm run db:push           # สร้างฐานข้อมูล
+npm run seed              # สร้างบัญชีผู้ใช้ + เป้า OKR
+npm run dev               # เปิด http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+บัญชีเริ่มต้น: `aj.changoh@kku.ac.th` / `changoh2026` (เปลี่ยนได้ผ่าน env ตอน seed)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### ตั้งค่า `.env` ที่จำเป็น
+- `AUTH_SECRET`, `INTERNAL_API_TOKEN` — ค่าสุ่มยาวๆ
+- `TELEGRAM_BOT_TOKEN` — จาก @BotFather (ผูก chat ครั้งแรกด้วยการทัก `/start`)
+- `OBSIDIAN_VAULT_PATH` — path ของ vault เดิม (ถ้าจะใช้)
+- `HERMES_WEBHOOK_URL` — URL ของ Hermes agent เดิม (ถ้าจะใช้)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### ต้อง login CLI ก่อน (ใช้ subscription ไม่ใช้ API key)
+```bash
+claude          # login Claude Max
+gemini          # (ถ้าใช้ Gemini) login Google
+```
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## รันบริการเสริม (แต่ละอันคนละ terminal)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run bot            # Telegram bot (long-polling)
+npm run watch          # เฝ้าดูโฟลเดอร์เอกสาร (ตั้ง WATCH_FOLDER)
+npm run reminders      # ส่งแจ้งเตือน deadline (ตั้ง cron ทุกเช้า)
+node scripts/make-signature.mjs   # สร้างลายเซ็นตัวอย่าง (แทนที่ public/signature.png ด้วยของจริง)
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## สแตก
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · Prisma 6 + SQLite ·
+Recharts · pptxgenjs · pdfkit · pdf-lib · pdfjs · Sarabun (ฟอนต์ไทยฝังในไฟล์)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+> หมายเหตุ: ฟอนต์ Olimpico / Arrière Garde / Longhand LP Bold เป็นฟอนต์ลิขสิทธิ์
+> วางไฟล์ `.woff2` ใน `public/fonts/` เพื่อเปิดใช้ (ระหว่างนี้ fallback อัตโนมัติ)
