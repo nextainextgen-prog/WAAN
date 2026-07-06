@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SlideDoc } from "./slides";
 
 const DIR = path.join(process.cwd(), ".generated", "slides");
 
@@ -18,31 +17,32 @@ export interface SlideMeta {
   createdAt: string;
 }
 
-export async function saveSlideFiles(
-  doc: SlideDoc,
+// เก็บเด็คนำเสนอ (HTML โต้ตอบ + PDF)
+export async function saveDeckFiles(
+  meta: { title: string; subtitle: string; slideCount: number },
   topic: string,
-  pptx: Buffer,
+  html: string,
   pdf: Buffer,
 ): Promise<SlideMeta> {
   await ensureDir();
-  const id = randomUUID().slice(0, 8);
-  const meta: SlideMeta = {
+  const id = randomUUID().replace(/-/g, "").slice(0, 8);
+  const rec: SlideMeta = {
     id,
-    title: doc.title,
-    subtitle: doc.subtitle,
+    title: meta.title,
+    subtitle: meta.subtitle,
     topic,
-    slideCount: doc.slides.length,
+    slideCount: meta.slideCount,
     createdAt: new Date().toISOString(),
   };
   await Promise.all([
-    fs.writeFile(path.join(DIR, `${id}.pptx`), pptx),
+    fs.writeFile(path.join(DIR, `${id}.html`), html, "utf8"),
     fs.writeFile(path.join(DIR, `${id}.pdf`), pdf),
-    fs.writeFile(path.join(DIR, `${id}.json`), JSON.stringify(meta, null, 2)),
+    fs.writeFile(path.join(DIR, `${id}.json`), JSON.stringify(rec, null, 2)),
   ]);
-  return meta;
+  return rec;
 }
 
-export async function readSlideFile(id: string, format: "pptx" | "pdf"): Promise<Buffer | null> {
+export async function readSlideFile(id: string, format: "html" | "pdf"): Promise<Buffer | null> {
   if (!/^[a-f0-9]{8}$/.test(id)) return null;
   try {
     return await fs.readFile(path.join(DIR, `${id}.${format}`));

@@ -23,16 +23,16 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const id = String(body.id || "");
   const meta = await getSlideMeta(id);
-  const pptx = await readSlideFile(id, "pptx");
+  const html = await readSlideFile(id, "html");
   const pdf = await readSlideFile(id, "pdf");
-  if (!meta || !pptx || !pdf) {
+  if (!meta || !html || !pdf) {
     return NextResponse.json({ error: "ไม่พบไฟล์สไลด์" }, { status: 404 });
   }
 
   const safe = meta.title.replace(/[^\p{L}\p{N}ก-๙\s_-]/gu, "").slice(0, 50) || "slides";
   await tgSendMessage(chatId, `สไลด์ "${meta.title}" (${meta.slideCount} สไลด์)`);
   await tgSendDocument(chatId, pdf, `${safe}.pdf`, meta.title);
-  await tgSendDocument(chatId, pptx, `${safe}.pptx`);
+  await tgSendDocument(chatId, html, `${safe}.html`, "ไฟล์เด็คแบบเปิดในเบราว์เซอร์ (เลื่อนดูได้)");
 
   return NextResponse.json({ ok: true });
 }

@@ -25,7 +25,7 @@ interface SlideMeta {
 }
 interface GenResult extends SlideMeta {
   slides: { layout: string; title?: string }[];
-  files: { pptx: string; pdf: string };
+  files: { html: string; pdf: string };
 }
 
 const PRESETS = [
@@ -190,13 +190,13 @@ export function SlidesView() {
             </ol>
 
             <div className="flex flex-wrap items-center gap-2.5 mt-5 pt-4 border-t border-border">
-              <a href={result.files.pptx} download>
+              <a href={result.files.html} target="_blank" rel="noreferrer">
                 <Button variant="primary">
-                  <FileDown className="h-4 w-4" />
-                  ดาวน์โหลด PowerPoint
+                  <Presentation className="h-4 w-4" />
+                  เปิดเด็ค (เลื่อนดูได้)
                 </Button>
               </a>
-              <a href={result.files.pdf} download>
+              <a href={result.files.pdf} target="_blank" rel="noreferrer">
                 <Button variant="outline">
                   <FileDown className="h-4 w-4" />
                   ดาวน์โหลด PDF
@@ -231,12 +231,12 @@ export function SlidesView() {
                       {h.slideCount} สไลด์ · {new Date(h.createdAt).toLocaleString("th-TH")}
                     </p>
                   </div>
-                  <a href={`/api/slides/${h.id}/pptx`} download>
+                  <a href={`/api/slides/${h.id}/html`} target="_blank" rel="noreferrer">
                     <Button variant="ghost" size="sm">
-                      PPTX
+                      เปิดเด็ค
                     </Button>
                   </a>
-                  <a href={`/api/slides/${h.id}/pdf`} download>
+                  <a href={`/api/slides/${h.id}/pdf`} target="_blank" rel="noreferrer">
                     <Button variant="ghost" size="sm">
                       PDF
                     </Button>

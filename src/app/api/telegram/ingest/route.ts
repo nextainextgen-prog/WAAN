@@ -3,10 +3,8 @@ import { isServiceRequest } from "@/lib/auth";
 import { getAllowedChatId, setAllowedChatId } from "@/lib/telegram";
 import { askBrain } from "@/lib/brain";
 import { saveChat } from "@/lib/secretary";
-import { generateSlideDoc } from "@/lib/slides";
-import { renderPptx } from "@/lib/render-pptx";
-import { renderPdf } from "@/lib/render-pdf";
-import { saveSlideFiles } from "@/lib/slide-store";
+import { generateDeck } from "@/lib/deck-generate";
+import { saveDeckFiles } from "@/lib/slide-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -65,20 +63,24 @@ export async function POST(req: Request) {
   const slideTopic = isSlideCommand(text);
   if (slideTopic) {
     try {
-      const doc = await generateSlideDoc(slideTopic);
-      const [pptx, pdf] = await Promise.all([renderPptx(doc), renderPdf(doc)]);
-      const meta = await saveSlideFiles(doc, slideTopic, pptx, pdf);
-      const safe = doc.title.replace(/[^\p{L}\p{N}ก-๙\s_-]/gu, "").slice(0, 50) || "slides";
+      const { deck, html, pdf } = await generateDeck(slideTopic);
+      const meta = await saveDeckFiles(
+        { title: deck.title, subtitle: deck.subtitle, slideCount: deck.slides.length },
+        slideTopic,
+        html,
+        pdf,
+      );
+      const safe = deck.title.replace(/[^\p{L}\p{N}ก-๙\s_-]/gu, "").slice(0, 50) || "slides";
       return NextResponse.json({
         sends: [
-          { kind: "text", text: `สร้างสไลด์ "${doc.title}" (${doc.slides.length} สไลด์) เรียบร้อยครับ` },
-          { kind: "document", url: `/api/slides/${meta.id}/pdf`, filename: `${safe}.pdf`, caption: doc.title },
-          { kind: "document", url: `/api/slides/${meta.id}/pptx`, filename: `${safe}.pptx` },
+          { kind: "text", text: `ทำสไลด์ "${deck.title}" (${deck.slides.length} สไลด์) ให้แล้วค่ะ ส่งทั้ง PDF และไฟล์เด็คที่เลื่อนดูได้ให้เลยนะคะ` },
+          { kind: "document", url: `/api/slides/${meta.id}/pdf`, filename: `${safe}.pdf`, caption: deck.title },
+          { kind: "document", url: `/api/slides/${meta.id}/html`, filename: `${safe}.html` },
         ] as Send[],
       });
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
-      return NextResponse.json({ sends: [{ kind: "text", text: `สร้างสไลด์ไม่สำเร็จ: ${detail}` }] as Send[] });
+      return NextResponse.json({ sends: [{ kind: "text", text: `สร้างสไลด์ไม่สำเร็จค่ะ: ${detail}` }] as Send[] });
     }
   }
 
