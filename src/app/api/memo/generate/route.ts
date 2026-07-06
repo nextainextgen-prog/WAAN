@@ -4,6 +4,8 @@ import { isServiceRequest, getCurrentUser } from "@/lib/auth";
 import { generateRefundMemo } from "@/lib/memo-generate";
 import { prepareAttachment } from "@/lib/pdf-to-images";
 import { saveMemoDraft } from "@/lib/memo-store";
+import { isAuthorized } from "@/lib/team";
+import { getAllowedGroups } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -22,6 +24,20 @@ export async function POST(req: Request) {
   const rawText: string = (body.rawText || "").trim();
   const files: { path: string; filename: string }[] = body.files || [];
   if (!rawText) return NextResponse.json({ error: "no text" }, { status: 400 });
+
+  // ตรวจสิทธิ์ผู้สั่ง (จาก Telegram): เจ้าของ หรือทีมที่อนุญาต + กลุ่มต้องผูกแล้ว
+  const fromId = String(body.fromId || "");
+  if (fromId) {
+    if (body.isGroup) {
+      const groups = await getAllowedGroups();
+      if (!groups.includes(String(body.chatId)) && !(await isAuthorized(fromId))) {
+        return NextResponse.json({ error: "unauthorized" }, { status: 403 });
+      }
+    }
+    if (!(await isAuthorized(fromId))) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 403 });
+    }
+  }
 
   // เตรียมไฟล์แนบ (PDF → PNG, รูป → ใช้เลย)
   const outDir = path.join(process.cwd(), ".generated", "memo-attach");

@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { getOkrSummary } from "./data";
 import { statusLabel, formatBaht, formatThaiDate, daysUntil } from "./grants";
+import { teamRoster } from "./team";
 
 // สร้าง system prompt + บริบทงานจริงจากฐานข้อมูล ให้เลขา AI ใช้ตอบ
 export async function buildSecretaryContext(): Promise<string> {
@@ -37,6 +38,7 @@ export async function buildSecretaryContext(): Promise<string> {
 - คิดต่อให้เอง เสนอไอเดีย/ขั้นตอนถัดไป และชวนถามกลับว่าอยากให้ทำอะไรต่อ (เช่น "ให้ออกเป็น PDF เลยไหมคะ" / "อยากให้ช่วยเช็คตัวเลขก่อนไหมคะ")
 - ถ้างานใช้เวลาสักพัก บอกก่อนว่ากำลังทำอะไร คาดว่าใช้เวลาประมาณกี่นาที แล้วค่อยกลับมารายงานผล ("กำลังดึงข้อมูลออกเอกสารให้นะคะ ~1 นาทีเดี๋ยวส่งให้")
 - เข้าใจเจตนาผู้ใช้ ไม่ต้องถามซ้ำสิ่งที่เดาได้ ถ้าข้อมูลขาดค่อยถามเฉพาะที่จำเป็น
+- รู้จักทีมงาน (ดูรายชื่อด้านล่าง) อ้างถึงหรือแท็กด้วย @username ได้ และจำข้อมูล/ประวัติของแต่ละคนไว้ใช้
 
 ข้อกำหนด:
 - ใช้ข้อมูลจริงด้านล่างเท่านั้น อย่าแต่งตัวเลข ถ้าไม่มีข้อมูลบอกตรงๆ
@@ -55,7 +57,9 @@ export async function buildSecretaryContext(): Promise<string> {
 ${statusSummary}
 
 [รายการทุนวิจัยทั้งหมด]
-${grantLines}`;
+${grantLines}
+
+${await teamRoster()}`;
 }
 
 export async function saveChat(role: "user" | "assistant", content: string) {

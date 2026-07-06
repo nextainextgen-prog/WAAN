@@ -61,6 +61,19 @@ model Setting {
   value String
 }
 
+// ทีมงานที่น้องวานรู้จัก (สำหรับสิทธิ์การใช้ + จดจำ + แท็ก)
+model TeamMember {
+  id             String   @id @default(cuid())
+  telegramUserId String   @unique
+  name           String
+  username       String?
+  role           String?
+  notes          String?  // ประวัติ/ข้อมูลที่เจ้าของบอกให้จำ
+  canUseBot      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
 // เอกสารในไปป์ไลน์อนุมัติ/เซ็น
 model Document {
   id         String   @id @default(cuid())

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { getAllowedChatId, setAllowedChatId, getAllowedGroups, addAllowedGroup } from "@/lib/telegram";
+import { isOwner, isAuthorized, grantMember, revokeMember, rememberMember } from "@/lib/team";
 import { askBrain } from "@/lib/brain";
 import { saveChat } from "@/lib/secretary";
 import { generateDeck } from "@/lib/deck-generate";
@@ -39,31 +40,53 @@ export async function POST(req: Request) {
   const text = String(body.text || "").trim();
   const fromId = String(body.fromId || "");
   const isGroup = Boolean(body.isGroup);
+  const replyTo = body.replyTo as { id?: string; name?: string; username?: string } | undefined;
   if (!chatId || !text) return NextResponse.json({ sends: [] });
 
   const owner = await getAllowedChatId();
+  const ownerHere = await isOwner(fromId);
+
+  // เจ้าของอยู่ในกลุ่มไหน = ผูกกลุ่มนั้นอัตโนมัติ (สมาชิกที่อนุญาตจะใช้ได้ทันที)
+  if (isGroup && ownerHere) await addAllowedGroup(chatId);
+
+  // ===== คำสั่งของเจ้าของ: อนุญาต/ยกเลิก/จดจำ ทีมงาน (ตอบกลับข้อความของคนนั้น) =====
+  if (ownerHere && replyTo?.id) {
+    const person = { id: String(replyTo.id), name: replyTo.name || "สมาชิก", username: replyTo.username };
+    if (/อนุญาต|ให้ตอบ|ให้ใช้|ใช้บอทได้|เพิ่ม.*ทีม|allow/i.test(text)) {
+      await grantMember(person, { notes: text.replace(/อนุญาต|ให้ตอบ(คนนี้)?(ได้)?|ให้ใช้(บอท)?(ได้)?|allow/gi, "").trim() || undefined });
+      return NextResponse.json({ sends: [{ kind: "text", text: `รับทราบค่ะ ให้ ${person.name} ใช้งานน้องวานได้แล้ว จะจำไว้เลยนะคะ` }] as Send[] });
+    }
+    if (/ห้าม|ยกเลิกสิทธิ์|ถอดสิทธิ์|revoke/i.test(text)) {
+      await revokeMember(person.id);
+      return NextResponse.json({ sends: [{ kind: "text", text: `ยกเลิกสิทธิ์ของ ${person.name} แล้วค่ะ` }] as Send[] });
+    }
+    if (/จำ|นี่คือ|แนะนำ|ตำแหน่ง|เป็น(คน|ทีม|ฝ่าย)|profile|ประวัติ/i.test(text)) {
+      await rememberMember(person, { notes: text });
+      return NextResponse.json({ sends: [{ kind: "text", text: `จำ ${person.name} ไว้แล้วค่ะ` }] as Send[] });
+    }
+  }
 
   if (isGroup) {
-    const isOwner = owner && fromId === String(owner);
-    // เจ้าของผูกกลุ่มนี้
+    // เจ้าของผูกกลุ่ม
     if (/^\s*(ผูกกลุ่ม|bind)/i.test(text)) {
-      if (!isOwner) return NextResponse.json({ sends: [{ kind: "text", text: "ขอโทษค่ะ ต้องให้เจ้าของระบบเป็นคนผูกกลุ่มนะคะ" }] as Send[] });
+      if (!ownerHere) return NextResponse.json({ sends: [{ kind: "text", text: "ขอโทษค่ะ ต้องให้เจ้าของเป็นคนผูกกลุ่มนะคะ" }] as Send[] });
       await addAllowedGroup(chatId);
-      return NextResponse.json({ sends: [{ kind: "text", text: "ผูกกลุ่มนี้เรียบร้อยแล้วค่ะ เรียก \"วาน ...\" ได้เลยนะคะ เช่น \"วาน สรุปสถานะทุน\" หรือ \"วาน สร้างสไลด์สรุปเดือนนี้\"" }] as Send[] });
+      return NextResponse.json({ sends: [{ kind: "text", text: "ผูกกลุ่มนี้เรียบร้อยแล้วค่ะ ทำได้ทุกอย่างในกลุ่มนี้เลยนะคะ" }] as Send[] });
     }
     const groups = await getAllowedGroups();
-    if (!groups.includes(chatId) && !isOwner) {
-      return NextResponse.json({ sends: [] }); // กลุ่มยังไม่ได้รับอนุญาต — เงียบไว้
+    const groupOk = groups.includes(chatId) || ownerHere;
+    if (!groupOk) return NextResponse.json({ sends: [] }); // กลุ่มยังไม่ผูก — เงียบ
+    // ต้องมีสิทธิ์ (เจ้าของ หรือทีมที่อนุญาต)
+    if (!(await isAuthorized(fromId))) {
+      return NextResponse.json({ sends: [{ kind: "text", text: "ขอโทษค่ะ ต้องให้เจ้าของอนุญาตก่อนถึงจะช่วยได้นะคะ" }] as Send[] });
     }
   } else {
-    // แชทส่วนตัว — ผูก chat แรกเป็นเจ้าของ
+    // แชทส่วนตัว
     if (!owner) {
       await setAllowedChatId(chatId);
-      return NextResponse.json({
-        sends: [{ kind: "text", text: `เชื่อมต่อสำเร็จ (chat id: ${chatId})\n\n${WELCOME}` }] as Send[],
-      });
+      return NextResponse.json({ sends: [{ kind: "text", text: `เชื่อมต่อสำเร็จ (chat id: ${chatId})\n\n${WELCOME}` }] as Send[] });
     }
-    if (chatId !== owner) {
+    if (!(await isAuthorized(fromId))) {
       return NextResponse.json({ sends: [{ kind: "text", text: "ขออภัย บอทนี้ผูกกับบัญชีอื่นแล้ว" }] as Send[] });
     }
   }

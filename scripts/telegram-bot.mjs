@@ -48,7 +48,7 @@ async function downloadFile(file_id, destDir, filename) {
   return { path: p, filename: safe };
 }
 
-async function doMemo(chatId, text, files) {
+async function doMemo(chatId, text, files, from, isGroup) {
   await tg("sendMessage", { chat_id: chatId, text: "รับเรื่องแล้วค่ะ กำลังออกร่างเอกสารคืนเงินให้ ประมาณ 1 นาทีเดี๋ยวส่งให้นะคะ" });
   await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
 
@@ -62,10 +62,11 @@ async function doMemo(chatId, text, files) {
   try {
     const r = await fetch(APP_URL + "/api/memo/generate", {
       method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ rawText: text, files: saved }),
+      body: JSON.stringify({ rawText: text, files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
     });
     data = await r.json();
   } catch { await tg("sendMessage", { chat_id: chatId, text: "ขออภัยค่ะ ระบบหลังบ้านยังไม่พร้อม ลองใหม่อีกครั้งนะคะ" }); return; }
+  if (data.error === "unauthorized") return; // ไม่มีสิทธิ์ — เงียบ
   if (!data.ok) { await tg("sendMessage", { chat_id: chatId, text: "ออกเอกสารไม่สำเร็จค่ะ: " + (data.error || "") }); return; }
 
   const pdfRes = await fetch(APP_URL + `/api/memo/${data.id}/pdf`, { headers: { "x-internal-token": INTERNAL } });
@@ -80,13 +81,13 @@ async function doMemo(chatId, text, files) {
   await fetch(API("sendDocument"), { method: "POST", body: form });
 }
 
-async function chatIngest(chatId, text, fromId, isGroup) {
+async function chatIngest(chatId, text, from, isGroup, replyTo) {
   await tg("sendChatAction", { chat_id: chatId, action: "typing" });
   let data;
   try {
     const res = await fetch(APP_URL + "/api/telegram/ingest", {
       method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), text, fromId: String(fromId || ""), isGroup: !!isGroup }),
+      body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null }),
     });
     data = await res.json();
   } catch { await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านยังไม่พร้อมค่ะ (เช็คว่ารัน npm run dev แล้วนะคะ)" }); return; }
@@ -105,10 +106,17 @@ async function chatIngest(chatId, text, fromId, isGroup) {
   }
 }
 
+function personOf(u) {
+  if (!u) return null;
+  return { id: String(u.id), name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.username || "สมาชิก", username: u.username || undefined };
+}
+
 async function processBatch(chatId, msgs) {
   const chatType = msgs[0]?.chat?.type || "private";
   const isGroup = chatType === "group" || chatType === "supergroup";
-  const fromId = msgs[0]?.from?.id;
+  const from = personOf(msgs[0]?.from);
+  const replyMsg = msgs.find((m) => m.reply_to_message)?.reply_to_message;
+  const replyTo = replyMsg ? personOf(replyMsg.from) : null;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
 
   // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก (มีชื่อ "น้องวาน" ที่ไหนก็ได้, ขึ้นต้น "วาน", @mention, หรือ reply บอท)
@@ -132,19 +140,15 @@ async function processBatch(chatId, msgs) {
   recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < 180000);
   for (const f of files) recentFiles[chatId].push({ ...f, ts: now });
 
-  // ออกเอกสารจากไฟล์แนบ — เฉพาะแชทส่วนตัว (ข้อมูลลูกค้าไม่ควรอยู่ในกลุ่ม)
+  // ออกเอกสารจากไฟล์แนบ — ทำได้ทั้งแชทส่วนตัวและกลุ่ม (ตรวจสิทธิ์ที่ backend)
   if (text && MEMO_INTENT.test(text)) {
-    if (isGroup) {
-      await tg("sendMessage", { chat_id: chatId, text: "การออกเอกสารคืนเงินมีข้อมูลลูกค้า ขอทำในแชทส่วนตัวกับวานนะคะ ส่งรายละเอียด+ไฟล์มาที่แชทส่วนตัวได้เลยค่ะ" });
-      return;
-    }
     const seen = new Set();
     const all = recentFiles[chatId].filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
     recentFiles[chatId] = [];
-    await doMemo(chatId, text, all);
+    await doMemo(chatId, text, all, from, isGroup);
     return;
   }
-  if (text) { await chatIngest(chatId, text, fromId, isGroup); return; }
+  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo); return; }
 }
 
 async function handleMessage(msg) {
