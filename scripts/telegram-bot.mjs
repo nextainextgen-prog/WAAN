@@ -49,8 +49,14 @@ async function downloadFile(file_id, destDir, filename) {
 }
 
 async function doMemo(chatId, text, files, from, isGroup) {
-  await tg("sendMessage", { chat_id: chatId, text: "รับเรื่องแล้วค่ะ กำลังออกร่างเอกสารคืนเงินให้ ประมาณ 1 นาทีเดี๋ยวส่งให้นะคะ" });
-  await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
+  const status = await startStatus(chatId, [
+    "รับเรื่องแล้วค่ะ ⚡ กำลังออกเอกสารคืนเงินให้...",
+    "📎 กำลังอ่านไฟล์แนบ...",
+    "🔍 กำลังดึงข้อมูลจากข้อความ...",
+    "🧮 กำลังตรวจความถูกต้องของตัวเลข...",
+    "📝 กำลังจัดรูปเอกสารตามแบบฟอร์ม...",
+    "⏳ ใกล้เสร็จแล้วค่ะ...",
+  ]);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-memo-"));
   const saved = [];
@@ -65,9 +71,11 @@ async function doMemo(chatId, text, files, from, isGroup) {
       body: JSON.stringify({ rawText: text, files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
     });
     data = await r.json();
-  } catch { await tg("sendMessage", { chat_id: chatId, text: "ขออภัยค่ะ ระบบหลังบ้านยังไม่พร้อม ลองใหม่อีกครั้งนะคะ" }); return; }
-  if (data.error === "unauthorized") return; // ไม่มีสิทธิ์ — เงียบ
-  if (!data.ok) { await tg("sendMessage", { chat_id: chatId, text: "ออกเอกสารไม่สำเร็จค่ะ: " + (data.error || "") }); return; }
+  } catch { await status.finishText("ขออภัยค่ะ ระบบหลังบ้านยังไม่พร้อม ลองใหม่อีกครั้งนะคะ"); return; }
+  if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+  if (!data.ok) { await status.finishText("ออกเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
+  await status.finishDone("✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ");
+  await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
 
   const pdfRes = await fetch(APP_URL + `/api/memo/${data.id}/pdf`, { headers: { "x-internal-token": INTERNAL } });
   const pdf = Buffer.from(await pdfRes.arrayBuffer());
@@ -81,17 +89,29 @@ async function doMemo(chatId, text, files, from, isGroup) {
   await fetch(API("sendDocument"), { method: "POST", body: form });
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo) {
-  await tg("sendChatAction", { chat_id: chatId, action: "typing" });
-  let data;
-  try {
-    const res = await fetch(APP_URL + "/api/telegram/ingest", {
-      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null }),
-    });
-    data = await res.json();
-  } catch { await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านยังไม่พร้อมค่ะ (เช็คว่ารัน npm run dev แล้วนะคะ)" }); return; }
-  for (const s of data.sends || []) {
+// ===== สถานะสด: ตอบรับทันที + อัปเดตว่ายังทำอยู่ (แก้ข้อความเดิม ไม่สแปม) =====
+async function startStatus(chatId, steps) {
+  const m = await tg("sendMessage", { chat_id: chatId, text: steps[0] });
+  const msgId = m.result?.message_id;
+  const t0 = Date.now();
+  let i = 0;
+  const timer = setInterval(async () => {
+    i++;
+    const sec = Math.round((Date.now() - t0) / 1000);
+    const step = steps[Math.min(i, steps.length - 1)];
+    const tail = sec >= 90 ? ` (${sec} วิ · ใช้เวลานานกว่าปกติ ขอโทษนะคะ กำลังเร่งให้)` : ` (${sec} วิ)`;
+    if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text: step + tail }).catch(() => {});
+  }, 6000);
+  return {
+    msgId,
+    async finishText(text) { clearInterval(timer); if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text }).catch(() => {}); },
+    async finishDone(text) { clearInterval(timer); if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text: text || "เรียบร้อยค่ะ" }).catch(() => {}); },
+    stop() { clearInterval(timer); },
+  };
+}
+
+async function sendResultSends(chatId, sends) {
+  for (const s of sends || []) {
     if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text });
     else if (s.kind === "document") {
       await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
@@ -104,6 +124,36 @@ async function chatIngest(chatId, text, from, isGroup, replyTo) {
       await fetch(API("sendDocument"), { method: "POST", body: form });
     }
   }
+}
+
+async function chatIngest(chatId, text, from, isGroup, replyTo) {
+  const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
+  const steps = isSlide
+    ? ["รับเรื่องแล้วค่ะ ⚡ กำลังทำสไลด์ให้...", "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🎨 กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ..."]
+    : ["รับเรื่องแล้วค่ะ ⚡ รับทราบ เดี๋ยวหาให้นะคะ", "🔎 กำลังค้นข้อมูลจากระบบ...", "⚙️ กำลังประมวลผล...", "📝 กำลังเรียบเรียงคำตอบ...", "⏳ ใกล้เสร็จแล้วค่ะ..."];
+  const status = await startStatus(chatId, steps);
+  let data;
+  try {
+    const res = await fetch(APP_URL + "/api/telegram/ingest", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null }),
+    });
+    data = await res.json();
+  } catch {
+    await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ");
+    return;
+  }
+  const sends = data.sends || [];
+  const texts = sends.filter((s) => s.kind === "text");
+  const docs = sends.filter((s) => s.kind === "document");
+  // ถ้าเป็นคำตอบข้อความเดี่ยว → รวมเข้าข้อความสถานะเลย (สะอาด ไม่มีข้อความค้าง)
+  if (texts.length === 1 && docs.length === 0) {
+    await status.finishText(texts[0].text);
+    return;
+  }
+  if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+  await status.finishDone("✅ เรียบร้อยค่ะ ส่งให้เลยนะคะ");
+  await sendResultSends(chatId, sends);
 }
 
 function personOf(u) {
