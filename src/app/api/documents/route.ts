@@ -27,6 +27,7 @@ export async function POST(req: Request) {
 
   const buffer = Buffer.from(await file.arrayBuffer());
   const filename = file.name || "document";
-  const { id, summary } = await ingestDocument(buffer, filename, source);
+  const driveFileId = (form.get("driveFileId") as string) || undefined;
+  const { id, summary } = await ingestDocument(buffer, filename, source, driveFileId);
   return NextResponse.json({ ok: true, id, summary });
 }

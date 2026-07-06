@@ -18,6 +18,7 @@ export async function ingestDocument(
   srcPathOrBuffer: string | Buffer,
   filename: string,
   source?: string,
+  driveFileId?: string,
 ): Promise<{ id: string; summary: string }> {
   await ensureDir();
   const id = randomUUID().slice(0, 10);
@@ -37,7 +38,15 @@ export async function ingestDocument(
   if (note) summary += `\n(${note})`;
 
   await db.document.create({
-    data: { id, filename, source: source || null, filePath: stored, summary, status: "pending" },
+    data: {
+      id,
+      filename,
+      source: source || null,
+      filePath: stored,
+      summary,
+      status: "pending",
+      driveFileId: driveFileId || null,
+    },
   });
 
   // แจ้งเตือน Telegram พร้อมปุ่มอนุมัติ/ไม่อนุมัติ
@@ -121,4 +130,16 @@ async function logToObsidian(filename: string, action: string, summary: string) 
 
 export async function listDocuments() {
   return db.document.findMany({ orderBy: { createdAt: "desc" } });
+}
+
+// เอกสารที่อนุมัติ+เซ็นแล้ว แต่ยังไม่ได้อัปกลับ Drive
+export async function listPendingDriveUpload() {
+  return db.document.findMany({
+    where: { status: "approved", signedPath: { not: null }, driveUploaded: false },
+    orderBy: { decidedAt: "asc" },
+  });
+}
+
+export async function markDriveUploaded(id: string) {
+  await db.document.update({ where: { id }, data: { driveUploaded: true } });
 }

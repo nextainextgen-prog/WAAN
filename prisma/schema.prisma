@@ -72,5 +72,7 @@ model Document {
   summary    String?               // สรุปโดย Claude
   status     String   @default("pending") // pending | approved | rejected
   decidedAt  DateTime?
+  driveFileId   String?            // id ไฟล์ต้นทางบน Google Drive
+  driveUploaded Boolean  @default(false) // อัปไฟล์ที่เซ็นแล้วกลับ Drive หรือยัง
   createdAt  DateTime @default(now())
 }
