@@ -58,6 +58,10 @@ function esc(s) {
   return String(s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 function mmss(sec) {
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+    return `${h} ชม.${m ? ` ${m} นาที` : ""}`;
+  }
   const m = Math.floor(sec / 60), s = sec % 60;
   return `${m}:${String(s).padStart(2, "0")} นาที`;
 }
@@ -81,7 +85,11 @@ async function scanWaiting(page) {
     const found = new Map();
     const collect = () => {
       for (const r of document.querySelectorAll(".smartchat-room.contact")) {
-        // ต้องมีข้อความลูกค้าที่ยังไม่อ่าน (unread) ถึงจะถือว่าค้าง
+        const preview = clean(r.querySelector(".message")?.textContent);
+        // ข้ามแชทที่ "จบแชทแล้ว/ปิดเคส" (ข้อความล่าสุดเป็นระบบปิดแชท ไม่ใช่ลูกค้าทักค้าง)
+        if (/^(จบแชท|จบเคส|ปิดแชท|ปิดเคส|โอนแชท)/.test(preview)) continue;
+        // ต้องมีข้อความลูกค้าที่ยังไม่อ่าน (unread) หรือเป็นแชทใหม่รอรับ ถึงจะถือว่าค้าง
+        // (ถ้าแอดมินรับ/กำลังตอบอยู่ ข้อความล่าสุดจะเป็นของแอดมิน = ไม่ unread → ถูกตัดออกเอง)
         if (!r.querySelector(".message.unread") && !r.querySelector(".case-status.start")) continue;
         const id = (r.id || "").replace("room_item_", "");
         if (!id) continue;
@@ -128,6 +136,7 @@ async function shotRoom(page, convId) {
 
 const state = new Map(); // convId -> { level, shiftNames, firstTs }
 let sessionWarned = false;
+let primed = false; // รอบแรก: บันทึก backlog เดิมไว้ (ไม่เตือนเดี่ยว) แล้วสรุปครั้งเดียว
 
 async function tick(page) {
   // เช็ก session
@@ -146,6 +155,21 @@ async function tick(page) {
 
   const waiting = await scanWaiting(page);
   const activeIds = new Set(waiting.map((w) => w.convId));
+
+  // รอบแรก: บันทึกแชทค้างเดิมทั้งหมดไว้เป็น "รู้แล้ว" (ไม่ถล่มเตือนเดี่ยว) แล้วสรุปครั้งเดียว
+  // ต่อจากนี้จะเตือนเดี่ยวเฉพาะแชทที่ค้างใหม่/ยกระดับหลังเริ่มเฝ้า
+  if (!primed) {
+    primed = true;
+    const backlog = waiting.filter((w) => levelFor(w.waitSec) > 0);
+    for (const w of backlog) state.set(w.convId, { level: levelFor(w.waitSec), shiftNames: "", firstTs: Date.now() });
+    if (backlog.length) {
+      await tg("sendMessage", {
+        chat_id: ALERT_CHAT,
+        text: `เริ่มเฝ้าแชท OHO แล้วค่ะ 👀 ตอนนี้มีแชทที่ยังไม่มีคนตอบค้างอยู่ ${backlog.length} รายการ\nต่อจากนี้ถ้ามีแชทค้างใหม่เกิน 3 นาที วานจะแจ้งเตือนพร้อมแท็กเวรให้เลยค่ะ`,
+      }).catch(() => {});
+    }
+    return;
+  }
 
   // คัดเฉพาะที่ต้องเตือน (ข้ามเกณฑ์ใหม่) เรียงด่วนสุดก่อน แล้วจำกัดจำนวนต่อรอบ กันส่งรัว
   const candidates = waiting
