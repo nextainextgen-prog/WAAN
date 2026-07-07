@@ -21,6 +21,7 @@ const ALERT_CHAT = process.env.OHO_ALERT_CHAT_ID;
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const POLL = Number(process.env.OHO_POLL_SECONDS || 60) * 1000;
 const THRESHOLD = Number(process.env.OHO_THRESHOLD_SECONDS || 180);
+const MAX_PER_TICK = Number(process.env.OHO_MAX_PER_TICK || 6); // กันส่งรัว — ที่เหลือรอบถัดไป
 const OWNER_ID = "7750653134";
 
 if (!TOKEN || !ALERT_CHAT) { console.error("ต้องตั้ง TELEGRAM_BOT_TOKEN + OHO_ALERT_CHAT_ID"); process.exit(1); }
@@ -62,22 +63,39 @@ function mmss(sec) {
 }
 
 // สแกนแชทค้าง (เลื่อน virtual list เก็บให้ครบ)
+// จับ "ลูกค้าทักแล้วยังไม่มีคนอ่าน/ตอบ" = มี .message.unread (ครอบคลุมทั้งแชทใหม่รอรับ และแชทที่ปิดแล้วลูกค้าทักใหม่)
 async function scanWaiting(page) {
   return page.evaluate(async () => {
     const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
     const toSec = (t) => { const m = (t || "").match(/(\d+):(\d{2}):(\d{2})/); return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : null; };
+    // เวลาสัมพัทธ์ไทย ("8 นาที", "1 ชั่วโมง", "ไม่กี่วินาที") → วินาที (หยาบ)
+    const parseRel = (t) => {
+      if (!t) return null;
+      if (/วินาที|ไม่กี่/.test(t)) return 30;
+      const day = t.match(/(\d+)\s*วัน/); if (day) return +day[1] * 86400;
+      let s = 0; const hr = t.match(/(\d+)\s*ชั่วโมง/); const mn = t.match(/(\d+)\s*นาที/);
+      if (hr) s += +hr[1] * 3600; if (mn) s += +mn[1] * 60;
+      return s || null;
+    };
     const scroller = document.querySelector(".vue-recycle-scroller");
     const found = new Map();
     const collect = () => {
       for (const r of document.querySelectorAll(".smartchat-room.contact")) {
-        if (!r.querySelector(".case-status.start") || !r.querySelector(".time-counter")) continue;
+        // ต้องมีข้อความลูกค้าที่ยังไม่อ่าน (unread) ถึงจะถือว่าค้าง
+        if (!r.querySelector(".message.unread") && !r.querySelector(".case-status.start")) continue;
         const id = (r.id || "").replace("room_item_", "");
         if (!id) continue;
+        const tc = r.querySelector(".time-counter");
+        const timeEl = r.querySelector(".time");
+        const waitSec = tc ? toSec(tc.textContent) : parseRel(clean(timeEl?.textContent));
+        if (waitSec == null) continue;
         found.set(id, {
           convId: id,
           channel: clean(r.querySelector(".channel-name")?.textContent),
           customer: clean(r.querySelector(".contact-name")?.textContent).slice(0, 40),
-          waitSec: toSec(r.querySelector(".time-counter")?.textContent),
+          waitSec,
+          precise: !!tc, // true=จากตัวนับ, false=จากเวลาสัมพัทธ์ (หยาบ)
+          endCase: !!r.querySelector(".end-case"),
           team: [...r.querySelectorAll(".team-tag")].map((t) => clean(t.textContent)).filter((t) => !/สมาชิกทั้งหมด/.test(t)).join(","),
         });
       }
@@ -86,7 +104,7 @@ async function scanWaiting(page) {
       for (let y = 0; y <= scroller.scrollHeight + 400; y += 400) { scroller.scrollTop = y; await new Promise((r) => setTimeout(r, 120)); collect(); }
       scroller.scrollTop = 0;
     } else collect();
-    return [...found.values()].filter((w) => w.waitSec != null);
+    return [...found.values()];
   });
 }
 
@@ -129,13 +147,16 @@ async function tick(page) {
   const waiting = await scanWaiting(page);
   const activeIds = new Set(waiting.map((w) => w.convId));
 
-  for (const w of waiting) {
-    const lv = levelFor(w.waitSec);
-    if (lv === 0) continue;
-    const prev = state.get(w.convId);
-    const prevLv = prev?.level || 0;
-    if (lv <= prevLv) continue; // ยังไม่ข้ามเกณฑ์ใหม่ → ไม่เตือนซ้ำ
+  // คัดเฉพาะที่ต้องเตือน (ข้ามเกณฑ์ใหม่) เรียงด่วนสุดก่อน แล้วจำกัดจำนวนต่อรอบ กันส่งรัว
+  const candidates = waiting
+    .filter((w) => levelFor(w.waitSec) > (state.get(w.convId)?.level || 0))
+    .sort((a, b) => b.waitSec - a.waitSec);
+  const toAlert = candidates.slice(0, MAX_PER_TICK);
+  const overflow = candidates.length - toAlert.length;
 
+  for (const w of toAlert) {
+    const lv = levelFor(w.waitSec);
+    const prev = state.get(w.convId);
     const now = new Date();
     const { taggees, shift, offHours, onBreak } = getTaggees(now);
     const L = LEVELS[lv - 1];
@@ -166,6 +187,11 @@ async function tick(page) {
       console.error("send fail", e?.message);
     }
     state.set(w.convId, { level: lv, shiftNames: shift.map((s) => s.name).join(","), firstTs: prev?.firstTs || Date.now() });
+  }
+
+  // ถ้ารอบนี้มีค้างเกินโควตา → บอกสรุปว่าเหลืออีกกี่แชท (ทยอยเตือนรอบถัดไป)
+  if (overflow > 0) {
+    await tg("sendMessage", { chat_id: ALERT_CHAT, text: `…และมีแชทค้างรออีก ${overflow} รายการ เดี๋ยววานทยอยแจ้งให้นะคะ` }).catch(() => {});
   }
 
   // แชทที่หายไป (แอดมินรับแล้ว/จบแล้ว) → เคลียร์สถานะ
