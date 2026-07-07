@@ -54,13 +54,17 @@ console.log("found:", rooms.map((r) => r.customer + " " + r.waitSec + "s"));
 const { taggees } = getTaggees(new Date());
 
 for (const w of rooms) {
-  // แคปเฉพาะช่องแชทนั้น
+  // แคปเฉพาะช่องแชทนั้น — เลื่อน recycle-scroller จนแถวอยู่ในจอ แล้ว clip จาก full page
   const rect = await page.evaluate(async (id) => {
-    const el = document.querySelector("#room_item_" + id); if (!el) return null;
-    el.scrollIntoView({ block: "center" }); await new Promise((r) => setTimeout(r, 250));
-    const r = el.getBoundingClientRect(); return { x: Math.max(0, r.x), y: Math.max(0, r.y), width: r.width, height: r.height };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const scroller = document.querySelector(".vue-recycle-scroller");
+    const findWrap = () => { const el = document.querySelector("#room_item_" + id); return el ? el.querySelector(".contact-wrapper") || el : null; };
+    const okRect = (wr) => { const r = wr.getBoundingClientRect(); return r.height > 10 && r.y > 160 && r.y + r.height < 920 ? { x: Math.max(0, Math.round(r.x) - 6), y: Math.round(r.y) - 6, width: Math.round(r.width) + 12, height: Math.round(r.height) + 12 } : null; };
+    let wr = findWrap(); if (wr) { const g = okRect(wr); if (g) return g; }
+    if (scroller) { for (let y = 0; y <= scroller.scrollHeight; y += 70) { scroller.scrollTop = y; await sleep(70); wr = findWrap(); if (wr) { const g = okRect(wr); if (g) return g; } } }
+    return null;
   }, w.convId);
-  const photo = rect && rect.width > 10 ? await page.screenshot({ clip: rect }).catch(() => null) : null;
+  const photo = rect ? await page.screenshot({ clip: rect }).catch(() => null) : null;
   const link = `${URL}?room=${w.convId}`;
   const caption =
     `🔴 <b>ด่วนมาก! แชทค้าง ยังไม่มีคนตอบ</b>\n` +

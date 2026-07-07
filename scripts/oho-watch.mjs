@@ -116,21 +116,23 @@ async function scanWaiting(page) {
   });
 }
 
-// แคปเฉพาะช่องแชทนั้น (เลื่อนให้ render ก่อน แล้ว clip)
+// แคปเฉพาะช่องแชทนั้น — recycle-scroller ใช้ transform → ต้องเลื่อนทีละน้อยจนแถวอยู่ในจอจริง แล้ว clip จาก full page
 async function shotRoom(page, convId) {
   const rect = await page.evaluate(async (id) => {
-    const sel = "#room_item_" + id;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const scroller = document.querySelector(".vue-recycle-scroller");
-    const find = () => document.querySelector(sel);
-    if (!find() && scroller) {
-      for (let y = 0; y <= scroller.scrollHeight + 400; y += 300) { scroller.scrollTop = y; await new Promise((r) => setTimeout(r, 100)); if (find()) break; }
+    const findWrap = () => { const el = document.querySelector("#room_item_" + id); return el ? el.querySelector(".contact-wrapper") || el : null; };
+    const okRect = (w) => { const r = w.getBoundingClientRect(); return r.height > 10 && r.y > 160 && r.y + r.height < 920 ? { x: Math.max(0, Math.round(r.x) - 6), y: Math.round(r.y) - 6, width: Math.round(r.width) + 12, height: Math.round(r.height) + 12 } : null; };
+    let w = findWrap(); if (w) { const g = okRect(w); if (g) return g; }
+    if (scroller) {
+      for (let y = 0; y <= scroller.scrollHeight; y += 70) {
+        scroller.scrollTop = y; await sleep(70);
+        w = findWrap(); if (w) { const g = okRect(w); if (g) return g; }
+      }
     }
-    const el = find(); if (!el) return null;
-    el.scrollIntoView({ block: "center" }); await new Promise((r) => setTimeout(r, 200));
-    const r = el.getBoundingClientRect();
-    return { x: Math.max(0, r.x), y: Math.max(0, r.y), width: r.width, height: r.height };
+    return null;
   }, convId);
-  if (!rect || rect.width < 10) return null;
+  if (!rect) return null;
   return page.screenshot({ clip: rect }).catch(() => null);
 }
 
