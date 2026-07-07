@@ -48,8 +48,25 @@ export async function POST(req: Request) {
   const owner = await getAllowedChatId();
   const ownerHere = await isOwner(fromId);
 
-  // เจ้าของอยู่ในกลุ่มไหน = ผูกกลุ่มนั้นอัตโนมัติ (สมาชิกที่อนุญาตจะใช้ได้ทันที)
-  if (isGroup && ownerHere) await addAllowedGroup(chatId);
+  // ผูกกลุ่มด้วยการ "แนะนำตัว": เจ้าของดึงวานเข้ากลุ่มแล้วสั่งให้แนะนำตัว = ผูกกลุ่มนั้น
+  if (isGroup && ownerHere && /แนะนำตัว|introduce/i.test(text)) {
+    await addAllowedGroup(chatId);
+    return NextResponse.json({
+      sends: [
+        {
+          kind: "text",
+          text: `สวัสดีค่ะทุกคน น้องวานเองค่ะ เป็นผู้ช่วย AI ของพี่โด้ 🙌
+
+ในกลุ่มนี้วานช่วยได้เลยนะคะ เช่น
+- ตรวจเอกสาร Affiliate อัตโนมัติ (แอดมินแนบ PDF + รายละเอียด วานตรวจเทียบชีต/ระบบให้)
+- สรุปสถานะทุน/OKR, ทำสไลด์, ออกเอกสารคืนเงิน
+- ถามข้อมูลอะไรก็พิมพ์ "น้องวาน ..." ได้เลยค่ะ
+
+ฝากตัวด้วยนะคะ 😊`,
+        },
+      ] as Send[],
+    });
+  }
 
   // ===== คำสั่งของเจ้าของ: อนุญาต/ยกเลิก/จดจำ ทีมงาน (ตอบกลับข้อความของคนนั้น) =====
   if (ownerHere && replyTo?.id) {

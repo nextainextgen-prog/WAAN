@@ -13,7 +13,8 @@
     "drive:watch": "node scripts/drive-watch.mjs",
     "reminders": "node scripts/send-reminders.mjs",
     "db:push": "prisma db push",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "thunder:auth": "node scripts/thunder-auth.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
@@ -36,6 +37,7 @@
     "react-dom": "19.2.4",
     "recharts": "^3.9.2",
     "tailwind-merge": "^3.6.0",
+    "xlsx": "^0.18.5",
     "xlsx-republish": "^0.20.3"
   },
   "devDependencies": {

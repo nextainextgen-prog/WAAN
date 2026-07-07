@@ -28,12 +28,21 @@ async function tg(method, body) {
 }
 
 const MEMO_INTENT = /คืนเงิน|หัก\s*ณ\s*ที่จ่าย|ออกเอกสาร|ส่วนต่าง|ส่วนเกิน/;
+// เอกสาร Affiliate ของแอดมิน (ตรวจอัตโนมัติ): มี PDF แนบ + ข้อความสรุปแพตเทิร์นเดิม
+const AFF_INTENT = /ยูสเซอร์|ยูเซอร์|user\s*name|username/i;
+const AFF_INTENT2 = /จำนวนเงินที่ถอน|จำนวนเงินที่ถูกหัก|เลขผู้เสียภาษี|เลขประจำตัวผู้เสียภาษี/;
+function isAffDoc(text, files) {
+  const hasPdf = (files || []).some((f) => /\.pdf$/i.test(f.file_name || ""));
+  return hasPdf && AFF_INTENT.test(text) && AFF_INTENT2.test(text);
+}
 const groups = {};          // media_group_id -> {msgs, timer, chatId}
 const recentFiles = {};     // chatId -> [{file_id,file_name,ts}]
 const recentTexts = {};     // chatId -> [{text,ts}] เก็บข้อความ/แคปชัน (รวมที่ forward มา) ข้าม batch
 const armedUntil = {};      // chatId -> timestamp (ถูกเรียกแล้ว รอข้อความ/forward ถัดไป)
 const memoPending = {};     // chatId -> timestamp (สั่งออกเอกสารแล้วแต่ยังรอไฟล์/เนื้อหา forward ตามมา)
+const editingMemo = {};     // chatId -> {id, until} (กด "แก้ไข" แล้ว รอคำสั่งแก้เอกสารตัวนี้)
 const BUFFER_TTL = 180000;  // 3 นาที
+const EDIT_TTL = 300000;    // 5 นาที (รอคำสั่งแก้เอกสารหลังกดปุ่ม "แก้ไข")
 
 function extractFile(msg) {
   if (msg.document) return { file_id: msg.document.file_id, file_name: msg.document.file_name || `file_${msg.document.file_id}.bin` };
@@ -84,8 +93,15 @@ async function doMemo(chatId, text, files, from, isGroup) {
   if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
   if (!data.ok) { await status.finishText("ออกเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
   await status.finishDone("✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ");
-  await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
+  await sendMemoDraft(chatId, data);
+  } finally {
+    memoInFlight.delete(String(chatId));
+  }
+}
 
+// ส่งไฟล์ร่างเอกสาร + ปุ่ม เซ็นเลย/แก้ไข (ใช้ทั้งตอนออกใหม่และตอนแก้ไข)
+async function sendMemoDraft(chatId, data) {
+  await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
   const pdfRes = await fetch(APP_URL + `/api/memo/${data.id}/pdf`, { headers: { "x-internal-token": INTERNAL } });
   const pdf = Buffer.from(await pdfRes.arrayBuffer());
   const warn = data.valid ? "" : "\n\n⚠️ ขอเช็คนิดนึงค่ะ: " + (data.warnings || []).join("; ");
@@ -94,11 +110,69 @@ async function doMemo(chatId, text, files, from, isGroup) {
   form.append("chat_id", String(chatId));
   form.append("caption", caption);
   form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${data.id}` }, { text: "แก้ไข", callback_data: `memo:revise:${data.id}` }]] }));
-  form.append("document", new Blob([new Uint8Array(pdf)]), "เอกสารคืนเงิน_ดราฟ.pdf");
+  form.append("document", new Blob([new Uint8Array(pdf)]), data.filename || "บันทึกขอคืนเงินหัก ณ ที่จ่าย (ร่าง).pdf");
   await fetch(API("sendDocument"), { method: "POST", body: form });
+}
+
+// กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ (id เดิม)
+async function doRevise(chatId, id, instruction, from, isGroup) {
+  if (memoInFlight.has(String(chatId))) return;
+  memoInFlight.add(String(chatId));
+  try {
+    const status = await startStatus(chatId, [
+      "📝 รับเรื่องแก้เอกสารแล้วค่ะ เดี๋ยวปรับให้เลยนะคะ",
+      "🔍 กำลังอ่านคำสั่งแก้ไข...",
+      "🖼️ กำลังอ่านไฟล์แนบเดิม/วิเคราะห์...",
+      "🧮 กำลังตรวจตัวเลขและจัดรูปใหม่...",
+      "⏳ ใกล้เสร็จแล้วค่ะ...",
+    ]);
+    let data;
+    try {
+      const r = await fetch(APP_URL + "/api/memo/revise", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ id, instruction, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
+      });
+      data = await r.json();
+    } catch { await status.finishText("ขออภัยค่ะ ระบบหลังบ้านยังไม่พร้อม ลองใหม่อีกครั้งนะคะ"); return; }
+    if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+    if (!data.ok) { await status.finishText("แก้เอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
+    await status.finishDone("✅ ปรับเอกสารให้แล้วค่ะ ส่งให้ตรวจอีกครั้งนะคะ");
+    await sendMemoDraft(chatId, data);
   } finally {
     memoInFlight.delete(String(chatId));
   }
+}
+
+// ตรวจเอกสาร Affiliate อัตโนมัติ: อ่าน PDF + เทียบชีต + ตรวจยอด → รายงาน + ภาพยืนยัน
+async function doAffCheck(chatId, text, files, from, isGroup) {
+  if (memoInFlight.has(String(chatId))) return; // กันชนกับงานออกเอกสาร
+  const status = await startStatus(chatId, [
+    "📥 รับเรื่องตรวจเอกสาร Affiliate แล้วค่ะ เดี๋ยววานตรวจให้เลยนะคะ 🔎",
+    "📎 กำลังอ่านเอกสารที่แนบ...",
+    "🗂️ กำลังเทียบกับชีตลูกค้า AFF...",
+    "🧮 กำลังตรวจยอดเงินและความถูกต้อง...",
+    "🖼️ กำลังทำภาพยืนยัน...",
+    "⏳ ใกล้เสร็จแล้วค่ะ...",
+  ]);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-aff-"));
+  const saved = [];
+  for (const f of files) {
+    if (!/\.pdf$/i.test(f.file_name || "")) continue;
+    try { const s = await downloadFile(f.file_id, dir, f.file_name); if (s) saved.push(s); } catch { /* skip */ }
+  }
+  if (saved.length === 0) { await status.finishText("ขอไฟล์เอกสาร PDF ที่จะให้ตรวจด้วยนะคะ"); return; }
+  let data;
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/aff-check", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ chatId: String(chatId), fromId: String(from?.id || ""), isGroup: !!isGroup, rawText: text, files: saved }),
+    });
+    data = await r.json();
+  } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+  if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+  if (!data.ok) { await status.finishText("ตรวจเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
+  await status.finishDone("✅ ตรวจเอกสารเสร็จแล้วค่ะ สรุปให้เลยนะคะ");
+  await sendResultSends(chatId, data.sends || []);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -240,6 +314,15 @@ async function processBatch(chatId, msgs) {
   recentTexts[chatId] = (recentTexts[chatId] || []).filter((t) => now - t.ts < BUFFER_TTL);
   if (text) recentTexts[chatId].push({ text, ts: now });
 
+  // ตรวจเอกสาร Affiliate อัตโนมัติ — แอดมินแนบ PDF + ข้อความแพตเทิร์นเดิม → ตรวจให้เลย ไม่ต้องแท็กเรียก
+  // (backend ตรวจสิทธิ์: กลุ่มที่ผูกแล้ว หรือแชทเจ้าของ)
+  if (isAffDoc(text, files)) {
+    recentFiles[chatId] = [];
+    recentTexts[chatId] = [];
+    await doAffCheck(chatId, text, files, from, isGroup);
+    return;
+  }
+
   // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก หรือ "เปิดหูรอ" อยู่ (หลังถูกแท็ก รอข้อความ/forward ถัดไป)
   if (isGroup) {
     const repliedToBot = msgs.some((m) => m.reply_to_message?.from?.id === BOT_ID);
@@ -250,8 +333,9 @@ async function processBatch(chatId, msgs) {
     const armed = armedUntil[chatId] && now < armedUntil[chatId];
     const memoWaiting = memoPending[chatId] && now < memoPending[chatId];
     const haveFiles = (recentFiles[chatId] || []).length > 0;
-    // ถ้ากำลังรอออกเอกสารอยู่ และ batch นี้พาไฟล์ (เช่น forward รูป/PDF ตามมา) → รับไว้แม้ไม่ถูกแท็ก
-    if (!triggered && !armed && !(memoWaiting && haveFiles)) return; // ไม่ได้ถูกเรียก/เปิดหูรอ — เงียบ
+    const editingNow = editingMemo[chatId] && now < editingMemo[chatId].until;
+    // ถ้ากำลังรอออกเอกสาร/รอคำสั่งแก้เอกสารอยู่ → รับไว้แม้ไม่ถูกแท็ก (เช่น forward/พิมพ์ต่อ)
+    if (!triggered && !armed && !(memoWaiting && haveFiles) && !editingNow) return; // ไม่ได้ถูกเรียก/เปิดหูรอ — เงียบ
     if (triggered) {
       text = text
         .replace(/น้องวาน/g, "")
@@ -270,6 +354,16 @@ async function processBatch(chatId, msgs) {
       return;
     }
     if (!text) text = "สวัสดี";
+  }
+
+  // โหมดแก้เอกสาร: กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ตัวเดิม (ไม่หลุดไปแชททั่วไป)
+  const editing = editingMemo[chatId] && now < editingMemo[chatId].until;
+  const isSlideish = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
+  if (editing && text && !MEMO_INTENT.test(text) && !isSlideish) {
+    const memoId = editingMemo[chatId].id;
+    delete editingMemo[chatId];
+    await doRevise(chatId, memoId, text, from, isGroup);
+    return;
   }
 
   // ออกเอกสารจากไฟล์แนบ — ทำได้ทั้งแชทส่วนตัวและกลุ่ม (ตรวจสิทธิ์ที่ backend)
@@ -319,6 +413,13 @@ async function handleMessage(msg) {
 async function handleCallback(cb) {
   const chatId = cb.message?.chat?.id;
   if (!chatId) return;
+  // กด "แก้ไข" → จำว่ากำลังแก้เอกสารตัวไหน + เปิดหูรอคำสั่งถัดไป (แม้ไม่แท็กชื่อ)
+  const rev = String(cb.data || "").match(/^memo:revise:(.+)$/);
+  if (rev) {
+    const now = Date.now();
+    editingMemo[chatId] = { id: rev[1], until: now + EDIT_TTL };
+    armedUntil[chatId] = now + EDIT_TTL;
+  }
   let out;
   try {
     const res = await fetch(APP_URL + "/api/telegram/callback", {
