@@ -48,9 +48,14 @@ async function downloadFile(file_id, destDir, filename) {
   return { path: p, filename: safe };
 }
 
+const memoInFlight = new Set();
+
 async function doMemo(chatId, text, files, from, isGroup) {
+  if (memoInFlight.has(String(chatId))) return; // กันออกเอกสารซ้ำ
+  memoInFlight.add(String(chatId));
+  try {
   const status = await startStatus(chatId, [
-    "รับเรื่องแล้วค่ะ ⚡ กำลังออกเอกสารคืนเงินให้...",
+    "📥 โอเคค่ะ รับเรื่องออกเอกสารคืนเงินแล้ว เดี๋ยวจัดให้เลยนะคะ 🚀",
     "📎 กำลังอ่านไฟล์แนบ...",
     "🔍 กำลังดึงข้อมูลจากข้อความ...",
     "🧮 กำลังตรวจความถูกต้องของตัวเลข...",
@@ -79,18 +84,26 @@ async function doMemo(chatId, text, files, from, isGroup) {
 
   const pdfRes = await fetch(APP_URL + `/api/memo/${data.id}/pdf`, { headers: { "x-internal-token": INTERNAL } });
   const pdf = Buffer.from(await pdfRes.arrayBuffer());
-  const warn = data.valid ? "" : "\n\nขอเช็คนิดนึงค่ะ: " + (data.warnings || []).join("; ");
-  const caption = `ออกร่างเอกสารคืนเงินให้แล้วค่ะ (ยังไม่เซ็น)\n\nลูกค้า: ${data.serviceName || "-"}\nยอดคืนรวม: ${data.refund} บาท (หัก ณ ที่จ่าย ${data.whtAmount} + ส่วนเกิน ${data.overpay})\nแนบ ${data.attachCount} หน้า${warn}\n\nลองเปิดดูก่อนได้เลยค่ะ ถ้าโอเคกด "เซ็นเลย" เดี๋ยววานเติมลายเซ็นให้ ถ้าอยากปรับตรงไหนกด "แก้ไข" ได้ค่ะ`;
+  const warn = data.valid ? "" : "\n\n⚠️ ขอเช็คนิดนึงค่ะ: " + (data.warnings || []).join("; ");
+  const caption = `📥 ออกร่างเอกสารคืนเงินให้แล้วนะคะ (ยังไม่เซ็น)\n\n👤 ลูกค้า: ${data.serviceName || "-"}\n📊 ยอดคืนรวม: ${data.refund} บาท (หัก ณ ที่จ่าย ${data.whtAmount} + ส่วนเกิน ${data.overpay})\n🖼️ แนบครบ ${data.attachCount} หน้า${warn}\n\n✅ ถ้าโอเคกด "เซ็นเลย" เดี๋ยววานเติมลายเซ็นให้\n🚧 ถ้าอยากปรับตรงไหนกด "แก้ไข" ได้เลยค่ะ`;
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("caption", caption);
   form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${data.id}` }, { text: "แก้ไข", callback_data: `memo:revise:${data.id}` }]] }));
   form.append("document", new Blob([new Uint8Array(pdf)]), "เอกสารคืนเงิน_ดราฟ.pdf");
   await fetch(API("sendDocument"), { method: "POST", body: form });
+  } finally {
+    memoInFlight.delete(String(chatId));
+  }
 }
 
-// ===== สถานะสด: ตอบรับทันที + อัปเดตว่ายังทำอยู่ (แก้ข้อความเดิม ไม่สแปม) =====
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ===== สถานะสด: วิเคราะห์แป๊บ (พิมพ์อยู่ 2-3 วิ) → ตอบรับ → อัปเดตว่ายังทำอยู่ =====
 async function startStatus(chatId, steps) {
+  // ทำเหมือนกำลังอ่าน/คิดก่อน 2-3 วิ แล้วค่อยตอบรับ (ไม่รีบตอบทันที)
+  await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+  await sleep(2200 + Math.floor(Math.random() * 800));
   const m = await tg("sendMessage", { chat_id: chatId, text: steps[0] });
   const msgId = m.result?.message_id;
   const t0 = Date.now();
@@ -129,8 +142,8 @@ async function sendResultSends(chatId, sends) {
 async function chatIngest(chatId, text, from, isGroup, replyTo) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
   const steps = isSlide
-    ? ["รับเรื่องแล้วค่ะ ⚡ กำลังทำสไลด์ให้...", "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🎨 กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ..."]
-    : ["รับเรื่องแล้วค่ะ ⚡ รับทราบ เดี๋ยวหาให้นะคะ", "🔎 กำลังค้นข้อมูลจากระบบ...", "⚙️ กำลังประมวลผล...", "📝 กำลังเรียบเรียงคำตอบ...", "⏳ ใกล้เสร็จแล้วค่ะ..."];
+    ? ["📥 โอเคค่ะ รับเรื่องทำสไลด์แล้ว เดี๋ยวจัดให้เลยนะคะ 🚀", "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ..."]
+    : ["📥 โอเคค่ะ รับทราบ เดี๋ยวหาให้นะคะ 🔎", "🔎 กำลังค้นข้อมูลจากระบบ...", "⚙️ กำลังประมวลผล...", "📝 กำลังเรียบเรียงคำตอบ...", "⏳ ใกล้เสร็จแล้วค่ะ..."];
   const status = await startStatus(chatId, steps);
   let data;
   try {

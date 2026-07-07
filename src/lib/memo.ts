@@ -117,7 +117,7 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   .brow{display:flex;min-height:216mm}
   .bleft{flex:0 0 63%;border-right:1.2px solid ${C.line};padding:14px 16px;display:flex;flex-direction:column}
   .bright{flex:1;padding:16px 12px;text-align:center}
-  .bleft p{margin-bottom:11px;text-align:left}
+  .bleft p{margin-bottom:11px;text-align:justify;text-indent:1.4em;line-height:1.6}
   .bank{margin:8px 0 4px;line-height:1.7}
   .center{text-align:center}
   .sigblock{text-align:center;margin-top:14px}
