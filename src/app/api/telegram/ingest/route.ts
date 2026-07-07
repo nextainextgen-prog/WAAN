@@ -7,6 +7,7 @@ import { saveChat } from "@/lib/secretary";
 import { generateDeck } from "@/lib/deck-generate";
 import { saveDeckFiles } from "@/lib/slide-store";
 import { pageForQuestion, captureAppPage } from "@/lib/screenshot";
+import { extractUrls, fetchUrlContent, saveLinkToBrain } from "@/lib/weblink";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -161,10 +162,33 @@ export async function POST(req: Request) {
   // แชทปกติ → สมอง AI
   await saveChat("user", text);
   try {
+    const ctxParts: string[] = [];
     // ถ้าผู้ใช้ reply ข้อความก่อนหน้า → แนบเป็นบริบทให้ตอบตรงเรื่องที่อ้างถึง
-    const extraContext = replyText
-      ? `ผู้ใช้กำลังตอบกลับ (reply) ข้อความนี้ ให้ตอบโดยอ้างอิงเนื้อหานี้เป็นหลัก อย่าเปลี่ยนไปเรื่องอื่น:\n"""\n${replyText.slice(0, 2000)}\n"""`
-      : undefined;
+    if (replyText) {
+      ctxParts.push(
+        `ผู้ใช้กำลังตอบกลับ (reply) ข้อความนี้ ให้ตอบโดยอ้างอิงเนื้อหานี้เป็นหลัก อย่าเปลี่ยนไปเรื่องอื่น:\n"""\n${replyText.slice(0, 2000)}\n"""`,
+      );
+    }
+    // ถ้ามีลิงก์ในข้อความ/ข้อความที่ reply → เปิดอ่านเนื้อหาจริง + เก็บลงสมอง (ถ้าสั่งบันทึก)
+    const urls = [...extractUrls(text), ...extractUrls(replyText)].slice(0, 3);
+    if (urls.length) {
+      const saveIntent = /บันทึก|เก็บ|จำ|save|เซฟ|จดไว้|เก็บไว้|ลงสมอง|ลงความจำ/i.test(text);
+      const dateStr = new Date().toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" });
+      const fetched: string[] = [];
+      for (const u of urls) {
+        try {
+          const c = await fetchUrlContent(u);
+          if (saveIntent) await saveLinkToBrain(c, dateStr, text.slice(0, 200));
+          fetched.push(`### ${c.title} (${c.url})\n${c.text.slice(0, 8000)}`);
+        } catch (err) {
+          fetched.push(`### ${u}\n(เปิดลิงก์ไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)})`);
+        }
+      }
+      ctxParts.push(
+        `${saveIntent ? "ผู้ใช้ให้บันทึกลิงก์นี้ลงความจำ (วานอ่านและบันทึกลงสมองแล้ว) ให้ยืนยันสั้นๆ แล้วสรุปประเด็นสำคัญจากเนื้อหาให้ด้วย" : "เนื้อหาจากลิงก์ที่ผู้ใช้ส่ง (วานเปิดอ่านจริงแล้ว ใช้ตอบ/สรุปได้เลย)"}:\n${fetched.join("\n\n")}`,
+      );
+    }
+    const extraContext = ctxParts.length ? ctxParts.join("\n\n") : undefined;
     const { reply } = await askBrain(text, { extraContext });
     await saveChat("assistant", reply);
     const sends: Send[] = [{ kind: "text", text: reply }];
