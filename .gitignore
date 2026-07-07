@@ -52,3 +52,6 @@ next-env.d.ts
 # Google Drive OAuth secrets
 credentials.json
 .drive-token.json
+
+# runtime logs
+.run-logs/

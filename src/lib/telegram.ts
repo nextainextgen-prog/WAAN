@@ -92,6 +92,22 @@ export async function tgSendDocument(
   return res.json();
 }
 
+export async function tgSendPhoto(
+  chatId: string | number,
+  buffer: Buffer,
+  caption?: string,
+  filename = "screenshot.png",
+) {
+  const token = getBotToken();
+  if (!token) throw new Error("ยังไม่ได้ตั้งค่า TELEGRAM_BOT_TOKEN");
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) form.append("caption", caption);
+  form.append("photo", new Blob([new Uint8Array(buffer)]), filename);
+  const res = await fetch(API(token, "sendPhoto"), { method: "POST", body: form });
+  return res.json();
+}
+
 export async function tgAnswerCallback(callbackId: string, text?: string) {
   const token = getBotToken();
   if (!token) return;

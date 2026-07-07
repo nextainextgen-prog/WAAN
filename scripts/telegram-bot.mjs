@@ -30,7 +30,10 @@ async function tg(method, body) {
 const MEMO_INTENT = /คืนเงิน|หัก\s*ณ\s*ที่จ่าย|ออกเอกสาร|ส่วนต่าง|ส่วนเกิน/;
 const groups = {};          // media_group_id -> {msgs, timer, chatId}
 const recentFiles = {};     // chatId -> [{file_id,file_name,ts}]
+const recentTexts = {};     // chatId -> [{text,ts}] เก็บข้อความ/แคปชัน (รวมที่ forward มา) ข้าม batch
 const armedUntil = {};      // chatId -> timestamp (ถูกเรียกแล้ว รอข้อความ/forward ถัดไป)
+const memoPending = {};     // chatId -> timestamp (สั่งออกเอกสารแล้วแต่ยังรอไฟล์/เนื้อหา forward ตามมา)
+const BUFFER_TTL = 180000;  // 3 นาที
 
 function extractFile(msg) {
   if (msg.document) return { file_id: msg.document.file_id, file_name: msg.document.file_name || `file_${msg.document.file_id}.bin` };
@@ -137,6 +140,16 @@ async function sendResultSends(chatId, sends) {
       form.append("document", new Blob([new Uint8Array(buf)]), s.filename || "file");
       await fetch(API("sendDocument"), { method: "POST", body: form });
     }
+    else if (s.kind === "photo") {
+      await tg("sendChatAction", { chat_id: chatId, action: "upload_photo" });
+      const buf = s.dataBase64 ? Buffer.from(s.dataBase64, "base64")
+        : Buffer.from(await (await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } })).arrayBuffer());
+      const form = new FormData();
+      form.append("chat_id", String(chatId));
+      if (s.caption) form.append("caption", s.caption);
+      form.append("photo", new Blob([new Uint8Array(buf)]), s.filename || "screenshot.png");
+      await fetch(API("sendPhoto"), { method: "POST", body: form });
+    }
   }
 }
 
@@ -189,12 +202,17 @@ async function chatIngest(chatId, text, from, isGroup, replyTo) {
 
   const sends = data.sends || [];
   const texts = sends.filter((s) => s.kind === "text");
-  const docs = sends.filter((s) => s.kind === "document");
   if (sends.length === 0) { if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {}); return; }
-  // คำตอบข้อความเดี่ยว → ถ้าเคยขึ้น "กำลังหา" ให้แก้ข้อความนั้นเป็นคำตอบเลย ไม่งั้นส่งใหม่
-  if (texts.length === 1 && docs.length === 0) {
+  // คำตอบข้อความเดี่ยว (ไม่มีไฟล์/รูปแนบ) → ถ้าเคยขึ้น "กำลังหา" ให้แก้ข้อความนั้นเป็นคำตอบเลย ไม่งั้นส่งใหม่
+  if (texts.length === 1 && sends.length === 1) {
     if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text }).catch(() => {});
     else await tg("sendMessage", { chat_id: chatId, text: texts[0].text });
+    return;
+  }
+  // มีรูป/ไฟล์แนบด้วย → ถ้ามีข้อความ ให้แก้ soft msg เป็นข้อความแรก แล้วส่งเฉพาะรูป/ไฟล์ที่เหลือ
+  if (softId && texts.length >= 1) {
+    await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text }).catch(() => {});
+    await sendResultSends(chatId, sends.filter((s) => s !== texts[0]));
     return;
   }
   if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
@@ -215,8 +233,12 @@ async function processBatch(chatId, msgs) {
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
   const files = msgs.map(extractFile).filter(Boolean);
   const now = Date.now();
-  recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < 180000);
+  recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < BUFFER_TTL);
   for (const f of files) recentFiles[chatId].push({ ...f, ts: now });
+  // เก็บ "ข้อความ/แคปชัน" ของ batch นี้ไว้ด้วย (ก่อนตัด trigger) เพื่อไม่ให้เนื้อหาที่ forward มาหาย
+  // เมื่อคำสั่งกับเนื้อหา forward มาคนละ batch — เดิมเก็บแต่ไฟล์ ทำให้ rawText ตอนออกเอกสารว่าง
+  recentTexts[chatId] = (recentTexts[chatId] || []).filter((t) => now - t.ts < BUFFER_TTL);
+  if (text) recentTexts[chatId].push({ text, ts: now });
 
   // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก หรือ "เปิดหูรอ" อยู่ (หลังถูกแท็ก รอข้อความ/forward ถัดไป)
   if (isGroup) {
@@ -226,7 +248,10 @@ async function processBatch(chatId, msgs) {
     const namePrefix = /^\s*วาน[\s,:ๆจ]/i.test(text);
     const triggered = repliedToBot || mentioned || calledByName || namePrefix;
     const armed = armedUntil[chatId] && now < armedUntil[chatId];
-    if (!triggered && !armed) return; // ไม่ได้ถูกเรียกและไม่ได้เปิดหูรอ — เงียบ
+    const memoWaiting = memoPending[chatId] && now < memoPending[chatId];
+    const haveFiles = (recentFiles[chatId] || []).length > 0;
+    // ถ้ากำลังรอออกเอกสารอยู่ และ batch นี้พาไฟล์ (เช่น forward รูป/PDF ตามมา) → รับไว้แม้ไม่ถูกแท็ก
+    if (!triggered && !armed && !(memoWaiting && haveFiles)) return; // ไม่ได้ถูกเรียก/เปิดหูรอ — เงียบ
     if (triggered) {
       text = text
         .replace(/น้องวาน/g, "")
@@ -248,16 +273,32 @@ async function processBatch(chatId, msgs) {
   }
 
   // ออกเอกสารจากไฟล์แนบ — ทำได้ทั้งแชทส่วนตัวและกลุ่ม (ตรวจสิทธิ์ที่ backend)
-  if (text && MEMO_INTENT.test(text)) {
-    const seen = new Set();
-    const all = (recentFiles[chatId] || []).filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
-    // ยังไม่แนบไฟล์ → อย่าเพิ่งออกเอกสารเปล่า ให้น้องวานถามขอไฟล์/รายละเอียดก่อน
+  const memoWaiting = memoPending[chatId] && now < memoPending[chatId];
+  const memoIntent = !!(text && MEMO_INTENT.test(text));
+  const seen = new Set();
+  const all = (recentFiles[chatId] || []).filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
+  // สั่งออกเอกสาร (มี intent) หรือกำลังรอออกเอกสารอยู่แล้วไฟล์เพิ่งมาถึง
+  if (memoIntent || (memoWaiting && all.length > 0)) {
+    // ยังไม่แนบไฟล์ → อย่าเพิ่งออกเอกสารเปล่า เปิดหูรอไฟล์/เนื้อหา forward แล้วถามขอก่อน
     if (all.length === 0) {
+      memoPending[chatId] = now + BUFFER_TTL;
+      armedUntil[chatId] = now + BUFFER_TTL;
       await chatIngest(chatId, text, from, isGroup, replyTo);
       return;
     }
+    // มีไฟล์แล้ว → รวมข้อความที่ buffer ไว้ทั้งหมด (คำสั่ง + เนื้อหาที่ forward มา) เป็น rawText
+    // กันเคสคำสั่งกับรายละเอียดมาคนละข้อความ (เดิมส่งแต่ text ของ batch ล่าสุด → ข้อมูลว่าง)
+    const seenT = new Set();
+    const memoText =
+      (recentTexts[chatId] || [])
+        .map((t) => t.text)
+        .filter((t) => t && !seenT.has(t) && seenT.add(t))
+        .join("\n\n")
+        .trim() || text;
     recentFiles[chatId] = [];
-    await doMemo(chatId, text, all, from, isGroup);
+    recentTexts[chatId] = [];
+    delete memoPending[chatId];
+    await doMemo(chatId, memoText, all, from, isGroup);
     return;
   }
   if (text) { await chatIngest(chatId, text, from, isGroup, replyTo); return; }

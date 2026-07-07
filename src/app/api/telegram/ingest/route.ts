@@ -6,16 +6,18 @@ import { askBrain } from "@/lib/brain";
 import { saveChat } from "@/lib/secretary";
 import { generateDeck } from "@/lib/deck-generate";
 import { saveDeckFiles } from "@/lib/slide-store";
+import { pageForQuestion, captureAppPage } from "@/lib/screenshot";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
 
 interface Send {
-  kind: "text" | "document";
+  kind: "text" | "document" | "photo";
   text?: string;
   url?: string;
   filename?: string;
   caption?: string;
+  dataBase64?: string;
 }
 
 const WELCOME = `สวัสดีค่ะพี่โด้ น้องวานเองค่ะ
@@ -126,7 +128,19 @@ export async function POST(req: Request) {
   try {
     const { reply } = await askBrain(text);
     await saveChat("assistant", reply);
-    return NextResponse.json({ sends: [{ kind: "text", text: reply }] as Send[] });
+    const sends: Send[] = [{ kind: "text", text: reply }];
+    // ถ้าคำถามเกี่ยวกับหน้าเว็บ → แนบภาพแคปหน้าจอจริงมาด้วย (แคปพลาดก็ส่งแค่ข้อความ)
+    const pick = pageForQuestion(text);
+    if (pick) {
+      try {
+        const origin = new URL(req.url).origin;
+        const png = await captureAppPage(origin, pick.path, { fullPage: pick.fullPage });
+        sends.push({ kind: "photo", dataBase64: png.toString("base64"), caption: `${pick.label}ในระบบค่ะ` });
+      } catch (err) {
+        console.error("[ingest] screenshot failed:", err);
+      }
+    }
+    return NextResponse.json({ sends });
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ sends: [{ kind: "text", text: `ขออภัย เชื่อมต่อสมอง AI ไม่ได้ (${detail})` }] as Send[] });
