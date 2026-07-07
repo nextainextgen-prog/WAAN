@@ -267,7 +267,7 @@ async function startStatus(chatId, steps) {
 
 async function sendResultSends(chatId, sends) {
   for (const s of sends || []) {
-    if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text });
+    if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text, ...(s.parseMode ? { parse_mode: s.parseMode } : {}) });
     else if (s.kind === "document") {
       await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
       const r = await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } });
@@ -291,15 +291,33 @@ async function sendResultSends(chatId, sends) {
   }
 }
 
-async function postIngest(chatId, text, from, isGroup, replyTo, replyText) {
+async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions) {
   const res = await fetch(APP_URL + "/api/telegram/ingest", {
     method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null, replyText: replyText || "" }),
+    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [] }),
   });
   return res.json();
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText) {
+// ดึง mention/แท็กจากข้อความ (text_mention มี user.id, mention เป็น @username)
+function extractMentions(msgs) {
+  const out = [];
+  for (const m of msgs) {
+    const t = m.text || m.caption || "";
+    const ents = m.entities || m.caption_entities || [];
+    for (const e of ents) {
+      if (e.type === "text_mention" && e.user) {
+        out.push({ id: String(e.user.id), name: [e.user.first_name, e.user.last_name].filter(Boolean).join(" ") || e.user.username || "สมาชิก", username: e.user.username || undefined });
+      } else if (e.type === "mention") {
+        const uname = t.substr(e.offset, e.length).replace(/^@/, "").trim();
+        if (uname && uname.toLowerCase() !== (BOT_USERNAME || "").toLowerCase()) out.push({ id: null, name: uname, username: uname });
+      }
+    }
+  }
+  return out;
+}
+
+async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
@@ -309,7 +327,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
     ]);
     let data;
-    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText); }
+    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions); }
     catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
@@ -329,7 +347,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   }, 7000);
 
   let data;
-  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText); }
+  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions); }
   catch {
     clearInterval(typingTimer); clearTimeout(softTimer);
     const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
@@ -344,8 +362,9 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   if (sends.length === 0) { if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {}); return; }
   // คำตอบข้อความเดี่ยว (ไม่มีไฟล์/รูปแนบ) → ถ้าเคยขึ้น "กำลังหา" ให้แก้ข้อความนั้นเป็นคำตอบเลย ไม่งั้นส่งใหม่
   if (texts.length === 1 && sends.length === 1) {
-    if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text }).catch(() => {});
-    else await tg("sendMessage", { chat_id: chatId, text: texts[0].text });
+    const pm = texts[0].parseMode ? { parse_mode: texts[0].parseMode } : {};
+    if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text, ...pm }).catch(() => {});
+    else await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...pm });
     return;
   }
   // มีรูป/ไฟล์แนบด้วย → ถ้ามีข้อความ ให้แก้ soft msg เป็นข้อความแรก แล้วส่งเฉพาะรูป/ไฟล์ที่เหลือ
@@ -370,6 +389,7 @@ async function processBatch(chatId, msgs) {
   const replyMsg = msgs.find((m) => m.reply_to_message)?.reply_to_message;
   const replyTo = replyMsg ? personOf(replyMsg.from) : null;
   const replyText = replyMsg ? (replyMsg.text || replyMsg.caption || "") : "";
+  const mentions = extractMentions(msgs);
   const triggerMsgId = msgs[msgs.length - 1]?.message_id;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
   const files = msgs.map(extractFile).filter(Boolean);
@@ -482,7 +502,7 @@ async function processBatch(chatId, msgs) {
     if (all.length === 0) {
       memoPending[chatId] = now + BUFFER_TTL;
       armedUntil[chatId] = now + BUFFER_TTL;
-      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText);
+      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions);
       return;
     }
     // มีไฟล์แล้ว → รวมข้อความที่ buffer ไว้ทั้งหมด (คำสั่ง + เนื้อหาที่ forward มา) เป็น rawText
@@ -500,7 +520,7 @@ async function processBatch(chatId, msgs) {
     await doMemo(chatId, memoText, all, from, isGroup, triggerMsgId);
     return;
   }
-  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText); return; }
+  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions); return; }
 }
 
 async function handleMessage(msg) {
@@ -535,7 +555,7 @@ async function handleCallback(cb) {
   } catch { out = { answer: "ระบบหลังบ้านไม่พร้อม", sends: [] }; }
   await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.answer || "" });
   for (const s of out.sends || []) {
-    if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text });
+    if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text, ...(s.parseMode ? { parse_mode: s.parseMode } : {}) });
     else if (s.kind === "document") {
       await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
       const r = await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } });

@@ -18,6 +18,11 @@ interface Send {
   filename?: string;
   caption?: string;
   dataBase64?: string;
+  parseMode?: "HTML" | "Markdown";
+}
+
+function escHtml(s: string): string {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 }
 
 const WELCOME = `สวัสดีค่ะพี่โด้ น้องวานเองค่ะ
@@ -44,6 +49,7 @@ export async function POST(req: Request) {
   const isGroup = Boolean(body.isGroup);
   const replyTo = body.replyTo as { id?: string; name?: string; username?: string } | undefined;
   const replyText = String(body.replyText || "").trim(); // ข้อความที่ผู้ใช้ reply อ้างถึง (บริบทต่อเนื่อง)
+  const mentions = (body.mentions as { id?: string; name?: string; username?: string }[] | undefined) || [];
   if (!chatId || !text) return NextResponse.json({ sends: [] });
 
   const owner = await getAllowedChatId();
@@ -69,12 +75,19 @@ export async function POST(req: Request) {
     });
   }
 
-  // ===== คำสั่งของเจ้าของ: อนุญาต/ยกเลิก/จดจำ ทีมงาน (ตอบกลับข้อความของคนนั้น) =====
-  if (ownerHere && replyTo?.id) {
-    const person = { id: String(replyTo.id), name: replyTo.name || "สมาชิก", username: replyTo.username };
-    if (/อนุญาต|ให้ตอบ|ให้ใช้|ใช้บอทได้|เพิ่ม.*ทีม|allow/i.test(text)) {
-      await grantMember(person, { notes: text.replace(/อนุญาต|ให้ตอบ(คนนี้)?(ได้)?|ให้ใช้(บอท)?(ได้)?|allow/gi, "").trim() || undefined });
-      return NextResponse.json({ sends: [{ kind: "text", text: `รับทราบค่ะ ให้ ${person.name} ใช้งานน้องวานได้แล้ว จะจำไว้เลยนะคะ` }] as Send[] });
+  // ===== คำสั่งของเจ้าของ: อนุญาต/ยกเลิก/จดจำ ทีมงาน (reply ข้อความของคนนั้น หรือ แท็ก/mention ชื่อคนนั้น) =====
+  const grantTarget = replyTo?.id ? replyTo : mentions.find((m) => m.id);
+  if (ownerHere && grantTarget?.id) {
+    // ดึงชื่อเล่นที่พี่โด้บอก เช่น "ชื่อเติ้ล" / "ชื่อเล่น เติ้ล"
+    const nick = (text.match(/ชื่อเล่น\s*([^\s,]+)/)?.[1] || text.match(/ชื่อ\s*([^\s,]+)/)?.[1] || "").replace(/[.,]+$/, "");
+    const person = { id: String(grantTarget.id), name: nick || grantTarget.name || "สมาชิก", username: grantTarget.username };
+    if (/อนุญาต|ให้ตอบ|ให้ใช้|ใช้บอทได้|เป็นผู้ช่วย|ผู้ช่วยผม|เพิ่ม.*ทีม|allow/i.test(text)) {
+      await grantMember(person, { notes: `พี่โด้แนะนำให้เป็นผู้ช่วย/ทีมงาน${nick ? ` (ชื่อเล่น ${nick})` : ""}` });
+      const tag = person.username
+        ? `@${person.username}`
+        : `<a href="tg://user?id=${person.id}">${escHtml(person.name)}</a>`;
+      const greet = `สวัสดีค่ะ ${tag} น้องวานเองค่ะ 🙌 พี่โด้ฝากให้ดูแล${nick ? ` คุณ${escHtml(nick)}` : ""} เป็นผู้ช่วยของทีมนะคะ ต่อไปนี้ ${tag} สั่งงานหรือถามอะไรวานได้เลยค่ะ ยินดีที่ได้รู้จักค่ะ`;
+      return NextResponse.json({ sends: [{ kind: "text", text: greet, parseMode: "HTML" }] as Send[] });
     }
     if (/ห้าม|ยกเลิกสิทธิ์|ถอดสิทธิ์|revoke/i.test(text)) {
       await revokeMember(person.id);
@@ -82,7 +95,7 @@ export async function POST(req: Request) {
     }
     if (/จำ|นี่คือ|แนะนำ|ตำแหน่ง|เป็น(คน|ทีม|ฝ่าย)|profile|ประวัติ/i.test(text)) {
       await rememberMember(person, { notes: text });
-      return NextResponse.json({ sends: [{ kind: "text", text: `จำ ${person.name} ไว้แล้วค่ะ` }] as Send[] });
+      return NextResponse.json({ sends: [{ kind: "text", text: `จำ ${person.name} (${nick || person.name}) ไว้แล้วค่ะ` }] as Send[] });
     }
   }
 
