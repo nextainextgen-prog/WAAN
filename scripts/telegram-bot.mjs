@@ -237,7 +237,12 @@ async function processBatch(chatId, msgs) {
   // ออกเอกสารจากไฟล์แนบ — ทำได้ทั้งแชทส่วนตัวและกลุ่ม (ตรวจสิทธิ์ที่ backend)
   if (text && MEMO_INTENT.test(text)) {
     const seen = new Set();
-    const all = recentFiles[chatId].filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
+    const all = (recentFiles[chatId] || []).filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
+    // ยังไม่แนบไฟล์ → อย่าเพิ่งออกเอกสารเปล่า ให้น้องวานถามขอไฟล์/รายละเอียดก่อน
+    if (all.length === 0) {
+      await chatIngest(chatId, text, from, isGroup, replyTo);
+      return;
+    }
     recentFiles[chatId] = [];
     await doMemo(chatId, text, all, from, isGroup);
     return;
