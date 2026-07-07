@@ -79,15 +79,18 @@ export async function POST(req: Request) {
   // ===== คำสั่งของเจ้าของ: อนุญาต/ยกเลิก/จดจำ ทีมงาน (reply ข้อความของคนนั้น หรือ แท็ก/mention ชื่อคนนั้น) =====
   const grantTarget = replyTo?.id ? replyTo : mentions.find((m) => m.id);
   if (ownerHere && grantTarget?.id) {
-    // ดึงชื่อเล่นที่พี่โด้บอก เช่น "ชื่อเติ้ล" / "ชื่อเล่น เติ้ล"
-    const nick = (text.match(/ชื่อเล่น\s*([^\s,]+)/)?.[1] || text.match(/ชื่อ\s*([^\s,]+)/)?.[1] || "").replace(/[.,]+$/, "");
-    const person = { id: String(grantTarget.id), name: nick || grantTarget.name || "สมาชิก", username: grantTarget.username };
-    if (/อนุญาต|ให้ตอบ|ให้ใช้|ใช้บอทได้|เป็นผู้ช่วย|ผู้ช่วยผม|เพิ่ม.*ทีม|allow/i.test(text)) {
+    // ชื่อจริงที่เขาใช้ใน Telegram (ใช้แท็ก) — ไม่ตั้งชื่อใหม่ให้เขา
+    const realName = grantTarget.name || "สมาชิก";
+    // ชื่อเล่นที่พี่โด้บอก เช่น "ชื่อเติ้ล" (ตัดสั้นถึงคำว่า "เป็น"/ช่องว่าง กันกินยาว) — ไว้เก็บ/เรียกในประโยค
+    const nick = (text.match(/ชื่อ(?:เล่น)?\s*([ก-๙a-zA-Z]+?)(?=เป็น|\s|,|$)/)?.[1] || "").trim();
+    const person = { id: String(grantTarget.id), name: nick || realName, username: grantTarget.username };
+    if (/อนุญาต|ให้ตอบ|ให้ใช้|ใช้บอทได้|เป็นผู้ช่วย|ผู้ช่วยผม|เป็นแอดมิน|เพิ่ม.*ทีม|allow/i.test(text)) {
       await grantMember(person, { notes: `พี่โด้แนะนำให้เป็นผู้ช่วย/ทีมงาน${nick ? ` (ชื่อเล่น ${nick})` : ""}` });
+      // แท็กด้วยชื่อจริงที่เขาใช้ (username ถ้ามี, ไม่งั้นชื่อ Telegram จริง) — ไม่ใช่ชื่อเล่นที่เพิ่งตั้ง
       const tag = person.username
         ? `@${person.username}`
-        : `<a href="tg://user?id=${person.id}">${escHtml(person.name)}</a>`;
-      const greet = `สวัสดีค่ะ ${tag} น้องวานเองค่ะ 🙌 พี่โด้ฝากให้ดูแล${nick ? ` คุณ${escHtml(nick)}` : ""} เป็นผู้ช่วยของทีมนะคะ ต่อไปนี้ ${tag} สั่งงานหรือถามอะไรวานได้เลยค่ะ ยินดีที่ได้รู้จักค่ะ`;
+        : `<a href="tg://user?id=${person.id}">${escHtml(realName)}</a>`;
+      const greet = `สวัสดีค่ะ ${tag} น้องวานเองค่ะ 🙌 พี่โด้ฝากให้ดูแล${nick ? ` คุณ${escHtml(nick)}` : ""} เป็นผู้ช่วย/แอดมินของทีมนะคะ ต่อไปนี้ ${tag} สั่งงานหรือถามอะไรวานได้เลยค่ะ ยินดีที่ได้รู้จักค่ะ`;
       return NextResponse.json({ sends: [{ kind: "text", text: greet, parseMode: "HTML" }] as Send[] });
     }
     if (/ห้าม|ยกเลิกสิทธิ์|ถอดสิทธิ์|revoke/i.test(text)) {
