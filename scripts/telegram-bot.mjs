@@ -30,6 +30,7 @@ async function tg(method, body) {
 const MEMO_INTENT = /คืนเงิน|หัก\s*ณ\s*ที่จ่าย|ออกเอกสาร|ส่วนต่าง|ส่วนเกิน/;
 const groups = {};          // media_group_id -> {msgs, timer, chatId}
 const recentFiles = {};     // chatId -> [{file_id,file_name,ts}]
+const armedUntil = {};      // chatId -> timestamp (ถูกเรียกแล้ว รอข้อความ/forward ถัดไป)
 
 function extractFile(msg) {
   if (msg.document) return { file_id: msg.document.file_id, file_name: msg.document.file_name || `file_${msg.document.file_id}.bin` };
@@ -212,27 +213,39 @@ async function processBatch(chatId, msgs) {
   const replyMsg = msgs.find((m) => m.reply_to_message)?.reply_to_message;
   const replyTo = replyMsg ? personOf(replyMsg.from) : null;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
-
-  // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก (มีชื่อ "น้องวาน" ที่ไหนก็ได้, ขึ้นต้น "วาน", @mention, หรือ reply บอท)
-  if (isGroup) {
-    const repliedToBot = msgs.some((m) => m.reply_to_message?.from?.id === BOT_ID);
-    const mentioned = BOT_USERNAME && text.toLowerCase().includes("@" + BOT_USERNAME.toLowerCase());
-    const calledByName = /น้องวาน/.test(text);          // เรียกชื่อที่ไหนก็ได้
-    const namePrefix = /^\s*วาน[\s,:ๆจ]/i.test(text);   // ขึ้นต้นด้วย "วาน"
-    if (!repliedToBot && !mentioned && !calledByName && !namePrefix) return; // ไม่ได้ถูกเรียก — เงียบ
-    // ตัดคำเรียก/mention ออก เหลือเนื้อความ
-    text = text
-      .replace(/น้องวาน/g, "")
-      .replace(/^\s*วาน[\s,:ๆจ]*/i, "")
-      .replace(new RegExp("@" + BOT_USERNAME, "gi"), "")
-      .trim();
-    if (!text || text.length < 2) text = "สวัสดี";
-  }
-
   const files = msgs.map(extractFile).filter(Boolean);
   const now = Date.now();
   recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < 180000);
   for (const f of files) recentFiles[chatId].push({ ...f, ts: now });
+
+  // ในกลุ่ม: ตอบเฉพาะเมื่อถูกเรียก หรือ "เปิดหูรอ" อยู่ (หลังถูกแท็ก รอข้อความ/forward ถัดไป)
+  if (isGroup) {
+    const repliedToBot = msgs.some((m) => m.reply_to_message?.from?.id === BOT_ID);
+    const mentioned = BOT_USERNAME && text.toLowerCase().includes("@" + BOT_USERNAME.toLowerCase());
+    const calledByName = /น้องวาน/.test(text);
+    const namePrefix = /^\s*วาน[\s,:ๆจ]/i.test(text);
+    const triggered = repliedToBot || mentioned || calledByName || namePrefix;
+    const armed = armedUntil[chatId] && now < armedUntil[chatId];
+    if (!triggered && !armed) return; // ไม่ได้ถูกเรียกและไม่ได้เปิดหูรอ — เงียบ
+    if (triggered) {
+      text = text
+        .replace(/น้องวาน/g, "")
+        .replace(/^\s*วาน[\s,:ๆจ]*/i, "")
+        .replace(new RegExp("@" + BOT_USERNAME, "gi"), "")
+        .trim();
+    }
+    if (armed && !triggered) delete armedUntil[chatId]; // ใช้สิทธิ์เปิดหูรอกับข้อความนี้
+
+    // ถูกเรียกเฉยๆ ยังไม่มีเนื้อหา/ไฟล์ → เปิดหูรอข้อความ/forward ถัดไป 90 วิ
+    const seenNow = new Set();
+    const bufferedNow = (recentFiles[chatId] || []).filter((f) => !seenNow.has(f.file_id) && seenNow.add(f.file_id));
+    if (triggered && text.length < 2 && bufferedNow.length === 0) {
+      armedUntil[chatId] = now + 90000;
+      await tg("sendMessage", { chat_id: chatId, text: "ค่ะพี่โด้ ว่ามาได้เลยค่ะ 👀 พิมพ์ แนบไฟล์ หรือฟอร์เวิร์ดข้อความมาได้เลยนะคะ" });
+      return;
+    }
+    if (!text) text = "สวัสดี";
+  }
 
   // ออกเอกสารจากไฟล์แนบ — ทำได้ทั้งแชทส่วนตัวและกลุ่ม (ตรวจสิทธิ์ที่ backend)
   if (text && MEMO_INTENT.test(text)) {
