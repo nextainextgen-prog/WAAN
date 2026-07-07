@@ -139,33 +139,64 @@ async function sendResultSends(chatId, sends) {
   }
 }
 
+async function postIngest(chatId, text, from, isGroup, replyTo) {
+  const res = await fetch(APP_URL + "/api/telegram/ingest", {
+    method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null }),
+  });
+  return res.json();
+}
+
 async function chatIngest(chatId, text, from, isGroup, replyTo) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
-  const steps = isSlide
-    ? ["📥 โอเคค่ะ รับเรื่องทำสไลด์แล้ว เดี๋ยวจัดให้เลยนะคะ 🚀", "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ..."]
-    : ["📥 โอเคค่ะ รับทราบ เดี๋ยวหาให้นะคะ 🔎", "🔎 กำลังค้นข้อมูลจากระบบ...", "⚙️ กำลังประมวลผล...", "📝 กำลังเรียบเรียงคำตอบ...", "⏳ ใกล้เสร็จแล้วค่ะ..."];
-  const status = await startStatus(chatId, steps);
-  let data;
-  try {
-    const res = await fetch(APP_URL + "/api/telegram/ingest", {
-      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null }),
-    });
-    data = await res.json();
-  } catch {
-    await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ");
+
+  // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
+  if (isSlide) {
+    const status = await startStatus(chatId, [
+      "📥 โอเคค่ะ รับเรื่องทำสไลด์แล้ว เดี๋ยวจัดให้เลยนะคะ 🚀",
+      "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
+    ]);
+    let data;
+    try { data = await postIngest(chatId, text, from, isGroup, replyTo); }
+    catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    const sends = data.sends || [];
+    if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+    await status.finishDone("✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ");
+    await sendResultSends(chatId, sends);
     return;
   }
+
+  // แชททั่วไป/ทักทาย = ตอบธรรมชาติ (โชว์ "กำลังพิมพ์" ไว้ ถ้าช้าเกิน 7 วิ ค่อยบอกว่ากำลังหา)
+  await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+  const typingTimer = setInterval(() => tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {}), 4000);
+  let softId = null;
+  const softTimer = setTimeout(async () => {
+    const m = await tg("sendMessage", { chat_id: chatId, text: "🔎 กำลังหาข้อมูลให้อยู่แป๊บนะคะ..." }).catch(() => null);
+    softId = m?.result?.message_id || null;
+  }, 7000);
+
+  let data;
+  try { data = await postIngest(chatId, text, from, isGroup, replyTo); }
+  catch {
+    clearInterval(typingTimer); clearTimeout(softTimer);
+    const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
+    if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: t }).catch(() => {});
+    else await tg("sendMessage", { chat_id: chatId, text: t });
+    return;
+  }
+  clearInterval(typingTimer); clearTimeout(softTimer);
+
   const sends = data.sends || [];
   const texts = sends.filter((s) => s.kind === "text");
   const docs = sends.filter((s) => s.kind === "document");
-  // ถ้าเป็นคำตอบข้อความเดี่ยว → รวมเข้าข้อความสถานะเลย (สะอาด ไม่มีข้อความค้าง)
+  if (sends.length === 0) { if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {}); return; }
+  // คำตอบข้อความเดี่ยว → ถ้าเคยขึ้น "กำลังหา" ให้แก้ข้อความนั้นเป็นคำตอบเลย ไม่งั้นส่งใหม่
   if (texts.length === 1 && docs.length === 0) {
-    await status.finishText(texts[0].text);
+    if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text }).catch(() => {});
+    else await tg("sendMessage", { chat_id: chatId, text: texts[0].text });
     return;
   }
-  if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-  await status.finishDone("✅ เรียบร้อยค่ะ ส่งให้เลยนะคะ");
+  if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
   await sendResultSends(chatId, sends);
 }
 
