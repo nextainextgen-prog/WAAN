@@ -59,3 +59,6 @@ credentials.json
 # thunder admin session
 .thunder-session.json
 .generated/
+
+# oho session
+.oho-session.json

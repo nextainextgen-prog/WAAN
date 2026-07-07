@@ -14,7 +14,9 @@
     "reminders": "node scripts/send-reminders.mjs",
     "db:push": "prisma db push",
     "postinstall": "prisma generate",
-    "thunder:auth": "node scripts/thunder-auth.mjs"
+    "thunder:auth": "node scripts/thunder-auth.mjs",
+    "oho:auth": "node scripts/oho-auth.mjs",
+    "oho:watch": "node scripts/oho-watch.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
