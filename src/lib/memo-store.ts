@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildRefundMemoHtml, type RefundMemoData } from "./memo";
 import { renderHtmlToPdf } from "./html-pdf";
+import { generateRefundMemo, type MemoValidation } from "./memo-generate";
 
 const DIR = path.join(process.cwd(), ".generated", "memos");
 
@@ -15,16 +16,38 @@ export interface MemoRecord {
   data: RefundMemoData;
   signed: boolean;
   createdAt: string;
+  rawText?: string; // ข้อความต้นฉบับจากแอดมิน — เก็บไว้ให้ปุ่ม "แก้ไข" ออกร่างใหม่ได้
 }
 
 // เก็บ draft (data + pdf) — ให้ปุ่ม "เซ็นเลย"/"แก้ไข" อ้างอิงได้
-export async function saveMemoDraft(data: RefundMemoData, pdf: Buffer): Promise<string> {
+export async function saveMemoDraft(data: RefundMemoData, pdf: Buffer, rawText?: string): Promise<string> {
   await ensureDir();
   const id = randomUUID().replace(/-/g, "").slice(0, 10);
-  const rec: MemoRecord = { id, data: { ...data, signed: false }, signed: false, createdAt: new Date().toISOString() };
+  const rec: MemoRecord = { id, data: { ...data, signed: false }, signed: false, createdAt: new Date().toISOString(), rawText };
   await fs.writeFile(path.join(DIR, `${id}.json`), JSON.stringify(rec, null, 2));
   await fs.writeFile(path.join(DIR, `${id}.pdf`), pdf);
   return id;
+}
+
+// กด "แก้ไข" แล้วพิมพ์สั่ง → ออกร่างใหม่ (ใช้ id เดิม, เลขเอกสารเดิม, ไฟล์แนบเดิม, ข้อความเดิม + คำสั่งแก้)
+export async function reviseMemo(
+  id: string,
+  instruction: string,
+): Promise<{ ok: boolean; data?: RefundMemoData; validation?: MemoValidation }> {
+  const rec = await getMemo(id);
+  if (!rec) return { ok: false };
+  const res = await generateRefundMemo({
+    rawText: rec.rawText || "",
+    attachments: rec.data.attachments || [],
+    date: rec.data.date,
+    docNo: rec.data.docNo,
+    editInstruction: instruction,
+  });
+  await ensureDir();
+  const next: MemoRecord = { ...rec, data: { ...res.data, signed: false }, signed: false, rawText: rec.rawText };
+  await fs.writeFile(path.join(DIR, `${id}.json`), JSON.stringify(next, null, 2));
+  await fs.writeFile(path.join(DIR, `${id}.pdf`), res.pdf);
+  return { ok: true, data: res.data, validation: res.validation };
 }
 
 export async function getMemo(id: string): Promise<MemoRecord | null> {
@@ -60,7 +83,16 @@ export async function signMemo(id: string): Promise<{ ok: boolean; data?: Refund
   return { ok: true, data };
 }
 
+// ตั้งชื่อไฟล์ให้ดูเป็นทางการ: เลขเอกสาร + ชื่อลูกค้า + สถานะ
+// เช่น "TS-CS-RF-1234567 บันทึกขอคืนเงินหัก ณ ที่จ่าย - เดอะ พีเอ็กซ์ กรุ๊ป (ร่าง).pdf"
 export function memoFilename(data: RefundMemoData, signed: boolean): string {
-  const who = (data.serviceName || data.accountName || "ลูกค้า").replace(/[^\p{L}\p{N}ก-๙\s_-]/gu, "").slice(0, 40);
-  return `คืนเงินหักณที่จ่าย_${who}${signed ? "_เซ็นแล้ว" : "_ดราฟ"}.pdf`;
+  const who = (data.serviceName || data.accountName || "ลูกค้า")
+    .replace(/[^\p{L}\p{N}ก-๙\s._-]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40) || "ลูกค้า";
+  const docNo = (data.docNo || "").replace(/[^\w-]/g, "");
+  const prefix = docNo ? `${docNo} ` : "";
+  const status = signed ? "(ลงนามแล้ว)" : "(ร่าง)";
+  return `${prefix}บันทึกขอคืนเงินหัก ณ ที่จ่าย - ${who} ${status}.pdf`;
 }

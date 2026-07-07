@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
-import { getAllowedChatId } from "@/lib/telegram";
+import { getAllowedChatId, getAllowedGroups } from "@/lib/telegram";
 import { decideDocument } from "@/lib/documents";
 
 export const runtime = "nodejs";
@@ -13,9 +13,13 @@ export async function POST(req: Request) {
   const chatId = String(body.chatId || "");
   const dataStr = String(body.data || "");
 
+  // อนุญาตถ้าเป็นแชทที่ผูกไว้ หรือเป็นกลุ่มที่อนุญาต (ให้ตรงกับตอนออกเอกสาร ไม่งั้นกดเซ็นในกลุ่มไม่ได้)
   const allowed = await getAllowedChatId();
   if (allowed && chatId !== allowed) {
-    return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
+    const groups = await getAllowedGroups();
+    if (!groups.includes(chatId)) {
+      return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
+    }
   }
 
   // ปุ่มร่างเอกสาร (memo) — เซ็นเลย / แก้ไข

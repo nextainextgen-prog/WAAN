@@ -34,6 +34,26 @@ export async function pdfFileToPngs(
   return out;
 }
 
+// ดึงข้อความจาก PDF (ทุกหน้า) — ไว้ใช้เป็นแหล่งข้อมูลทำสไลด์จากไฟล์ที่แนบมา
+export async function pdfFileToText(pdfPath: string, maxPages = 20): Promise<string> {
+  const data = new Uint8Array(await fs.readFile(pdfPath));
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const doc = await pdfjs.getDocument({ data, disableFontFace: true }).promise;
+  const pages = Math.min(doc.numPages, maxPages);
+  const out: string[] = [];
+  for (let i = 1; i <= pages; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    const line = tc.items
+      .map((it) => (typeof (it as { str?: string }).str === "string" ? (it as { str: string }).str : ""))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (line) out.push(`[หน้า ${i}]\n${line}`);
+  }
+  return out.join("\n\n").trim();
+}
+
 // เดาชื่อเอกสารแนบจากชื่อไฟล์
 export function guessAttachmentLabel(filename: string): string {
   const f = filename.toLowerCase();

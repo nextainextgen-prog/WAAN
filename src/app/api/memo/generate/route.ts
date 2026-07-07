@@ -3,7 +3,7 @@ import path from "node:path";
 import { isServiceRequest, getCurrentUser } from "@/lib/auth";
 import { generateRefundMemo } from "@/lib/memo-generate";
 import { prepareAttachment } from "@/lib/pdf-to-images";
-import { saveMemoDraft } from "@/lib/memo-store";
+import { saveMemoDraft, memoFilename } from "@/lib/memo-store";
 import { isAuthorized } from "@/lib/team";
 import { getAllowedGroups } from "@/lib/telegram";
 
@@ -55,7 +55,7 @@ export async function POST(req: Request) {
   const date = thaiDate.format(new Date());
   try {
     const res = await generateRefundMemo({ rawText, attachments, date });
-    const id = await saveMemoDraft(res.data, res.pdf);
+    const id = await saveMemoDraft(res.data, res.pdf, rawText);
     return NextResponse.json({
       ok: true,
       id,
@@ -64,6 +64,7 @@ export async function POST(req: Request) {
       whtAmount: res.data.whtAmount,
       overpay: res.data.overpay,
       attachCount: res.data.attachments.length,
+      filename: memoFilename(res.data, false),
       valid: res.validation.ok,
       warnings: res.validation.warnings,
     });

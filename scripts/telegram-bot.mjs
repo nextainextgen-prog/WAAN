@@ -27,6 +27,26 @@ async function tg(method, body) {
   return res.json();
 }
 
+// กด/เปลี่ยนอิโมจิรีแอคชันบนข้อความผู้ใช้ (บอทกดได้เอง ไม่ต้องสิทธิ์แอดมิน)
+async function reactMsg(chatId, messageId, emoji) {
+  if (!messageId || !emoji) return;
+  await tg("setMessageReaction", {
+    chat_id: chatId,
+    message_id: messageId,
+    reaction: [{ type: "emoji", emoji }],
+  }).catch(() => {});
+}
+
+// วิเคราะห์ข้อความแล้วเลือกอิโมจิที่เหมาะ: 🔥 ชม/ตื่นเต้น · ✅ ยืนยัน/ตกลง · 👀 ตรวจ-ดู-ไฟล์ · 👌 รับงานทั่วไป
+function pickReaction(text, { hasFiles = false, isAff = false, isMemo = false } = {}) {
+  const t = text || "";
+  if (/เก่ง|เยี่ยม|สุดยอด|เจ๋ง|ดีมาก|เท่ห์|ปัง|โคตร|ขอบคุณ|ขอบใจ|thank|ว้าว|👍|❤️|🔥|ชอบมาก|รักเลย/i.test(t)) return "🔥";
+  if (/^\s*(โอเคร?|okay|ok|ตกลง|ได้เลย|ใช่|เรียบร้อย|จัดไป|รับทราบ|เยส|yes)/i.test(t) || /ถูกต้อง|ถูกแล้ว|เห็นด้วย|อนุมัติแล้ว|ผ่านเลย/.test(t)) return "✅";
+  if (isAff || hasFiles || /ตรวจ|เช็ก|เช็ค|ดูให้|ดูหน่อย|อ่านให้|วิเคราะห์|สรุป(ไฟล์|เอกสาร)|เทียบ|เท่าไห?ร่|กี่|ยอด|สถานะ|คืบหน้า|deadline|ครบกำหนด/.test(t)) return "👀";
+  if (isMemo || /สไลด์|slide|ทำ|สร้าง|ออกเอกสาร|ขอ|ช่วย|generate|วาด|เขียน|หา(ให้|ข้อมูล)|สรุป/i.test(t)) return "👌";
+  return null; // ทักทาย/คุยเล่นสั้นๆ ไม่ต้องกด
+}
+
 const MEMO_INTENT = /คืนเงิน|หัก\s*ณ\s*ที่จ่าย|ออกเอกสาร|ส่วนต่าง|ส่วนเกิน/;
 // เอกสาร Affiliate ของแอดมิน (ตรวจอัตโนมัติ): มี PDF แนบ + ข้อความสรุปแพตเทิร์นเดิม
 const AFF_INTENT = /ยูสเซอร์|ยูเซอร์|user\s*name|username/i;
@@ -63,7 +83,7 @@ async function downloadFile(file_id, destDir, filename) {
 
 const memoInFlight = new Set();
 
-async function doMemo(chatId, text, files, from, isGroup) {
+async function doMemo(chatId, text, files, from, isGroup, msgId) {
   if (memoInFlight.has(String(chatId))) return; // กันออกเอกสารซ้ำ
   memoInFlight.add(String(chatId));
   try {
@@ -94,6 +114,7 @@ async function doMemo(chatId, text, files, from, isGroup) {
   if (!data.ok) { await status.finishText("ออกเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
   await status.finishDone("✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ");
   await sendMemoDraft(chatId, data);
+  await reactMsg(chatId, msgId, "✅");
   } finally {
     memoInFlight.delete(String(chatId));
   }
@@ -115,7 +136,7 @@ async function sendMemoDraft(chatId, data) {
 }
 
 // กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ (id เดิม)
-async function doRevise(chatId, id, instruction, from, isGroup) {
+async function doRevise(chatId, id, instruction, from, isGroup, msgId) {
   if (memoInFlight.has(String(chatId))) return;
   memoInFlight.add(String(chatId));
   try {
@@ -138,13 +159,14 @@ async function doRevise(chatId, id, instruction, from, isGroup) {
     if (!data.ok) { await status.finishText("แก้เอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
     await status.finishDone("✅ ปรับเอกสารให้แล้วค่ะ ส่งให้ตรวจอีกครั้งนะคะ");
     await sendMemoDraft(chatId, data);
+    await reactMsg(chatId, msgId, "✅");
   } finally {
     memoInFlight.delete(String(chatId));
   }
 }
 
 // ตรวจเอกสาร Affiliate อัตโนมัติ: อ่าน PDF + เทียบชีต + ตรวจยอด → รายงาน + ภาพยืนยัน
-async function doAffCheck(chatId, text, files, from, isGroup) {
+async function doAffCheck(chatId, text, files, from, isGroup, msgId) {
   if (memoInFlight.has(String(chatId))) return; // กันชนกับงานออกเอกสาร
   const status = await startStatus(chatId, [
     "📥 รับเรื่องตรวจเอกสาร Affiliate แล้วค่ะ เดี๋ยววานตรวจให้เลยนะคะ 🔎",
@@ -173,6 +195,47 @@ async function doAffCheck(chatId, text, files, from, isGroup) {
   if (!data.ok) { await status.finishText("ตรวจเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
   await status.finishDone("✅ ตรวจเอกสารเสร็จแล้วค่ะ สรุปให้เลยนะคะ");
   await sendResultSends(chatId, data.sends || []);
+  await reactMsg(chatId, msgId, "✅");
+}
+
+// ทำสไลด์ "จากไฟล์ที่แนบ" (เช่น reply PDF แล้วสั่งทำสไลด์) — อ่านเนื้อหาไฟล์นั้นมาทำ ไม่ใช่ดึงข้อมูลระบบ
+async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId) {
+  if (memoInFlight.has(String(chatId))) return;
+  memoInFlight.add(String(chatId));
+  try {
+    const status = await startStatus(chatId, [
+      "📥 รับเรื่องทำสไลด์จากไฟล์แล้วค่ะ เดี๋ยวจัดให้เลยนะคะ 🚀",
+      "📎 กำลังอ่านเนื้อหาในไฟล์...",
+      "🔍 กำลังสรุปประเด็นและตัวเลขจากเอกสาร...",
+      "📊 กำลังจัดสไลด์และกราฟ...",
+      "🖼️ กำลังตกแต่งให้สวยและมืออาชีพ...",
+      "⏳ ใกล้เสร็จแล้วค่ะ...",
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-slide-"));
+    const saved = [];
+    for (const f of files) {
+      try { const s = await downloadFile(f.file_id, dir, f.file_name); if (s) saved.push(s); } catch { /* skip */ }
+    }
+    let data;
+    try {
+      const r = await fetch(APP_URL + "/api/slides/from-files", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ topic: text || "ทำสไลด์จากเอกสาร", files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
+      });
+      data = await r.json();
+    } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+    if (!data.ok) { await status.finishText("ทำสไลด์จากไฟล์ไม่สำเร็จค่ะ: " + (data.error || "")); return; }
+    await status.finishDone(`✅ ทำสไลด์ "${data.title}" (${data.slideCount} สไลด์) จากไฟล์ให้แล้วค่ะ ส่งทั้ง PDF และไฟล์เด็คที่เลื่อนดูได้ให้เลยนะคะ`);
+    const safe = (data.title || "slides").replace(/[^\w฀-๿ ._-]/g, "").slice(0, 50) || "slides";
+    await sendResultSends(chatId, [
+      { kind: "document", url: data.files.pdf, filename: `${safe}.pdf`, caption: data.title },
+      { kind: "document", url: data.files.html, filename: `${safe}.html` },
+    ]);
+    await reactMsg(chatId, msgId, "✅");
+  } finally {
+    memoInFlight.delete(String(chatId));
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -235,7 +298,7 @@ async function postIngest(chatId, text, from, isGroup, replyTo) {
   return res.json();
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo) {
+async function chatIngest(chatId, text, from, isGroup, replyTo, msgId) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
@@ -251,6 +314,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo) {
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
     await status.finishDone("✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ");
     await sendResultSends(chatId, sends);
+    await reactMsg(chatId, msgId, "✅");
     return;
   }
 
@@ -304,8 +368,13 @@ async function processBatch(chatId, msgs) {
   const from = personOf(msgs[0]?.from);
   const replyMsg = msgs.find((m) => m.reply_to_message)?.reply_to_message;
   const replyTo = replyMsg ? personOf(replyMsg.from) : null;
+  const triggerMsgId = msgs[msgs.length - 1]?.message_id;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
   const files = msgs.map(extractFile).filter(Boolean);
+  // ถ้า reply ไปที่ข้อความที่มีไฟล์ (เช่น reply PDF เก่าแล้วสั่งทำสไลด์) → ดึงไฟล์นั้นมาด้วยเสมอ
+  // ไม่ต้องพึ่งบัฟเฟอร์เวลา ทำให้ "reply ไฟล์ไหน = อ่านไฟล์นั้น" ได้แม้ไฟล์ส่งมานานแล้ว
+  const replyFile = replyMsg ? extractFile(replyMsg) : null;
+  if (replyFile && !files.some((f) => f.file_id === replyFile.file_id)) files.push(replyFile);
   const now = Date.now();
   recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < BUFFER_TTL);
   for (const f of files) recentFiles[chatId].push({ ...f, ts: now });
@@ -319,7 +388,8 @@ async function processBatch(chatId, msgs) {
   if (isAffDoc(text, files)) {
     recentFiles[chatId] = [];
     recentTexts[chatId] = [];
-    await doAffCheck(chatId, text, files, from, isGroup);
+    await reactMsg(chatId, triggerMsgId, "👀"); // เห็นเอกสารแล้ว กำลังตรวจ
+    await doAffCheck(chatId, text, files, from, isGroup, triggerMsgId);
     return;
   }
 
@@ -356,13 +426,17 @@ async function processBatch(chatId, msgs) {
     if (!text) text = "สวัสดี";
   }
 
+  // กดอิโมจิรีแอคชันบนข้อความสั่ง (วิเคราะห์เนื้อหา) เป็นการรับรู้ทันที ก่อนลงมือทำ
+  const haveFilesNow = (recentFiles[chatId] || []).length > 0;
+  await reactMsg(chatId, triggerMsgId, pickReaction(text, { hasFiles: haveFilesNow, isMemo: MEMO_INTENT.test(text) }));
+
   // โหมดแก้เอกสาร: กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ตัวเดิม (ไม่หลุดไปแชททั่วไป)
   const editing = editingMemo[chatId] && now < editingMemo[chatId].until;
   const isSlideish = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
   if (editing && text && !MEMO_INTENT.test(text) && !isSlideish) {
     const memoId = editingMemo[chatId].id;
     delete editingMemo[chatId];
-    await doRevise(chatId, memoId, text, from, isGroup);
+    await doRevise(chatId, memoId, text, from, isGroup, triggerMsgId);
     return;
   }
 
@@ -371,13 +445,22 @@ async function processBatch(chatId, msgs) {
   const memoIntent = !!(text && MEMO_INTENT.test(text));
   const seen = new Set();
   const all = (recentFiles[chatId] || []).filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
+
+  // สั่งทำสไลด์ + มีไฟล์แนบ (เช่น reply PDF) → อ่านเนื้อหาไฟล์นั้นมาทำสไลด์ ไม่ใช่ดึงข้อมูลระบบ
+  if (isSlideish && all.length > 0) {
+    recentFiles[chatId] = [];
+    recentTexts[chatId] = [];
+    await doSlideFromFiles(chatId, text, all, from, isGroup, triggerMsgId);
+    return;
+  }
+
   // สั่งออกเอกสาร (มี intent) หรือกำลังรอออกเอกสารอยู่แล้วไฟล์เพิ่งมาถึง
   if (memoIntent || (memoWaiting && all.length > 0)) {
     // ยังไม่แนบไฟล์ → อย่าเพิ่งออกเอกสารเปล่า เปิดหูรอไฟล์/เนื้อหา forward แล้วถามขอก่อน
     if (all.length === 0) {
       memoPending[chatId] = now + BUFFER_TTL;
       armedUntil[chatId] = now + BUFFER_TTL;
-      await chatIngest(chatId, text, from, isGroup, replyTo);
+      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId);
       return;
     }
     // มีไฟล์แล้ว → รวมข้อความที่ buffer ไว้ทั้งหมด (คำสั่ง + เนื้อหาที่ forward มา) เป็น rawText
@@ -392,10 +475,10 @@ async function processBatch(chatId, msgs) {
     recentFiles[chatId] = [];
     recentTexts[chatId] = [];
     delete memoPending[chatId];
-    await doMemo(chatId, memoText, all, from, isGroup);
+    await doMemo(chatId, memoText, all, from, isGroup, triggerMsgId);
     return;
   }
-  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo); return; }
+  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId); return; }
 }
 
 async function handleMessage(msg) {

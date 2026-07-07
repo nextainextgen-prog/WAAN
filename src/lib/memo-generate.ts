@@ -4,9 +4,18 @@ import { renderHtmlToPdf } from "./html-pdf";
 
 // ให้ Claude อ่านข้อความแอดมิน (ดิบ) → ดึงข้อมูลลงช่องว่างของเอกสารต้นฉบับ
 const EXTRACT_SYSTEM = `คุณคือผู้ช่วยฝ่ายบริการลูกค้าของบริษัท ธันเดอร์ โซลูชั่น จำกัด
-อ่านข้อความที่แอดมินส่งมา (อาจไม่เป็นระเบียบ) แล้วดึงข้อมูลเพื่อ "เติมช่องว่าง" ในเอกสารคืนเงินหัก ณ ที่จ่าย
-ห้ามแต่งข้อมูลเอง ใช้เฉพาะที่มีในข้อความ ถ้าไม่มีให้ใส่ค่าว่างหรือ 0
-ตอบเป็น JSON เท่านั้น ไม่มีข้อความอื่น ไม่มี \`\`\`
+อ่านข้อความที่แอดมินส่งมา (อาจไม่เป็นระเบียบ) และ "รูปแนบ" ที่ระบุ path มา แล้วดึงข้อมูลเพื่อ "เติมช่องว่าง" ในเอกสารคืนเงินหัก ณ ที่จ่าย
+
+การอ่านรูปแนบ (สำคัญ): ถ้ามีรายการ path รูปแนบ ให้ใช้เครื่องมือ Read เปิดอ่านรูปทุกไฟล์ตาม path เต็มที่ให้มา แล้วดึง/ยืนยันข้อมูลจากรูปด้วย เช่น
+- สลิปโอนเงิน: วันที่/เวลาโอน จำนวนเงินที่โอน ธนาคารปลายทาง
+- หน้าสมุดบัญชี (bookbank): ธนาคาร เลขที่บัญชี ชื่อบัญชี
+- ใบรับรองหัก ณ ที่จ่าย (50 ทวิ): อัตราร้อยละ และจำนวนเงินที่หัก
+ถ้าข้อความกับรูปขัดกัน ให้ยึดตัวเลข/เลขบัญชีจากรูปเอกสารทางการเป็นหลัก
+
+กติกา:
+- ห้ามแต่งข้อมูลเอง ใช้เฉพาะที่มีในข้อความหรือในรูป ถ้าไม่มีจริงให้ใส่ค่าว่างหรือ 0
+- ถ้ามีบรรทัด [คำสั่งแก้ไขจากผู้ใช้] ให้ยึดตามนั้นทับข้อมูลเดิมทุกครั้ง
+- ตอบเป็น JSON เท่านั้น ไม่มีข้อความอื่น ไม่มี \`\`\`
 
 โครงสร้าง JSON:
 {
@@ -81,8 +90,18 @@ export async function generateRefundMemo(input: {
   attachments: MemoAttachment[];
   date: string;
   docNo?: string;
+  editInstruction?: string; // ข้อความสั่งแก้ไขจากผู้ใช้ (ตอนกดปุ่ม "แก้ไข")
 }): Promise<GeneratedMemo> {
-  const raw = await askClaude(input.rawText, { system: EXTRACT_SYSTEM, timeoutMs: 120_000 });
+  // สร้าง prompt: ข้อความแอดมิน + path รูปแนบ (ให้ Claude อ่านรูปด้วย) + คำสั่งแก้ไข (ถ้ามี)
+  let prompt = `ข้อความจากแอดมิน:\n${input.rawText || "(ไม่มีข้อความ ให้ดึงจากรูปแนบ)"}`;
+  const imagePaths = input.attachments.map((a) => a.imagePath).filter(Boolean);
+  if (imagePaths.length) {
+    prompt += `\n\nรูปแนบ (เปิดอ่านด้วยเครื่องมือ Read ทุกไฟล์):\n${imagePaths.map((p, i) => `${i + 1}. ${p}`).join("\n")}`;
+  }
+  if (input.editInstruction) {
+    prompt += `\n\n[คำสั่งแก้ไขจากผู้ใช้]:\n${input.editInstruction}`;
+  }
+  const raw = await askClaude(prompt, { system: EXTRACT_SYSTEM, timeoutMs: 180_000 });
   const ex = parseJson(raw);
   const refund = Math.round(((ex.whtAmount || 0) + (ex.overpay || 0)) * 100) / 100;
   const validation = validateMemo(ex, refund);

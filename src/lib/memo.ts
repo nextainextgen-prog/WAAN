@@ -87,6 +87,9 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
     d.overpay > 0
       ? ` และมียอดชำระเกินจากการโอนอีกจำนวน ${baht(d.overpay)} บาท`
       : "";
+  // เวลาตัดเครดิต: ถ้าไม่มีเวลา (ว่าง/"-") ให้ตัดคำว่า "เวลา ... น." ทิ้ง ไม่ให้ค้าง "เวลา - น."
+  const hasTime = d.topupTime && d.topupTime !== "-";
+  const topupTimeClause = hasTime ? ` เวลา ${escapeHtml(d.topupTime)} น.` : "";
 
   const attachmentPages = d.attachments
     .map(
@@ -117,7 +120,7 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   .brow{display:flex;min-height:216mm}
   .bleft{flex:0 0 63%;border-right:1.2px solid ${C.line};padding:14px 16px;display:flex;flex-direction:column}
   .bright{flex:1;padding:16px 12px;text-align:center}
-  .bleft p{margin-bottom:11px;text-align:justify;text-indent:1.4em;line-height:1.6}
+  .bleft p{margin-bottom:6px;text-align:left;text-indent:1.4em;line-height:1.45}
   .bank{margin:8px 0 4px;line-height:1.7}
   .center{text-align:center}
   .sigblock{text-align:center;margin-top:14px}
@@ -152,7 +155,7 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
       <div class="brow">
         <div class="bleft">
           <p>เมื่อวันที่ ${escapeHtml(d.topupDate)} ลูกค้าชื่อผู้ใช้งาน (User) ${escapeHtml(d.user)} ชื่อบริการ ${escapeHtml(d.serviceName)} ได้ดำเนินการโอนเงินเพื่อเติมเครดิตเข้าสู่ระบบ เพื่อชำระค่าบริการแพ็กเกจ ${escapeHtml(d.packageName)} ระยะเวลาใช้งาน ${d.months} เดือน เป็นจำนวนเงิน ${baht(d.amount)} บาท</p>
-          <p>ทั้งนี้ ระบบได้ทำการตัดเครดิตเพื่อต่ออายุใช้งานเมื่อวันที่ ${escapeHtml(d.topupDate)} เวลา ${escapeHtml(d.topupTime)} น.</p>
+          <p>ทั้งนี้ ระบบได้ทำการตัดเครดิตเพื่อต่ออายุใช้งานเมื่อวันที่ ${escapeHtml(d.topupDate)}${topupTimeClause}</p>
           <p>ต่อมา ลูกค้าได้มีการขอหัก ณ ที่จ่ายในอัตราร้อยละ ${d.whtRate} เป็นจำนวนเงิน ${baht(d.whtAmount)} บาท หลังจากโอนยอดเงินเต็มจำนวน และระบบต่ออายุเรียบร้อยแล้ว${overpayLine}</p>
           <p>ลูกค้าได้จัดส่งใบหักภาษี ณ ที่จ่าย ให้ทางบริษัทเรียบร้อย</p>
           <p>จึงขอให้บริษัทดำเนินการโอนเงินคืนตามจำนวนดังกล่าว (จำนวน ${baht(d.refund)} บาท) ไปยังบัญชีที่ระบุดังนี้</p>

@@ -70,9 +70,9 @@ export async function fetchSystemWithdraw(username: string): Promise<SystemFetch
         // ต้องมีคำว่ายูสเซอร์แบบตรงคำ (มีขอบเขต) เพื่อไม่จับผิดแถว
         const re = new RegExp(`(^|\\b|\\s)${u.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\b|\\s|$)`);
         if (re.test(txt)) {
-          const bankM = txt.match(/ธนาคาร[:\s]*([^\n]+)/);
+          const bankM = txt.match(/ธนาคาร[:\s]*([^\n\t]+)/);
           const accM = txt.match(/เลขบัญชี[:\s]*([0-9]+)/);
-          const nameM = txt.match(/ชื่อบัญชี[:\s]*([^\n]+)/);
+          const nameM = txt.match(/ชื่อบัญชี[:\s]*([^\n\t]+)/);
           const baht = txt.match(/฿\s*([\d,]+\.\d{2})/);
           const statusM = txt.match(/(รออนุมัติ|อนุมัติแล้ว|ปฏิเสธ|ยกเลิก)/);
           const dateM = txt.match(/(\d{1,2}\s*[ก-๙.]+\s*\d{4}[,\s]*\d{1,2}:\d{2})/);
