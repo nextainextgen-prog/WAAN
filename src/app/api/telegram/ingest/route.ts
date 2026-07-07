@@ -43,6 +43,7 @@ export async function POST(req: Request) {
   const fromId = String(body.fromId || "");
   const isGroup = Boolean(body.isGroup);
   const replyTo = body.replyTo as { id?: string; name?: string; username?: string } | undefined;
+  const replyText = String(body.replyText || "").trim(); // ข้อความที่ผู้ใช้ reply อ้างถึง (บริบทต่อเนื่อง)
   if (!chatId || !text) return NextResponse.json({ sends: [] });
 
   const owner = await getAllowedChatId();
@@ -143,18 +144,24 @@ export async function POST(req: Request) {
   // แชทปกติ → สมอง AI
   await saveChat("user", text);
   try {
-    const { reply } = await askBrain(text);
+    // ถ้าผู้ใช้ reply ข้อความก่อนหน้า → แนบเป็นบริบทให้ตอบตรงเรื่องที่อ้างถึง
+    const extraContext = replyText
+      ? `ผู้ใช้กำลังตอบกลับ (reply) ข้อความนี้ ให้ตอบโดยอ้างอิงเนื้อหานี้เป็นหลัก อย่าเปลี่ยนไปเรื่องอื่น:\n"""\n${replyText.slice(0, 2000)}\n"""`
+      : undefined;
+    const { reply } = await askBrain(text, { extraContext });
     await saveChat("assistant", reply);
     const sends: Send[] = [{ kind: "text", text: reply }];
-    // ถ้าคำถามเกี่ยวกับหน้าเว็บ → แนบภาพแคปหน้าจอจริงมาด้วย (แคปพลาดก็ส่งแค่ข้อความ)
-    const pick = pageForQuestion(text);
-    if (pick) {
-      try {
-        const origin = new URL(req.url).origin;
-        const png = await captureAppPage(origin, pick.path, { fullPage: pick.fullPage });
-        sends.push({ kind: "photo", dataBase64: png.toString("base64"), caption: `${pick.label}ในระบบค่ะ` });
-      } catch (err) {
-        console.error("[ingest] screenshot failed:", err);
+    // แคปหน้าเว็บแนบคำตอบ — ปิดไว้ก่อน (เปิดด้วย ENABLE_WEB_SCREENSHOT=1) เพราะเน้นตอบเรื่อง Thunder
+    if (process.env.ENABLE_WEB_SCREENSHOT === "1") {
+      const pick = pageForQuestion(text);
+      if (pick) {
+        try {
+          const origin = new URL(req.url).origin;
+          const png = await captureAppPage(origin, pick.path, { fullPage: pick.fullPage });
+          sends.push({ kind: "photo", dataBase64: png.toString("base64"), caption: `${pick.label}ในระบบค่ะ` });
+        } catch (err) {
+          console.error("[ingest] screenshot failed:", err);
+        }
       }
     }
     return NextResponse.json({ sends });

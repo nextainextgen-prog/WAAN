@@ -69,10 +69,11 @@ async function listMarkdown(dir: string, max = 60): Promise<string[]> {
 }
 
 // อ่านความรู้จาก vault (โฟลเดอร์งานที่อนุญาต + โฟลเดอร์ AI) เป็นบริบทให้ "สมอง AI"
-export async function readVaultKnowledge(charBudget = 12_000): Promise<string> {
+export async function readVaultKnowledge(charBudget = 30_000): Promise<string> {
   const vault = getVaultPath();
   if (!vault) return "";
-  const folders = [getAiFolder(), ...getWorkFolders()];
+  // อ่านโฟลเดอร์ความรู้งาน (Thunder) ก่อน แล้วค่อยโฟลเดอร์ AI — ให้ความรู้ Thunder เข้าสมองก่อนเต็มที่
+  const folders = [...getWorkFolders(), getAiFolder()];
   const chunks: string[] = [];
   let used = 0;
 

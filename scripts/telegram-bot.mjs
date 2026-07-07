@@ -60,6 +60,7 @@ const recentFiles = {};     // chatId -> [{file_id,file_name,ts}]
 const recentTexts = {};     // chatId -> [{text,ts}] เก็บข้อความ/แคปชัน (รวมที่ forward มา) ข้าม batch
 const armedUntil = {};      // chatId -> timestamp (ถูกเรียกแล้ว รอข้อความ/forward ถัดไป)
 const memoPending = {};     // chatId -> timestamp (สั่งออกเอกสารแล้วแต่ยังรอไฟล์/เนื้อหา forward ตามมา)
+const affPending = {};      // chatId -> timestamp (สั่งตรวจเอกสาร AFF แล้วแต่ยังรอไฟล์ forward ตามมา)
 const editingMemo = {};     // chatId -> {id, until} (กด "แก้ไข" แล้ว รอคำสั่งแก้เอกสารตัวนี้)
 const BUFFER_TTL = 180000;  // 3 นาที
 const EDIT_TTL = 300000;    // 5 นาที (รอคำสั่งแก้เอกสารหลังกดปุ่ม "แก้ไข")
@@ -290,15 +291,15 @@ async function sendResultSends(chatId, sends) {
   }
 }
 
-async function postIngest(chatId, text, from, isGroup, replyTo) {
+async function postIngest(chatId, text, from, isGroup, replyTo, replyText) {
   const res = await fetch(APP_URL + "/api/telegram/ingest", {
     method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null }),
+    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null, replyText: replyText || "" }),
   });
   return res.json();
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo, msgId) {
+async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
@@ -308,7 +309,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId) {
       "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
     ]);
     let data;
-    try { data = await postIngest(chatId, text, from, isGroup, replyTo); }
+    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText); }
     catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
@@ -328,7 +329,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId) {
   }, 7000);
 
   let data;
-  try { data = await postIngest(chatId, text, from, isGroup, replyTo); }
+  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText); }
   catch {
     clearInterval(typingTimer); clearTimeout(softTimer);
     const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
@@ -368,6 +369,7 @@ async function processBatch(chatId, msgs) {
   const from = personOf(msgs[0]?.from);
   const replyMsg = msgs.find((m) => m.reply_to_message)?.reply_to_message;
   const replyTo = replyMsg ? personOf(replyMsg.from) : null;
+  const replyText = replyMsg ? (replyMsg.text || replyMsg.caption || "") : "";
   const triggerMsgId = msgs[msgs.length - 1]?.message_id;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
   const files = msgs.map(extractFile).filter(Boolean);
@@ -383,13 +385,23 @@ async function processBatch(chatId, msgs) {
   recentTexts[chatId] = (recentTexts[chatId] || []).filter((t) => now - t.ts < BUFFER_TTL);
   if (text) recentTexts[chatId].push({ text, ts: now });
 
-  // ตรวจเอกสาร Affiliate อัตโนมัติ — แอดมินแนบ PDF + ข้อความแพตเทิร์นเดิม → ตรวจให้เลย ไม่ต้องแท็กเรียก
+  // ตรวจเอกสาร Affiliate อัตโนมัติ — แอดมินแนบ PDF + ข้อความแพตเทิร์นเดิม (หรือสั่งตรวจไว้แล้ว forward ไฟล์ตามมา)
   // (backend ตรวจสิทธิ์: กลุ่มที่ผูกแล้ว หรือแชทเจ้าของ)
-  if (isAffDoc(text, files)) {
+  const affActive = affPending[chatId] && now < affPending[chatId];
+  const hasPdfNow = files.some((f) => /\.pdf$/i.test(f.file_name || ""));
+  if (isAffDoc(text, files) || (affActive && hasPdfNow)) {
+    delete affPending[chatId];
+    // รวมข้อความที่ buffer ไว้ (คำสั่ง + รายละเอียดที่ forward มา) เป็น rawText กันข้อมูลตกหล่น
+    const seenT = new Set();
+    const affText =
+      (recentTexts[chatId] || [])
+        .map((t) => t.text)
+        .filter((t) => t && !seenT.has(t) && seenT.add(t))
+        .join("\n") || text;
     recentFiles[chatId] = [];
     recentTexts[chatId] = [];
     await reactMsg(chatId, triggerMsgId, "👀"); // เห็นเอกสารแล้ว กำลังตรวจ
-    await doAffCheck(chatId, text, files, from, isGroup, triggerMsgId);
+    await doAffCheck(chatId, affText, files, from, isGroup, triggerMsgId);
     return;
   }
 
@@ -446,6 +458,16 @@ async function processBatch(chatId, msgs) {
   const seen = new Set();
   const all = (recentFiles[chatId] || []).filter((f) => !seen.has(f.file_id) && seen.add(f.file_id));
 
+  // สั่งตรวจเอกสาร AFF แต่ยังไม่มีไฟล์ → เปิดหูรอไฟล์ (ไม่ตอบแชทซ้ำ/ไม่ตอบเรื่องอื่น)
+  const affReqIntent = /ตรวจ(สอบ)?\s*(เอกสาร|aff|affiliate|รายการ|การถอน|ถอน)|(เช็ก|เช็ค)\s*(เอกสาร|aff)/i.test(text);
+  if (affReqIntent && all.length === 0) {
+    affPending[chatId] = now + BUFFER_TTL;
+    armedUntil[chatId] = now + BUFFER_TTL;
+    await reactMsg(chatId, triggerMsgId, "👀");
+    await tg("sendMessage", { chat_id: chatId, text: "รับเรื่องตรวจเอกสาร AFF ค่ะ ส่งไฟล์เอกสาร (PDF) + รายละเอียดของรายการมาได้เลยนะคะ" });
+    return;
+  }
+
   // สั่งทำสไลด์ + มีไฟล์แนบ (เช่น reply PDF) → อ่านเนื้อหาไฟล์นั้นมาทำสไลด์ ไม่ใช่ดึงข้อมูลระบบ
   if (isSlideish && all.length > 0) {
     recentFiles[chatId] = [];
@@ -460,7 +482,7 @@ async function processBatch(chatId, msgs) {
     if (all.length === 0) {
       memoPending[chatId] = now + BUFFER_TTL;
       armedUntil[chatId] = now + BUFFER_TTL;
-      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId);
+      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText);
       return;
     }
     // มีไฟล์แล้ว → รวมข้อความที่ buffer ไว้ทั้งหมด (คำสั่ง + เนื้อหาที่ forward มา) เป็น rawText
@@ -478,7 +500,7 @@ async function processBatch(chatId, msgs) {
     await doMemo(chatId, memoText, all, from, isGroup, triggerMsgId);
     return;
   }
-  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId); return; }
+  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText); return; }
 }
 
 async function handleMessage(msg) {
