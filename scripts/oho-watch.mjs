@@ -195,10 +195,10 @@ async function tick(page) {
 
     const caption =
       `${L.emoji} <b>${esc(L.label)}</b>\n` +
-      `ช่องทาง: <b>${esc(w.channel || "-")}</b>${w.team ? ` · ทีม ${esc(w.team)}` : ""}\n` +
-      `ลูกค้า: <b>${esc(w.customer || "-")}</b>\n` +
-      `รอมาแล้ว: <b>${mmss(w.waitSec)}</b>\n` +
-      `เปิดแชท: <a href="${esc(link)}">คลิกเปิดแชทนี้</a>\n` +
+      `📥 ช่องทาง: <b>${esc(w.channel || "-")}</b>${w.team ? ` · ทีม ${esc(w.team)}` : ""}\n` +
+      `👤 ลูกค้า: <b>${esc(w.customer || "-")}</b>\n` +
+      `⚠️ รอมาแล้ว: <b>${mmss(w.waitSec)}</b>\n` +
+      `🔗 เปิดแชท: <a href="${esc(link)}">คลิกเปิดแชทนี้</a>\n` +
       `${formatTags(taggees)} รบกวนกดรับแชทด้วยนะคะ` +
       (notes.length ? `\n<i>(${esc(notes.join(" · "))})</i>` : "");
 

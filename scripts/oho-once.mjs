@@ -63,11 +63,11 @@ for (const w of rooms) {
   const photo = rect && rect.width > 10 ? await page.screenshot({ clip: rect }).catch(() => null) : null;
   const link = `${URL}?room=${w.convId}`;
   const caption =
-    `🔴 <b>แชทค้าง ยังไม่มีคนตอบ</b>\n` +
-    `ช่องทาง: <b>${esc(w.channel)}</b>${w.team ? ` · ทีม ${esc(w.team)}` : ""}\n` +
-    `ลูกค้า: <b>${esc(w.customer)}</b>\n` +
-    `รอมาแล้ว: <b>${fmt(w.waitSec)}</b>\n` +
-    `เปิดแชท: <a href="${esc(link)}">คลิกเปิดแชทนี้</a>\n` +
+    `🔴 <b>ด่วนมาก! แชทค้าง ยังไม่มีคนตอบ</b>\n` +
+    `📥 ช่องทาง: <b>${esc(w.channel)}</b>${w.team ? ` · ทีม ${esc(w.team)}` : ""}\n` +
+    `👤 ลูกค้า: <b>${esc(w.customer)}</b>\n` +
+    `⚠️ รอมาแล้ว: <b>${fmt(w.waitSec)}</b>\n` +
+    `🔗 เปิดแชท: <a href="${esc(link)}">คลิกเปิดแชทนี้</a>\n` +
     `${formatTags(taggees)} รบกวนกดรับแชทด้วยนะคะ`;
   const form = new FormData();
   form.append("chat_id", ALERT_CHAT);
