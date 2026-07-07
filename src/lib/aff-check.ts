@@ -262,7 +262,7 @@ function comparisonHtml(o: {
   allOk: boolean;
   dateStr: string;
 }): string {
-  const logo = fileDataUri("public/brand/thunder-logo.png");
+  const logo = fileDataUri("public/brand/thunder-mark.png");
   const hasSys = !!o.system;
 
   const chip = (m: boolean | null) =>
@@ -308,7 +308,7 @@ function comparisonHtml(o: {
   .card{background:#fff;border:1px solid #d6e4f7;border-radius:20px;overflow:hidden;box-shadow:0 10px 30px rgba(30,64,140,.10)}
   .head{display:flex;align-items:center;justify-content:space-between;padding:20px 26px;background:linear-gradient(120deg,#eff5ff,#dbe8fc);border-bottom:2px solid #c7dbf5}
   .head .l{display:flex;align-items:center;gap:14px}
-  .head img{height:34px}
+  .head img{height:48px;width:48px;border-radius:11px;box-shadow:0 3px 8px rgba(18,58,115,.28)}
   .head .t h1{font-size:19px;font-weight:800;color:#123a73}
   .head .t p{font-size:13px;color:#4a6ea3;margin-top:2px;font-weight:500}
   .verdict{font-size:14px;font-weight:800;padding:8px 16px;border-radius:999px}
