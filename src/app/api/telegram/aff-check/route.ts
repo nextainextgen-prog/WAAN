@@ -4,6 +4,7 @@ import { isServiceRequest } from "@/lib/auth";
 import { getAllowedChatId, getAllowedGroups } from "@/lib/telegram";
 import { isOwner, isAuthorized } from "@/lib/team";
 import { runAffCheck } from "@/lib/aff-check";
+import { saveChat } from "@/lib/secretary";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -42,6 +43,9 @@ export async function POST(req: Request) {
 
   try {
     const result = await runAffCheck(pdf.path, rawText);
+    // บันทึกผลตรวจลงประวัติสนทนา เพื่อให้ตอบตามเรื่องเดิมได้ (เช่น "ที่ว่าเลขบัญชีไม่ตรง...")
+    if (rawText) await saveChat("user", `[ขอตรวจเอกสาร Affiliate] ${rawText}`.slice(0, 1000)).catch(() => {});
+    await saveChat("assistant", `[ผลตรวจเอกสาร Affiliate ที่เพิ่งทำ]\n${result.reportText}`.slice(0, 3500)).catch(() => {});
     const sends: Send[] = [{ kind: "text", text: result.reportText }];
     for (const im of result.images) {
       try {

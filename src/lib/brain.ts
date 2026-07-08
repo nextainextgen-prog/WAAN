@@ -1,9 +1,19 @@
 import { askClaude } from "./claude";
 import { askGemini } from "./gemini";
 import { askHermes, hermesConfigured } from "./hermes";
-import { buildSecretaryContext } from "./secretary";
+import { buildSecretaryContext, getChatHistory } from "./secretary";
 import { readVaultKnowledge, obsidianStatus } from "./obsidian";
 import { db } from "./db";
+
+// ประวัติสนทนาล่าสุด → ให้ AI "จำเรื่องที่เพิ่งคุยกัน" ตามเรื่องเดิมต่อได้
+async function recentConversation(): Promise<string> {
+  const rows = await getChatHistory(16).catch(() => []);
+  if (!rows.length) return "";
+  const lines = rows
+    .map((r) => `${r.role === "assistant" ? "น้องวาน" : "ผู้ใช้"}: ${String(r.content).replace(/\s+/g, " ").slice(0, 600)}`)
+    .join("\n");
+  return `=== บทสนทนาล่าสุด (ใช้ต่อบริบทเวลาผู้ใช้ถามตามเรื่องเดิม อย่าทำเหมือนไม่เคยคุย) ===\n${lines}`;
+}
 
 /**
  * "สมอง AI" ของ Changoh — รวมแหล่งความรู้และโมเดลเข้าด้วยกัน
@@ -66,6 +76,8 @@ export async function askBrain(
 ): Promise<BrainResult> {
   const requested = opts.model ?? (await getDefaultModel());
   let context = await buildFullContext();
+  const convo = await recentConversation();
+  if (convo) context += `\n\n${convo}`;
   if (opts.extraContext) context += `\n\n${opts.extraContext}`;
 
   // โหมด auto: Claude ก่อน ถ้าล้มเหลวลอง Gemini แล้วค่อย Hermes
