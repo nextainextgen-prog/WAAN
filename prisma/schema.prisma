@@ -89,3 +89,20 @@ model Document {
   driveUploaded Boolean  @default(false) // อัปไฟล์ที่เซ็นแล้วกลับ Drive หรือยัง
   createdAt  DateTime @default(now())
 }
+
+// ตารางงาน/ปฏิทิน — น้องวานจดสิ่งที่ต้องทำตามวัน แล้วแจ้งเตือนเมื่อถึงวัน
+model CalendarEvent {
+  id          String    @id @default(cuid())
+  chatId      String                          // แชทที่ให้ลง (แจ้งเตือนกลับที่นี่)
+  date        DateTime                         // วันของงาน (เที่ยงคืนของวันนั้น เวลาไทย)
+  timeText    String?                          // เวลาถ้าระบุ เช่น "14:00"
+  title       String                           // สิ่งที่ต้องทำ
+  emoji       String?                          // อิโมจิที่ผู้ใช้กำหนด
+  createdById String?
+  creatorName String?
+  notified    Boolean   @default(false)        // แจ้งเตือนถึงวันแล้วหรือยัง
+  done        Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  @@index([notified, date])
+}
