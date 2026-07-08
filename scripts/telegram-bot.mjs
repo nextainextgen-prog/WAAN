@@ -22,6 +22,9 @@ if (!TOKEN) { console.error("ไม่พบ TELEGRAM_BOT_TOKEN"); process.exit(
 const API = (m) => `https://api.telegram.org/bot${TOKEN}/${m}`;
 let BOT_USERNAME = "";
 let BOT_ID = 0;
+let OWNER_CHAT_ID = ""; // แชทส่วนตัวเจ้าของ (ไว้แจ้งเตือนเมื่อทำงานเสร็จ) — ดึงตอนสตาร์ท
+let ROSTER = [];        // รายชื่อทีม [{id,name,username,realName}] — ไว้แท็กตามชื่อที่พิมพ์
+let MANAGER = null;     // ผู้จัดการที่ต้องแท็กเรื่องเอกสารคืนเงิน (พี่หนิง)
 async function tg(method, body) {
   const res = await fetch(API(method), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return res.json();
@@ -84,7 +87,21 @@ async function downloadFile(file_id, destDir, filename) {
 
 const memoInFlight = new Set();
 
-async function doMemo(chatId, text, files, from, isGroup, msgId) {
+// ดาวน์โหลดรูปที่ผู้ใช้ส่งมาล่าสุด (ไว้ให้ AI อ่าน/วิเคราะห์ในแชท)
+async function downloadRecentImages(chatId) {
+  const imgs = (recentFiles[chatId] || []).filter((f) => /^photo_|\.(jpe?g|png|webp)$/i.test(f.file_name || ""));
+  if (!imgs.length) return [];
+  const seen = new Set();
+  const uniq = imgs.filter((f) => !seen.has(f.file_id) && seen.add(f.file_id)).slice(0, 6);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-img-"));
+  const paths = [];
+  for (const f of uniq) {
+    try { const s = await downloadFile(f.file_id, dir, f.file_name); if (s) paths.push(s.path); } catch { /* skip */ }
+  }
+  return paths;
+}
+
+async function doMemo(chatId, text, files, from, isGroup, msgId, mentions) {
   if (memoInFlight.has(String(chatId))) return; // กันออกเอกสารซ้ำ
   memoInFlight.add(String(chatId));
   try {
@@ -116,6 +133,7 @@ async function doMemo(chatId, text, files, from, isGroup, msgId) {
   await status.finishDone("✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ");
   await sendMemoDraft(chatId, data);
   await reactMsg(chatId, msgId, "✅");
+  await notifyDelivery(chatId, isGroup, from, text, mentions, "เอกสารคืนเงิน (ร่าง)", MANAGER);
   } finally {
     memoInFlight.delete(String(chatId));
   }
@@ -200,7 +218,7 @@ async function doAffCheck(chatId, text, files, from, isGroup, msgId) {
 }
 
 // ทำสไลด์ "จากไฟล์ที่แนบ" (เช่น reply PDF แล้วสั่งทำสไลด์) — อ่านเนื้อหาไฟล์นั้นมาทำ ไม่ใช่ดึงข้อมูลระบบ
-async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId) {
+async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId, mentions) {
   if (memoInFlight.has(String(chatId))) return;
   memoInFlight.add(String(chatId));
   try {
@@ -234,6 +252,7 @@ async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId) {
       { kind: "document", url: data.files.html, filename: `${safe}.html` },
     ]);
     await reactMsg(chatId, msgId, "✅");
+    await notifyDelivery(chatId, isGroup, from, text, mentions, `สไลด์ "${data.title}"`);
   } finally {
     memoInFlight.delete(String(chatId));
   }
@@ -291,10 +310,10 @@ async function sendResultSends(chatId, sends) {
   }
 }
 
-async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions) {
+async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles) {
   const res = await fetch(APP_URL + "/api/telegram/ingest", {
     method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), isGroup: !!isGroup, replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [] }),
+    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [] }),
   });
   return res.json();
 }
@@ -307,6 +326,7 @@ function extractMentions(msgs) {
     const ents = m.entities || m.caption_entities || [];
     for (const e of ents) {
       if (e.type === "text_mention" && e.user) {
+        if (e.user.id === BOT_ID || e.user.is_bot) continue; // ไม่นับการแท็กตัวบอทเอง
         out.push({ id: String(e.user.id), name: [e.user.first_name, e.user.last_name].filter(Boolean).join(" ") || e.user.username || "สมาชิก", username: e.user.username || undefined });
       } else if (e.type === "mention") {
         const uname = t.substr(e.offset, e.length).replace(/^@/, "").trim();
@@ -317,7 +337,7 @@ function extractMentions(msgs) {
   return out;
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions) {
+async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions, imagePaths) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
@@ -327,13 +347,14 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
     ]);
     let data;
-    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions); }
+    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths); }
     catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
     await status.finishDone("✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ");
     await sendResultSends(chatId, sends);
     await reactMsg(chatId, msgId, "✅");
+    await notifyDelivery(chatId, isGroup, from, text, mentions, "สไลด์");
     return;
   }
 
@@ -347,7 +368,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   }, 7000);
 
   let data;
-  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions); }
+  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths); }
   catch {
     clearInterval(typingTimer); clearTimeout(softTimer);
     const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
@@ -360,11 +381,37 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   const sends = data.sends || [];
   const texts = sends.filter((s) => s.kind === "text");
   if (sends.length === 0) { if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {}); return; }
-  // คำตอบข้อความเดี่ยว (ไม่มีไฟล์/รูปแนบ) → ถ้าเคยขึ้น "กำลังหา" ให้แก้ข้อความนั้นเป็นคำตอบเลย ไม่งั้นส่งใหม่
+  // คำตอบข้อความเดี่ยว (ไม่มีไฟล์/รูปแนบ)
   if (texts.length === 1 && sends.length === 1) {
     const pm = texts[0].parseMode ? { parse_mode: texts[0].parseMode } : {};
-    if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text, ...pm }).catch(() => {});
-    else await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...pm });
+    // ในกลุ่ม: แท็ก "คนที่ควรถูกพูดด้วย" = ถ้าผู้ส่งแท็กใครไว้ → คนนั้น (เช่น "ทักทาย Orin") ไม่งั้น → คนที่ถามเอง
+    if (isGroup && msgId) {
+      if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
+      const addressee = (mentions && mentions.length) ? mentions[0] : from;
+      // ตัดคำนำหน้าที่ AI อาจเผลอใส่ (ทั้ง "@ชื่อ" และชื่อคนที่พูดด้วยล้วนๆ) กันแท็กซ้ำสองรอบ
+      let body = String(texts[0].text || "").replace(/^\s*@\S+[\s,:!.\-]*/, "");
+      if (addressee?.name) {
+        const ne = addressee.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        body = body.replace(new RegExp("^\\s*" + ne + "[\\s,:!.\\-]*"), "");
+      }
+      body = body.trimStart();
+      const mn = buildMention(addressee);
+      // reply thread เฉพาะตอนตอบ "คนที่ถามเอง"; ถ้าพูดกับคนที่ถูกแท็ก ไม่ต้อง thread ไปที่ผู้ส่ง
+      const extra = (mentions && mentions.length) ? {} : { reply_to_message_id: msgId };
+      let outText = body;
+      if (mn) {
+        outText = `${mn.prefix} ${body}`;
+        if (mn.entity) extra.entities = [mn.entity]; // ไม่มี username → ใช้ entity ให้แท็กติด (ห้ามใส่ parse_mode คู่)
+        else Object.assign(extra, pm);
+      } else {
+        Object.assign(extra, pm);
+      }
+      await tg("sendMessage", { chat_id: chatId, text: outText, ...extra });
+    } else if (softId) {
+      await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text, ...pm }).catch(() => {});
+    } else {
+      await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...pm });
+    }
     return;
   }
   // มีรูป/ไฟล์แนบด้วย → ถ้ามีข้อความ ให้แก้ soft msg เป็นข้อความแรก แล้วส่งเฉพาะรูป/ไฟล์ที่เหลือ
@@ -380,6 +427,56 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
 function personOf(u) {
   if (!u) return null;
   return { id: String(u.id), name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.username || "สมาชิก", username: u.username || undefined };
+}
+
+// หาผู้รับจาก "ชื่อที่พิมพ์ในข้อความ" เทียบรายชื่อทีม (เช่น "ส่งให้เนย" → พี่เนย)
+// เฉพาะเมื่อมีคำสั่งฝาก/ส่งให้ และชื่อยาวพอ (กันจับ "กร" ไปตรงกับ "กสิกร")
+function findRosterRecipient(text, excludeId) {
+  const t = String(text || "");
+  if (!/ส่งให้|ให้กับ|ฝากให้|ฝาก|แท็ก|ส่งต่อ|บอก/.test(t)) return null; // ต้องมีคำสั่งฝาก/ส่งถึงจะจับชื่อ
+  for (const m of ROSTER) {
+    if (String(m.id) === String(excludeId || "")) continue;
+    const nick = String(m.name || "").replace(/^(พี่|น้อง|คุณ)\s*/, "").trim();
+    // ชื่อเต็มมีคำนำหน้า (พี่กร) จับได้เลย · ชื่อล้วน (กร) ต้องยาว >= 3 ตัว กันชนคำอื่น
+    const cands = [m.name, m.realName].filter((s) => s && String(s).length >= 2);
+    if (nick.length >= 3) cands.push(nick);
+    if (cands.some((c) => t.includes(c))) return { id: m.id, name: m.name, username: m.username || undefined };
+  }
+  return null;
+}
+
+// หลังทำงานเสร็จในกลุ่ม: แท็กผู้รับ (บังคับ/แท็กที่สั่งให้ส่ง/ชื่อในข้อความ) + แจ้งเจ้าของทางแชทส่วนตัว
+async function notifyDelivery(chatId, isGroup, from, text, mentions, label, forced) {
+  try {
+    // ผู้รับ: บังคับ (เช่น เอกสาร→พี่หนิง) > คนที่แท็กไว้ > ชื่อที่พิมพ์ในข้อความ — ไม่นับตัวผู้สั่งเอง
+    const recip =
+      forced ||
+      (mentions || []).find((m) => m && (m.id ? String(m.id) !== String(from?.id || "") : true)) ||
+      findRosterRecipient(text, from?.id);
+    if (isGroup && recip) {
+      const mn = buildMention(recip);
+      const body = `นี่${label}ที่ฝากให้ส่งค่ะ ไฟล์อยู่ด้านบนเลยนะคะ`;
+      const extra = {};
+      let outText = body;
+      if (mn) { outText = `${mn.prefix} ${body}`; if (mn.entity) extra.entities = [mn.entity]; }
+      await tg("sendMessage", { chat_id: chatId, text: outText, ...extra });
+    }
+    // แจ้งเจ้าของทางแชทส่วนตัว (เฉพาะงานที่ทำในกลุ่ม)
+    if (isGroup && OWNER_CHAT_ID && String(chatId) !== String(OWNER_CHAT_ID)) {
+      const to = recip ? ` และส่งให้ ${recip.name || recip.username || "ทีม"} แล้ว` : "";
+      await tg("sendMessage", { chat_id: OWNER_CHAT_ID, text: `แจ้งพี่โด้ค่ะ ทำ${label}ในกลุ่มเสร็จเรียบร้อยแล้ว${to}ค่ะ 👀` });
+    }
+  } catch { /* แจ้งเตือนพลาดไม่เป็นไร ไม่ให้กระทบงานหลัก */ }
+}
+
+// สร้างการแท็กที่ "ติดจริง": มี username → @username (auto-link) · ไม่มี → text_mention entity (คลิกได้แม้ไม่มี username)
+function buildMention(from) {
+  if (!from) return null;
+  if (from.username) return { prefix: `@${from.username}`, entity: null };
+  const name = String(from.name || "").trim();
+  const uid = Number(from.id);
+  if (!name || !Number.isFinite(uid) || uid <= 0) return null;
+  return { prefix: name, entity: { type: "text_mention", offset: 0, length: name.length, user: { id: uid } } };
 }
 
 async function processBatch(chatId, msgs) {
@@ -399,6 +496,14 @@ async function processBatch(chatId, msgs) {
   if (replyFile && !files.some((f) => f.file_id === replyFile.file_id)) files.push(replyFile);
   const now = Date.now();
   recentFiles[chatId] = (recentFiles[chatId] || []).filter((f) => now - f.ts < BUFFER_TTL);
+  // ไฟล์ชุดใหม่มาหลังเว้นช่วงนาน (>45 วิ) = คนละเคส → ทิ้งไฟล์/ข้อความเก่าที่ค้าง กันเอกสารปนข้ามเคส (เช่น PDF Affiliate ค้างไปโผล่ในเอกสารคืนเงิน)
+  if (files.length && recentFiles[chatId].length) {
+    const lastTs = Math.max(...recentFiles[chatId].map((f) => f.ts));
+    if (now - lastTs > 45000) {
+      recentFiles[chatId] = [];
+      recentTexts[chatId] = [];
+    }
+  }
   for (const f of files) recentFiles[chatId].push({ ...f, ts: now });
   // เก็บ "ข้อความ/แคปชัน" ของ batch นี้ไว้ด้วย (ก่อนตัด trigger) เพื่อไม่ให้เนื้อหาที่ forward มาหาย
   // เมื่อคำสั่งกับเนื้อหา forward มาคนละ batch — เดิมเก็บแต่ไฟล์ ทำให้ rawText ตอนออกเอกสารว่าง
@@ -492,7 +597,7 @@ async function processBatch(chatId, msgs) {
   if (isSlideish && all.length > 0) {
     recentFiles[chatId] = [];
     recentTexts[chatId] = [];
-    await doSlideFromFiles(chatId, text, all, from, isGroup, triggerMsgId);
+    await doSlideFromFiles(chatId, text, all, from, isGroup, triggerMsgId, mentions);
     return;
   }
 
@@ -517,10 +622,14 @@ async function processBatch(chatId, msgs) {
     recentFiles[chatId] = [];
     recentTexts[chatId] = [];
     delete memoPending[chatId];
-    await doMemo(chatId, memoText, all, from, isGroup, triggerMsgId);
+    await doMemo(chatId, memoText, all, from, isGroup, triggerMsgId, mentions);
     return;
   }
-  if (text) { await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions); return; }
+  if (text) {
+    const imgPaths = await downloadRecentImages(chatId); // ถ้ามีรูปที่ส่งมา → ให้ AI อ่าน/วิเคราะห์
+    await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, imgPaths);
+    return;
+  }
 }
 
 async function handleMessage(msg) {
@@ -549,24 +658,45 @@ async function handleCallback(cb) {
   try {
     const res = await fetch(APP_URL + "/api/telegram/callback", {
       method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), data: cb.data || "" }),
+      body: JSON.stringify({ chatId: String(chatId), fromId: String(cb.from?.id || ""), data: cb.data || "" }),
     });
     out = await res.json();
   } catch { out = { answer: "ระบบหลังบ้านไม่พร้อม", sends: [] }; }
   await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.answer || "" });
   for (const s of out.sends || []) {
-    if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text, ...(s.parseMode ? { parse_mode: s.parseMode } : {}) });
-    else if (s.kind === "document") {
+    if (s.kind === "text") {
+      const { text, entities } = applyMention(s.text, s.mention);
+      await tg("sendMessage", { chat_id: chatId, text, ...(entities ? { entities } : {}), ...(s.parseMode && !entities ? { parse_mode: s.parseMode } : {}) });
+    } else if (s.kind === "document") {
       await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
       const r = await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } });
       const buf = Buffer.from(await r.arrayBuffer());
       const form = new FormData();
       form.append("chat_id", String(chatId));
-      if (s.caption) form.append("caption", s.caption);
+      if (s.caption) {
+        const { text, entities } = applyMention(s.caption, s.mention);
+        form.append("caption", text);
+        if (entities) form.append("caption_entities", JSON.stringify(entities));
+      }
       form.append("document", new Blob([new Uint8Array(buf)]), s.filename || "file");
       await fetch(API("sendDocument"), { method: "POST", body: form });
     }
   }
+}
+
+// แทนที่ {{MENTION}} ด้วยชื่อผู้จัดการ + สร้าง text_mention entity ให้แท็กติดจริง (แม้ไม่มี @username)
+function applyMention(text, mention) {
+  const src = String(text || "");
+  const ph = "{{MENTION}}";
+  const idx = src.indexOf(ph);
+  if (idx < 0) return { text: src, entities: undefined };
+  const name = (mention && mention.name) || "ผู้จัดการ";
+  const out = src.slice(0, idx) + name + src.slice(idx + ph.length);
+  const uid = mention && Number(mention.id);
+  const entities = uid && Number.isFinite(uid) && uid > 0
+    ? [{ type: "text_mention", offset: idx, length: name.length, user: { id: uid } }]
+    : undefined;
+  return { text: out, entities };
 }
 
 async function main() {
@@ -575,7 +705,37 @@ async function main() {
   BOT_USERNAME = me.result.username;
   BOT_ID = me.result.id;
   console.log(`น้องวานพร้อมทำงาน: @${BOT_USERNAME} (id ${BOT_ID}) · app ${APP_URL}`);
+  // ดึงแชทส่วนตัวเจ้าของ ไว้แจ้งเตือนเมื่อทำงานเสร็จ
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/config", { method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL } });
+    const c = await r.json();
+    OWNER_CHAT_ID = String(c.ownerChatId || "");
+    MANAGER = c.managerSigner && c.managerSigner.id ? c.managerSigner : null;
+    if (OWNER_CHAT_ID) console.log(`แชทเจ้าของ: ${OWNER_CHAT_ID}`);
+    if (MANAGER) console.log(`ผู้จัดการ (แท็กเรื่องเอกสาร): ${MANAGER.name} (${MANAGER.id})`);
+  } catch { /* ดึงไม่ได้ก็ข้ามการแจ้งเตือนเจ้าของ */ }
+  // ดึงรายชื่อทีม ไว้แท็กตามชื่อที่พิมพ์
+  const loadRoster = async () => {
+    try {
+      const r = await fetch(APP_URL + "/api/telegram/roster", { method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL } });
+      const j = await r.json();
+      if (Array.isArray(j.members)) { ROSTER = j.members; console.log(`รายชื่อทีม: ${ROSTER.length} คน`); }
+    } catch { /* ดึงไม่ได้ก็ข้าม */ }
+  };
+  await loadRoster();
+  setInterval(loadRoster, 10 * 60 * 1000); // รีเฟรชรายชื่อทุก 10 นาที
   await tg("deleteWebhook", { drop_pending_updates: false });
+
+  // ตรวจงานปฏิทินที่ถึงกำหนดทุก 5 นาที → แจ้งเตือนเข้าแชท (ไม่ต้องพึ่ง cron ภายนอก)
+  const checkCalendar = async () => {
+    try {
+      await fetch(APP_URL + "/api/telegram/calendar-due", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      });
+    } catch { /* เดี๋ยวรอบหน้าลองใหม่ */ }
+  };
+  setTimeout(checkCalendar, 15000);
+  setInterval(checkCalendar, 5 * 60 * 1000);
   let offset = 0;
   while (true) {
     try {
