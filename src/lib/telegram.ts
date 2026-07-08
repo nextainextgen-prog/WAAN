@@ -12,6 +12,18 @@ export async function getAllowedChatId(): Promise<string | null> {
   return row?.value || process.env.TELEGRAM_ALLOWED_CHAT_ID?.trim() || null;
 }
 
+// ผู้จัดการที่ต้องเซ็นต่อหลังเจ้าของเซ็น (แท็กในข้อความ) — บันทึกไว้ ใช้ได้ทุกกลุ่ม
+export async function getManagerSigner(): Promise<{ id: string; name: string } | null> {
+  const row = await db.setting.findUnique({ where: { key: "manager_signer" } });
+  if (!row) return null;
+  try {
+    const v = JSON.parse(row.value);
+    return v?.id ? { id: String(v.id), name: String(v.name || "ผู้จัดการ") } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function setAllowedChatId(id: string) {
   await db.setting.upsert({
     where: { key: "telegram_chat_id" },

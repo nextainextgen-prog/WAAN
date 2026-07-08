@@ -14,14 +14,17 @@ export interface RefundMemoData {
   topupDate: string; // วันที่โอน/เติมเครดิต (พ.ศ. เต็ม)
   topupTime: string; // เวลาตัดเครดิต เช่น "13.16"
   user: string; // ชื่อผู้ใช้งาน (User)
-  serviceName: string; // ชื่อบริการ
+  serviceName: string; // ชื่อลูกค้า/บริษัท (ใช้ตั้งชื่อไฟล์)
+  serviceType: string; // ประเภทบริการในวงเล็บ เช่น "API", "บอทเช็กสลิป", "BOT/API"
   packageName: string; // แพ็กเกจ
   months: number;
-  amount: number; // จำนวนเงินที่โอน/เติมเข้าระบบ
+  netPrice: number; // ราคาค่าบริการที่ต้องชำระจริง (สุทธิ)
+  amount: number; // จำนวนเงินที่ลูกค้าชำระเข้ามาแล้ว
   whtRate: number; // อัตราหัก ณ ที่จ่าย (ร้อยละ)
-  whtAmount: number; // จำนวนเงินหัก ณ ที่จ่าย
-  overpay: number; // ยอดส่วนเกิน (0 ถ้าไม่มี)
-  refund: number; // ยอดรวมที่คืน
+  whtAmount: number; // ยอดส่วนต่างหัก ณ ที่จ่ายที่ต้องคืน
+  discount: number; // ยอดส่วนลดที่ต้องคืน (0 ถ้าไม่มี)
+  overpay: number; // ยอดชำระเกินที่ต้องคืน (0 ถ้าไม่มี)
+  refund: number; // ยอดรวมที่คืน = whtAmount + discount + overpay
   bank: string;
   accountNo: string;
   accountName: string;
@@ -82,14 +85,31 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   const dot = "(...................................)";
   const totalPages = 1 + d.attachments.length;
 
-  // ข้อความ prose ตรงต้นฉบับ (เติมเฉพาะช่องว่างจากข้อมูลจริง)
-  const overpayLine =
-    d.overpay > 0
-      ? ` และมียอดชำระเกินจากการโอนอีกจำนวน ${baht(d.overpay)} บาท`
-      : "";
-  // เวลาตัดเครดิต: ถ้าไม่มีเวลา (ว่าง/"-") ให้ตัดคำว่า "เวลา ... น." ทิ้ง ไม่ให้ค้าง "เวลา - น."
-  const hasTime = d.topupTime && d.topupTime !== "-";
-  const topupTimeClause = hasTime ? ` เวลา ${escapeHtml(d.topupTime)} น.` : "";
+  // ===== ข้อความล็อกตามต้นฉบับบริษัท (Google Doc) — เติมเฉพาะช่องว่างจากข้อมูลจริง =====
+  // ยอดส่วนเกิน/ส่วนลด พิมพ์ "แยกบรรทัด" กับหัก ณ ที่จ่าย แต่รวมเป็นยอดคืนเดียว
+  const hasOverpay = d.overpay > 0;
+  const hasDiscount = d.discount > 0;
+  const hasExtra = hasOverpay || hasDiscount;
+  const roundClause = d.topupDate ? ` (รอบเติมเครดิต วันที่ ${escapeHtml(d.topupDate)})` : "";
+  const introDiff = [hasOverpay ? "ส่วนเกิน" : "", hasDiscount ? "ส่วนลด" : ""].filter(Boolean).join("และ");
+  const introClause = introDiff ? ` และ${introDiff}` : "";
+  const extraLine =
+    (hasOverpay ? `\n            <li>ยอดส่วนเกินที่ต้องคืนลูกค้า ${baht(d.overpay)} บาท</li>` : "") +
+    (hasDiscount ? `\n            <li>ยอดส่วนลดที่ต้องคืนลูกค้า ${baht(d.discount)} บาท</li>` : "");
+  const refundWord = hasExtra ? "คืนเงินส่วนต่างรวมจำนวน" : "คืนเงินส่วนต่างจำนวน";
+  const memoBody = `<p>ตามที่ลูกค้าผู้ใช้งาน ${escapeHtml(d.user)} (บริการ ${escapeHtml(d.serviceType || "BOT/API")}) ได้ดำเนินการชำระเงินเพื่อต่ออายุแพ็กเกจ${roundClause} โดยมีรายละเอียดดังนี้</p>
+          <ul>
+            <li>เติมเงินเพื่อชำระค่าแพ็กเกจ ${escapeHtml(d.packageName)} จำนวน ${d.months} เดือน</li>
+            <li>ราคาค่าบริการที่ต้องชำระจริง ${baht(d.netPrice)} บาท</li>
+            <li>ลูกค้าดำเนินการชำระเงินเข้ามาแล้ว จำนวน ${baht(d.amount)} บาท</li>
+          </ul>
+          <p>ภายหลังการทำรายการ ลูกค้ามีส่วนต่างจากการหัก ณ ที่จ่าย${introClause} ซึ่งเมื่อคำนวณยอดชำระจริงและยอดเงินที่ลูกค้าชำระเข้ามาแล้ว มีรายละเอียดดังนี้</p>
+          <ul>
+            <li>ยอดค่าบริการสุทธิที่ต้องชำระจริง ${baht(d.netPrice)} บาท</li>
+            <li>ยอดเงินที่ลูกค้าชำระเข้ามา ${baht(d.amount)} บาท</li>
+            <li>ยอดเงินส่วนต่างหัก ณ ที่จ่ายที่ต้องคืนลูกค้า ${baht(d.whtAmount)} บาท</li>${extraLine}
+          </ul>
+          <p>ดังนั้น เพื่อให้ยอดรายรับสอดคล้องกับค่าบริการตามแพ็กเกจ และถูกต้องตามระบบบัญชี จึงขออนุมัติดำเนินการ${refundWord} ${baht(d.refund)} บาท โดยโอนเข้าบัญชีธนาคารของลูกค้าตามรายละเอียดดังนี้</p>`;
 
   const attachmentPages = d.attachments
     .map(
@@ -120,8 +140,10 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   .brow{display:flex;min-height:216mm}
   .bleft{flex:0 0 63%;border-right:1.2px solid ${C.line};padding:14px 16px;display:flex;flex-direction:column}
   .bright{flex:1;padding:16px 12px;text-align:center}
-  .bleft p{margin-bottom:6px;text-align:left;text-indent:1.4em;line-height:1.45}
-  .bank{margin:8px 0 4px;line-height:1.7}
+  .bleft p{margin-bottom:6px;text-align:left;text-indent:1.4em;line-height:1.5}
+  .bleft ul{margin:2px 0 12px;padding-left:2.4em;list-style:disc}
+  .bleft li{margin-bottom:4px;line-height:1.5;text-align:left}
+  .bank{margin:8px 0 4px;line-height:1.8}
   .center{text-align:center}
   .sigblock{text-align:center;margin-top:14px}
   .sigblock .sigimg{height:40px;margin-bottom:-8px;position:relative;z-index:2}
@@ -154,26 +176,20 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
       </div>
       <div class="brow">
         <div class="bleft">
-          <p>เมื่อวันที่ ${escapeHtml(d.topupDate)} ลูกค้าชื่อผู้ใช้งาน (User) ${escapeHtml(d.user)} ชื่อบริการ ${escapeHtml(d.serviceName)} ได้ดำเนินการโอนเงินเพื่อเติมเครดิตเข้าสู่ระบบ เพื่อชำระค่าบริการแพ็กเกจ ${escapeHtml(d.packageName)} ระยะเวลาใช้งาน ${d.months} เดือน เป็นจำนวนเงิน ${baht(d.amount)} บาท</p>
-          <p>ทั้งนี้ ระบบได้ทำการตัดเครดิตเพื่อต่ออายุใช้งานเมื่อวันที่ ${escapeHtml(d.topupDate)}${topupTimeClause}</p>
-          <p>ต่อมา ลูกค้าได้มีการขอหัก ณ ที่จ่ายในอัตราร้อยละ ${d.whtRate} เป็นจำนวนเงิน ${baht(d.whtAmount)} บาท หลังจากโอนยอดเงินเต็มจำนวน และระบบต่ออายุเรียบร้อยแล้ว${overpayLine}</p>
-          <p>ลูกค้าได้จัดส่งใบหักภาษี ณ ที่จ่าย ให้ทางบริษัทเรียบร้อย</p>
-          <p>จึงขอให้บริษัทดำเนินการโอนเงินคืนตามจำนวนดังกล่าว (จำนวน ${baht(d.refund)} บาท) ไปยังบัญชีที่ระบุดังนี้</p>
+          ${memoBody}
           <div class="bank">
-            บัญชีธนาคาร ${escapeHtml(d.bank)}<br>
-            หมายเลขบัญชี ${escapeHtml(d.accountNo)}<br>
-            ชื่อบัญชี ${escapeHtml(d.accountName)}<br>
-            (จำนวนเงิน ${baht(d.refund)} บาท)
+            บัญชีธนาคาร : ${escapeHtml(d.bank)}<br>
+            เลขบัญชีธนาคาร : ${escapeHtml(d.accountNo)}<br>
+            ชื่อบัญชี : ${escapeHtml(d.accountName)}
           </div>
-          <div class="center" style="margin-top:14px">จึงเรียนมาเพื่อดำเนินการ</div>
-          <div class="sigblock">
+          <div class="sigblock" style="margin-top:26px">
             ${d.signed && sig ? `<img class="sigimg" src="${sig}" alt="ลายเซ็น"/>` : ""}
             <div class="dots">${dot}</div>
             <div class="nm">นาย จิรภัทร์ ภูครองหิน</div>
             <div>ตำแหน่ง หัวหน้าฝ่ายบริการลูกค้า</div>
             <div>วันที่ ${escapeHtml(d.date)}</div>
           </div>
-          <div class="sigblock" style="margin-top:22px">
+          <div class="sigblock" style="margin-top:20px">
             <div class="dots">${dot}</div>
             <div class="nm">นางสาวศิริลักษณ์ ชอบธรรม</div>
             <div>ผู้จัดการฝ่ายบริการลูกค้า</div>
@@ -181,7 +197,7 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
           </div>
         </div>
         <div class="bright">
-          <div class="sigblock approver" style="margin-top:36px">
+          <div class="sigblock approver" style="margin-top:40px">
             <div class="dots">${dot}</div>
             <div>ผู้ตรวจสอบ / อนุมัติ</div>
             <div class="nm" style="margin-top:10px">นาย สมพร เสริฐศรี</div>

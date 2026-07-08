@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
-import { getAllowedChatId, getAllowedGroups } from "@/lib/telegram";
+import { getAllowedChatId, getAllowedGroups, getManagerSigner } from "@/lib/telegram";
+import { isOwner, isAuthorized } from "@/lib/team";
 import { decideDocument } from "@/lib/documents";
 
 export const runtime = "nodejs";
@@ -11,15 +12,15 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({}));
   const chatId = String(body.chatId || "");
+  const fromId = String(body.fromId || "");
   const dataStr = String(body.data || "");
 
-  // อนุญาตถ้าเป็นแชทที่ผูกไว้ หรือเป็นกลุ่มที่อนุญาต (ให้ตรงกับตอนออกเอกสาร ไม่งั้นกดเซ็นในกลุ่มไม่ได้)
+  // อนุญาตให้ตรงกับตอน "ออกเอกสาร": ผู้กดเป็นเจ้าของ/ทีมที่อนุญาต หรือแชทที่ผูก/กลุ่มที่อนุญาต
   const allowed = await getAllowedChatId();
-  if (allowed && chatId !== allowed) {
-    const groups = await getAllowedGroups();
-    if (!groups.includes(chatId)) {
-      return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
-    }
+  const chatOk = !allowed || chatId === allowed || (await getAllowedGroups()).includes(chatId);
+  const userOk = fromId ? (await isOwner(fromId)) || (await isAuthorized(fromId)) : false;
+  if (!chatOk && !userOk) {
+    return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
   }
 
   // ปุ่มร่างเอกสาร (memo) — เซ็นเลย / แก้ไข
@@ -27,17 +28,28 @@ export async function POST(req: Request) {
   if (memo) {
     const [, action, id] = memo;
     if (action === "sign") {
-      const { signMemo, memoFilename, getMemo } = await import("@/lib/memo-store");
+      const { signMemo, memoFilename } = await import("@/lib/memo-store");
       const res = await signMemo(id);
       if (!res.ok || !res.data) {
         return NextResponse.json({ answer: "ไม่พบร่าง", sends: [{ kind: "text", text: "ขออภัยค่ะ หาไฟล์ร่างไม่เจอ ลองออกเอกสารใหม่อีกครั้งนะคะ" }] });
       }
-      const rec = await getMemo(id);
+      const mgr = await getManagerSigner();
+      const mention = mgr || undefined; // ให้บอทแท็กผู้จัดการที่ {{MENTION}}
       return NextResponse.json({
         answer: "เซ็นแล้วค่ะ",
         sends: [
-          { kind: "text", text: "เซ็นเอกสารเรียบร้อยแล้วค่ะ ส่งฉบับที่เซ็นแล้วให้เลยนะคะ ถ้าต้องการให้ส่งต่อผู้จัดการ/ผู้อนุมัติ หรือแนบเข้าเมลลูกค้า บอกได้เลยค่ะ" },
-          { kind: "document", url: `/api/memo/${id}/pdf`, filename: memoFilename(res.data, true), caption: "เอกสารคืนเงิน (เซ็นแล้ว)" },
+          {
+            kind: "text",
+            text: "เซ็นเอกสารเรียบร้อยแล้วค่ะ ต่อไปรบกวน {{MENTION}} (ผู้จัดการ) เซ็นต่ออีกท่านนะคะ",
+            mention,
+          },
+          {
+            kind: "document",
+            url: `/api/memo/${id}/pdf`,
+            filename: memoFilename(res.data, true),
+            caption: "เอกสารคืนเงิน (โด้เซ็นแล้ว) รบกวน {{MENTION}} เซ็นต่อ แล้วส่งต่อให้พี่บ๊อบบี้ได้เลยนะคะ",
+            mention,
+          },
         ],
       });
     }
