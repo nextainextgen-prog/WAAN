@@ -3,21 +3,50 @@ import os from "node:os";
 import path from "node:path";
 import { findAffByUsername, type AffRecord } from "./sheets";
 import { extractAffDoc, type AffDocFields } from "./aff-extract";
+import { getNoti, parseDateLoose, parseSystemNoti } from "./aff-notify";
 import { renderHtmlToPng } from "./html-pdf";
 import { pdfFileToPngs } from "./pdf-to-images";
-import { fetchSystemWithdraw, thunderSessionReady, type SystemWithdraw } from "./thunder-admin";
+import { fetchSystemWithdraw, thunderSessionReady, type SystemWithdraw, type SystemFetchResult } from "./thunder-admin";
 
 // ===== normalize สำหรับเทียบภาษาไทย =====
 function normName(s: string): string {
   return s.replace(/นางสาว|นาย|นาง|น\.ส\.|ด\.ช\.|ด\.ญ\./g, "").replace(/\s+/g, "");
 }
-function normAddr(s: string): string {
-  return s
-    .replace(/ตำบล|ต\./g, "")
-    .replace(/อำเภอ|อ\./g, "")
-    .replace(/จังหวัด|จ\./g, "")
-    .replace(/หมู่ที่|หมู่|ม\./g, "")
-    .replace(/[\s./,-]/g, "");
+// ระยะแก้ไข (Levenshtein) — ไว้ยอมสะกดต่างเล็กน้อย เช่น อุตรดิตถ์ / อุตรดิษถ์
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return dp[m][n];
+}
+// คำไทยใกล้กันพอ (ตรง หรือสะกดต่างไม่เกิน ~2 ตัว)
+function thaiClose(a: string, b: string): boolean {
+  const na = (a || "").replace(/[\s.]/g, ""), nb = (b || "").replace(/[\s.]/g, "");
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const tol = Math.min(na.length, nb.length) <= 4 ? 1 : 2;
+  return editDistance(na, nb) <= tol;
+}
+// ดึงส่วนสำคัญของที่อยู่: เลขที่บ้าน / อำเภอ(หรือเขต) / จังหวัด
+function addrParts(s: string): { house: string; district: string; province: string } {
+  const t = (s || "").replace(/\s+/g, " ").trim();
+  const house = (t.match(/(\d+(?:\/\d+)?)/)?.[1] || "").replace(/\s/g, "");
+  // จับ อำเภอ/จังหวัด ให้กินข้ามช่องว่าง (เช่น "เมือง กาฬสินธุ์") จนถึง label ถัดไป แล้วตัดช่องว่างออก
+  const district = (t.match(/(?:อำเภอ|อ\.|เขต)\s*([ก-๙][ก-๙\s]*?)\s*(?:จังหวัด|จ\.|$)/)?.[1] || "").replace(/\s/g, "");
+  let province = (t.match(/(?:จังหวัด|จ\.)\s*([ก-๙][ก-๙\s]*?)\s*$/)?.[1] || "").replace(/\s/g, "");
+  if (!province && /กรุงเทพ/.test(t)) province = "กรุงเทพมหานคร";
+  return { house, district, province };
+}
+// ที่อยู่ตรงกันไหม — โฟกัสแค่ เลขที่บ้าน + อำเภอ + จังหวัด (ตำบล/หมู่/สะกดปลีกย่อยไม่นับ)
+function addrMatch(doc: string, sheet: string): boolean {
+  const A = addrParts(doc), B = addrParts(sheet);
+  const houseOk = !A.house || !B.house || A.house === B.house;
+  const districtOk = !A.district || !B.district || thaiClose(A.district, B.district);
+  const provinceOk = !A.province || !B.province || thaiClose(A.province, B.province);
+  return houseOk && districtOk && provinceOk;
 }
 function normBank(s: string): string {
   return s.replace(/ธนาคาร|จำกัด|\(มหาชน\)|bank/gi, "").replace(/\s+/g, "");
@@ -68,10 +97,32 @@ export async function runAffCheck(
   pdfPath: string,
   adminText: string,
   outDir?: string,
+  chatId?: string,
+  replyText?: string,
+  preSystem?: SystemFetchResult, // ส่ง system ที่ fetch มาแล้ว (เลี่ยง scrape ซ้ำ ตอนวานสร้าง+ตรวจเอง)
 ): Promise<AffCheckResult> {
   const dir = outDir || fs.mkdtempSync(path.join(os.tmpdir(), "waan-aff-"));
   const fields = await extractAffDoc(pdfPath, adminText);
   const record = fields.username ? await findAffByUsername(fields.username) : null;
+
+  // noti ที่แอดมิน "Reply ถึง" (ข้อความบอทระบบที่ถูกตอบกลับ) — ใช้ยืนยันว่าเอกสารตรงรายการนั้น
+  const repliedNoti = replyText ? parseSystemNoti(replyText) : null;
+  const cachedNoti = chatId && fields.username ? await getNoti(chatId, fields.username) : null;
+  const sameUser = (a?: string, b?: string) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+  // เอ๊ะใจ: เอกสารที่แนบ "ไม่ตรง" กับรายการ noti ที่ Reply ถึงไหม — ดูแค่ "คนละคน / คนละยอด"
+  // (วันที่ไม่เอามาตัดสินตรงนี้ วันที่ใช้แค่เลือกแถวหลังบ้านให้ตรงรายการเท่านั้น)
+  let notiMismatch: string | null = null;
+  if (repliedNoti) {
+    if (!sameUser(repliedNoti.username, fields.username)) {
+      notiMismatch = `Reply ไปที่รายการของ "${repliedNoti.username}"${repliedNoti.amount != null ? ` ยอด ${fmt(repliedNoti.amount)}` : ""}${repliedNoti.dateText ? ` (${repliedNoti.dateText})` : ""} แต่เอกสารที่แนบเป็นของ "${fields.username}" — ส่งเอกสารผิดรายการ`;
+    } else if (repliedNoti.amount != null && fields.net != null && Math.abs(repliedNoti.amount - fields.net) > 0.01) {
+      notiMismatch = `Reply ไปที่รายการยอด ${fmt(repliedNoti.amount)} แต่เอกสารยอดสุทธิ ${fmt(fields.net)} — ไม่ตรงรายการ`;
+    }
+  }
+
+  // noti ที่ยึดเลือกแถวหลังบ้าน: ถ้า Reply ถึง noti ของคนเดียวกัน ใช้ตัวนั้น ไม่งั้นใช้ที่ cache ไว้
+  const noti = repliedNoti && sameUser(repliedNoti.username, fields.username) ? repliedNoti : cachedNoti;
 
   const { gross, wht, net } = fields;
   const mathOk = gross != null && wht != null && net != null && Math.abs(gross - wht - net) < 0.01;
@@ -81,11 +132,17 @@ export async function runAffCheck(
   let system: SystemWithdraw | null = null;
   let systemNote: string | undefined;
   let systemShot: { path: string; caption: string } | null = null;
-  if (fields.username && thunderSessionReady()) {
-    const res = await fetchSystemWithdraw(fields.username);
+  if (fields.username && (preSystem || thunderSessionReady())) {
+    const res = preSystem ?? await fetchSystemWithdraw(fields.username, {
+      expectedDate: noti?.date ?? parseDateLoose(fields.date),
+      expectedAmount: noti?.amount ?? null,
+    });
     if (res.error === "session_expired") systemNote = "เซสชันระบบหลังบ้านหมดอายุ — รัน npm run thunder:auth ใหม่";
     else if (res.error === "not_found") systemNote = `ไม่พบยูสเซอร์ "${fields.username}" ในระบบหลังบ้าน`;
     else if (res.error && res.error !== "no_session") systemNote = `อ่านระบบหลังบ้านไม่สำเร็จ: ${res.error}`;
+    // มีหลายรายการแต่เลือกไม่ตรงวันที่ noti → เตือนว่าอาจหยิบผิดแถว
+    if (res.data && res.rowCount && res.rowCount > 1 && !res.matchedByNoti)
+      systemNote = `ยูสเซอร์นี้มี ${res.rowCount} รายการในระบบ และเลือกวันที่ให้ตรงอัตโนมัติไม่ได้ — โปรดตรวจว่าตรงรายการวันที่ ${noti?.dateText || fields.date || "ในเอกสาร"} ไหม`;
     system = res.data;
     if (res.screenshot) {
       const p = path.join(dir, "system-confirm.png");
@@ -99,7 +156,7 @@ export async function runAffCheck(
   // ===== เทียบ 3 แหล่ง =====
   const sheetName = record ? `${record.firstName} ${record.lastName}`.trim() : "";
   const eqName = (a: string, b: string) => !!a && !!b && normName(a) === normName(b);
-  const eqAddr = (a: string, b: string) => !!a && !!b && normAddr(a) === normAddr(b);
+  const eqAddr = (a: string, b: string) => !!a && !!b && addrMatch(a, b);
   const eqBank = (a: string, b: string) => !!a && !!b && normBank(a) === normBank(b);
   const eqNum = (a: string, b: string) => !!digits(a) && digits(a) === digits(b);
 
@@ -112,15 +169,24 @@ export async function runAffCheck(
     cmp: (a: string, b: string) => boolean,
     auth: "sheet" | "system",
   ) => {
-    const sheetMatch = sheet !== "" ? cmp(doc, sheet) : null;
-    const systemMatch = sys !== "" ? cmp(doc, sys) : null;
-    const authMatch = auth === "system" ? systemMatch : sheetMatch;
-    rows.push({ label, doc, sheet, system: sys, sheetMatch, systemMatch, ok: authMatch === true, auth });
+    const has = (v: string) => v != null && v !== "";
+    // เทียบทุกคู่ที่มีข้อมูลครบ (เอกสาร↔ชีต, เอกสาร↔ระบบ, ชีต↔ระบบ)
+    const dS = has(doc) && has(sheet) ? cmp(doc, sheet) : null;
+    const dSys = has(doc) && has(sys) ? cmp(doc, sys) : null;
+    const sSys = has(sheet) && has(sys) ? cmp(sheet, sys) : null;
+    // ผ่านถ้ามีอย่างน้อย "2 แหล่งตรงกัน" (คู่ใดก็ได้) — ไม่งั้นถ้าเทียบไม่ได้เลย (มีแหล่งเดียว) ก็ผ่าน (ยึดระบบ)
+    const anyPair = dS !== null || dSys !== null || sSys !== null;
+    const ok = dS === true || dSys === true || sSys === true || !anyPair;
+    // chip: คอลัมน์ชีตเทียบกับแหล่งชี้ขาด (ระบบก่อน ไม่มีค่อยเอกสาร) · คอลัมน์ระบบเทียบกับเอกสาร (ไม่มีค่อยชีต)
+    const sheetMatch = has(sheet) ? (has(sys) ? sSys : dS) : null;
+    const systemMatch = has(sys) ? (has(doc) ? dSys : sSys) : null;
+    rows.push({ label, doc, sheet, system: sys, sheetMatch, systemMatch, ok, auth });
   };
   if (record || system) {
     add("ชื่อ-สกุล", fields.name, sheetName, system?.accountName ?? "", eqName, "sheet");
     add("เลขผู้เสียภาษี", fields.taxId, record?.idCard ?? "", "", eqNum, "sheet");
     add("ที่อยู่", fields.address, record?.address ?? "", "", eqAddr, "sheet");
+    // ธนาคาร/เลขบัญชี: เอกสารที่วานสร้างเองไม่มีช่องนี้ → เทียบ "ชีต ↔ ระบบ" ให้ตรงกัน (ยึดระบบ = บัญชีที่กดถอนจริง)
     add("ธนาคาร", fields.bank, record?.bank ?? "", system?.bank ?? "", eqBank, system ? "system" : "sheet");
     add("เลขบัญชี", fields.account, record?.account ?? "", system?.account ?? "", eqNum, system ? "system" : "sheet");
   }
@@ -144,12 +210,22 @@ export async function runAffCheck(
     ok: r.ok,
   }));
 
-  const allOk = !!record && rows.every((r) => r.ok) && amountRow.ok && mathOk && whtOk;
+  const allOk = !notiMismatch && !!record && rows.every((r) => r.ok) && amountRow.ok && mathOk && whtOk;
 
   // ===== รายงานข้อความ (จัดกลุ่ม อ่านง่าย) =====
+  // ส่งเป็น HTML (parse_mode=HTML) + ครอบ <tg-spoiler> เฉพาะ "ค่าข้อมูล" อ่อนไหว
+  // (ชื่อ/เลขภาษี/ที่อยู่/เลขบัญชี/ยอดเงิน) เพื่อเซ็นเซอร์เวลาส่ง/ฟอร์เวิร์ด — แตะเพื่อเปิดดูได้
+  // ป้ายกำกับ/หัวข้อ/เครื่องหมายถูก-ผิด ยังเห็นปกติ
+  const sp = (v: unknown) => `<tg-spoiler>${esc(String(v ?? "-"))}</tg-spoiler>`;
   const L: string[] = [];
   L.push(`ตรวจเอกสาร Affiliate`);
-  L.push(`ยูสเซอร์ ${fields.username || "-"} · ${fields.name || "-"}`);
+  L.push(`ยูสเซอร์ ${esc(fields.username || "-")} · ${sp(fields.name || "-")}`);
+  if (notiMismatch) {
+    L.push("");
+    L.push(`⛔ เอกสารไม่ตรงกับรายการที่ Reply`);
+    L.push(`${NO} ${esc(notiMismatch)}`);
+    L.push(`โปรดตรวจสอบว่าแนบเอกสารถูกรายการ แล้วส่งใหม่ค่ะ`);
+  }
   if (!record) {
     L.push("");
     L.push(`${NO} ไม่พบยูสเซอร์นี้ในชีตลูกค้า AFF — โปรดตรวจสอบชื่อผู้ใช้อีกครั้ง`);
@@ -160,7 +236,7 @@ export async function runAffCheck(
     L.push("");
     L.push("▎ ตัวตน (เทียบชีตลูกค้า)");
     for (const r of idRows) {
-      L.push(`${r.ok ? OK : NO} ${r.label}: ${r.doc || "-"}${r.ok ? "" : `  ≠ ชีต "${r.sheet || "-"}"`}`);
+      L.push(`${r.ok ? OK : NO} ${r.label}: ${sp(r.doc || "-")}${r.ok ? "" : `  ≠ ชีต "${sp(r.sheet || "-")}"`}`);
     }
   }
 
@@ -169,10 +245,13 @@ export async function runAffCheck(
     L.push("");
     L.push(system ? "▎ บัญชีรับเงิน (ยึดระบบหลังบ้าน)" : "▎ บัญชีรับเงิน (เทียบชีต)");
     for (const r of bankRows) {
-      L.push(`${r.ok ? OK : NO} ${r.label}: ${r.doc || "-"}`);
+      // ยึดระบบหลังบ้าน → แสดง "ค่าจากระบบ" (บัญชีที่ลูกค้ากดถอนจริง) เพราะเอกสาร AFF ที่วานสร้างไม่มีช่องบัญชี
+      const val = r.auth === "system" ? (r.system || r.doc || r.sheet || "-") : (r.doc || r.sheet || r.system || "-");
+      L.push(`${r.ok ? OK : NO} ${r.label}: ${sp(val)}`);
       const notes: string[] = [];
-      if (r.systemMatch !== null) notes.push(r.systemMatch ? "ระบบตรง" : `ระบบต่าง (${r.system || "-"})`);
-      if (r.sheetMatch !== null) notes.push(r.sheetMatch ? "ชีตตรง" : `ชีตต่าง (${r.sheet || "-"} — อาจเก่า)`);
+      if (r.auth === "system" && r.system) notes.push("จากระบบหลังบ้าน");
+      if (r.sheetMatch !== null) notes.push(r.sheetMatch ? "ชีตตรง" : `ชีตต่าง (${sp(r.sheet || "-")} — อาจเก่า)`);
+      if (r.systemMatch === false && r.doc) notes.push(`ต่างจากเอกสาร (${sp(r.doc)})`);
       if (notes.length) L.push(`     └ ${notes.join("  ·  ")}`);
     }
   }
@@ -180,16 +259,16 @@ export async function runAffCheck(
   L.push("");
   L.push("▎ ยอดเงิน");
   if (system && amountMatchesSystem !== null) {
-    L.push(`${amountRow.ok ? OK : NO} ยอดจ่ายจริง: เอกสาร ${fmt(net)} ${amountRow.ok ? "=" : "≠"} ระบบ ${fmt(system.amount)}`);
+    L.push(`${amountRow.ok ? OK : NO} ยอดจ่ายจริง: เอกสาร ${sp(fmt(net))} ${amountRow.ok ? "=" : "≠"} ระบบ ${sp(fmt(system.amount))}`);
   } else {
-    L.push(`${mathOk && whtOk ? OK : NO} ยอดจ่ายจริง (สุทธิ): ${fmt(net)}`);
+    L.push(`${mathOk && whtOk ? OK : NO} ยอดจ่ายจริง (สุทธิ): ${sp(fmt(net))}`);
   }
-  L.push(`${mathOk ? OK : NO} คำนวณ: ${fmt(gross)} − ${fmt(wht)} (หัก 3%) = ${fmt(net)}`);
-  L.push(`วันที่เอกสาร ${fields.date || "-"}${system?.status ? `  ·  สถานะระบบ: ${system.status}` : ""}`);
+  L.push(`${mathOk ? OK : NO} คำนวณ: ${sp(fmt(gross))} − ${sp(fmt(wht))} (หัก 3%) = ${sp(fmt(net))}`);
+  L.push(`วันที่เอกสาร ${esc(fields.date || "-")}${system?.status ? `  ·  สถานะระบบ: ${esc(system.status)}` : ""}`);
 
   if (!system) {
     L.push("");
-    L.push(systemNote ? `(ระบบหลังบ้าน: ${systemNote})` : "(ยังไม่เชื่อมระบบหลังบ้าน — รัน npm run thunder:auth)");
+    L.push(systemNote ? `(ระบบหลังบ้าน: ${esc(systemNote)})` : "(ยังไม่เชื่อมระบบหลังบ้าน — รัน npm run thunder:auth)");
   }
 
   L.push("");

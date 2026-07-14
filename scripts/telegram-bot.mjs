@@ -62,8 +62,18 @@ const groups = {};          // media_group_id -> {msgs, timer, chatId}
 const recentFiles = {};     // chatId -> [{file_id,file_name,ts}]
 const recentTexts = {};     // chatId -> [{text,ts}] เก็บข้อความ/แคปชัน (รวมที่ forward มา) ข้าม batch
 const armedUntil = {};      // chatId -> timestamp (ถูกเรียกแล้ว รอข้อความ/forward ถัดไป)
+let dedicatedGroups = new Set(); // กลุ่มที่ประมวลผลทุกข้อความ (thunder_expiry) — ไม่ต้องขึ้นต้น "วาน"
+async function refreshDedicated() {
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/dedicated-groups", { method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL } });
+    const j = await r.json();
+    if (Array.isArray(j.groups)) dedicatedGroups = new Set(j.groups.map(String));
+  } catch { /* ใช้ค่าเดิม */ }
+}
 const memoPending = {};     // chatId -> timestamp (สั่งออกเอกสารแล้วแต่ยังรอไฟล์/เนื้อหา forward ตามมา)
 const affPending = {};      // chatId -> timestamp (สั่งตรวจเอกสาร AFF แล้วแต่ยังรอไฟล์ forward ตามมา)
+const affDrafts = {};       // summaryMsgId -> {chatId,notiMsgId,threadId,summary,tag,pdfB64,filename,notiText,until} (ร่างที่รอกดอนุมัติ)
+const editingAff = {};      // chatId -> {notiText,notiMsgId,threadId,until} (กด "แก้ไข" แล้วรอคำสั่งแก้)
 const editingMemo = {};     // chatId -> {id, until} (กด "แก้ไข" แล้ว รอคำสั่งแก้เอกสารตัวนี้)
 const BUFFER_TTL = 180000;  // 3 นาที
 const EDIT_TTL = 300000;    // 5 นาที (รอคำสั่งแก้เอกสารหลังกดปุ่ม "แก้ไข")
@@ -133,7 +143,19 @@ async function doMemo(chatId, text, files, from, isGroup, msgId, mentions) {
   await status.finishDone("✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ");
   await sendMemoDraft(chatId, data);
   await reactMsg(chatId, msgId, "✅");
-  await notifyDelivery(chatId, isGroup, from, text, mentions, "เอกสารคืนเงิน (ร่าง)", MANAGER);
+  // แท็กเจ้าของ (โด้) ให้ตรวจ+เซ็นก่อนเท่านั้น — เซ็นเสร็จบอทค่อยแท็กผู้จัดการ (พี่หนิง) ต่อ
+  if (isGroup) {
+    const mn = buildMention(ownerMention());
+    if (mn) {
+      const extra = {};
+      if (mn.entity) extra.entities = [mn.entity];
+      await tg("sendMessage", { chat_id: chatId, text: `${mn.prefix} ร่างเอกสารคืนเงินเสร็จแล้วค่ะ 👆 รบกวนตรวจแล้วกด “เซ็นเลย” ก่อนนะคะ เดี๋ยววานส่งต่อให้ผู้จัดการเซ็นต่อค่ะ`, ...extra });
+    }
+    // แจ้งเจ้าของทางแชทส่วนตัวด้วย (เผื่อไม่ได้เปิดกลุ่ม)
+    if (OWNER_CHAT_ID && String(chatId) !== String(OWNER_CHAT_ID)) {
+      await tg("sendMessage", { chat_id: OWNER_CHAT_ID, text: "รายงานค่ะ ออกร่างเอกสารคืนเงินในกลุ่มเสร็จแล้ว รอพี่โด้ตรวจ+เซ็นค่ะ 👀" }).catch(() => {});
+    }
+  }
   } finally {
     memoInFlight.delete(String(chatId));
   }
@@ -144,13 +166,26 @@ async function sendMemoDraft(chatId, data) {
   await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
   const pdfRes = await fetch(APP_URL + `/api/memo/${data.id}/pdf`, { headers: { "x-internal-token": INTERNAL } });
   const pdf = Buffer.from(await pdfRes.arrayBuffer());
-  const warn = data.valid ? "" : "\n\n⚠️ ขอเช็คนิดนึงค่ะ: " + (data.warnings || []).join("; ");
-  const caption = `📥 ออกร่างเอกสารคืนเงินให้แล้วนะคะ (ยังไม่เซ็น)\n\n👤 ลูกค้า: ${data.serviceName || "-"}\n📊 ยอดคืนรวม: ${data.refund} บาท (หัก ณ ที่จ่าย ${data.whtAmount} + ส่วนเกิน ${data.overpay})\n🖼️ แนบครบ ${data.attachCount} หน้า${warn}\n\n✅ ถ้าโอเคกด "เซ็นเลย" เดี๋ยววานเติมลายเซ็นให้\n🚧 ถ้าอยากปรับตรงไหนกด "แก้ไข" ได้เลยค่ะ`;
+  // เบลอข้อมูลลูกค้าใน caption (tg-spoiler) — แตะเพื่อเปิดดู เหมือนฟีเจอร์ตรวจ AFF
+  const esc = (v) => String(v ?? "-").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const sp = (v) => `<tg-spoiler>${esc(v)}</tg-spoiler>`;
+  const warn = data.valid ? "" : "\n\n⚠️ ขอเช็คนิดนึงค่ะ: " + esc((data.warnings || []).join("; "));
+  const caption =
+    `📥 ออกร่างเอกสารคืนเงินให้แล้วนะคะ (ยังไม่เซ็น)\n\n` +
+    `👤 ลูกค้า: ${sp(data.serviceName || "-")}\n` +
+    `📊 ยอดคืนรวม: ${sp(`${data.refund} บาท`)} (หัก ณ ที่จ่าย ${sp(data.whtAmount)} + ส่วนเกิน ${sp(data.overpay)})\n` +
+    `🖼️ แนบครบ ${esc(data.attachCount)} หน้า${warn}\n\n` +
+    `⏳ รบกวนดำเนินการภายใน 24 ชม. ก่อนประวัติแชทจะถูกลบค่ะ\n` +
+    `🔒 ไฟล์นี้ล็อกรหัสไว้นะคะ (รหัสเปิด)\n` +
+    `<pre>xxxx-xxx</pre>\n\n` +
+    `✅ ถ้าโอเคกด "เซ็นเลย" เดี๋ยวเติมลายเซ็นให้\n` +
+    `🚧 ถ้าอยากปรับตรงไหนกด "แก้ไข" ได้เลยค่ะ`;
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("caption", caption);
+  form.append("parse_mode", "HTML");
   form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${data.id}` }, { text: "แก้ไข", callback_data: `memo:revise:${data.id}` }]] }));
-  form.append("document", new Blob([new Uint8Array(pdf)]), data.filename || "บันทึกขอคืนเงินหัก ณ ที่จ่าย (ร่าง).pdf");
+  form.append("document", new Blob([new Uint8Array(pdf)]), data.filename || "คืนเงินภาษี (ร่าง).pdf");
   await fetch(API("sendDocument"), { method: "POST", body: form });
 }
 
@@ -185,10 +220,10 @@ async function doRevise(chatId, id, instruction, from, isGroup, msgId) {
 }
 
 // ตรวจเอกสาร Affiliate อัตโนมัติ: อ่าน PDF + เทียบชีต + ตรวจยอด → รายงาน + ภาพยืนยัน
-async function doAffCheck(chatId, text, files, from, isGroup, msgId) {
+async function doAffCheck(chatId, text, files, from, isGroup, msgId, threadId, replyText) {
   if (memoInFlight.has(String(chatId))) return; // กันชนกับงานออกเอกสาร
   const status = await startStatus(chatId, [
-    "📥 รับเรื่องตรวจเอกสาร Affiliate แล้วค่ะ เดี๋ยววานตรวจให้เลยนะคะ 🔎",
+    "📥 รับเรื่องตรวจเอกสาร Affiliate แล้วค่ะ เดี๋ยวตรวจให้เลยนะคะ 🔎",
     "📎 กำลังอ่านเอกสารที่แนบ...",
     "🗂️ กำลังเทียบกับชีตลูกค้า AFF...",
     "🧮 กำลังตรวจยอดเงินและความถูกต้อง...",
@@ -206,15 +241,73 @@ async function doAffCheck(chatId, text, files, from, isGroup, msgId) {
   try {
     const r = await fetch(APP_URL + "/api/telegram/aff-check", {
       method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), fromId: String(from?.id || ""), isGroup: !!isGroup, rawText: text, files: saved }),
+      body: JSON.stringify({ chatId: String(chatId), fromId: String(from?.id || ""), isGroup: !!isGroup, rawText: text, files: saved, replyText: replyText || "" }),
     });
     data = await r.json();
   } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
   if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
   if (!data.ok) { await status.finishText("ตรวจเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
   await status.finishDone("✅ ตรวจเอกสารเสร็จแล้วค่ะ สรุปให้เลยนะคะ");
-  await sendResultSends(chatId, data.sends || []);
-  await reactMsg(chatId, msgId, "✅");
+  await sendResultSends(chatId, data.sends || [], threadId);
+  await reactMsg(chatId, msgId, data.passed ? "✅" : "⚠️");
+  // ตรวจเสร็จ → reply ข้อความแอดมินที่ส่งมา + แท็ก
+  //   ผ่าน   = แท็กคนที่เจ้าของกำหนด บอกว่าใช้ข้อมูลได้เลย
+  //   ไม่ผ่าน = แท็กแอดมินคนที่ส่ง บอกให้ตรวจสอบอีกครั้ง
+  {
+    const tagPerson = data.passed ? data.tagTarget : from;
+    const mn = buildMention(tagPerson);
+    const base = data.passed
+      ? "✅ ตรวจเอกสารเรียบร้อย ข้อมูลถูกต้องครบถ้วน ใช้ดำเนินการต่อได้เลยค่ะ"
+      : "⚠️ ตรวจเอกสารแล้ว พบข้อมูลบางจุดไม่ตรง รบกวนตรวจสอบและแก้ไขอีกครั้งนะคะ (ดูจุดที่มี ❌ ในสรุปด้านบน)";
+    const extra = { ...sendOpts(threadId), reply_to_message_id: msgId };
+    let outText = base;
+    if (mn) { outText = `${mn.prefix} ${base}`; if (mn.entity) extra.entities = [mn.entity]; }
+    await tg("sendMessage", { chat_id: chatId, text: outText, ...extra }).catch(() => {});
+  }
+}
+
+// วานสร้างใบสำคัญรับเงิน Affiliate เอง + ตรวจเอง เมื่อบอทระบบแจ้ง noti (กลุ่มหน้าที่ aff)
+// editInstruction != "" = โหมดแก้ไข (สร้างใหม่ตามที่แก้)
+async function doAffMake(chatId, notiText, from, isGroup, msgId, threadId, editInstruction = "") {
+  let data;
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/aff-make", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ chatId: String(chatId), notiText, isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", fromId: String(from?.id || ""), editInstruction }),
+    });
+    data = await r.json();
+  } catch { return; }
+  if (!data.ok || data.skip) return; // ไม่ใช่กลุ่ม aff / อ่าน noti ไม่ได้ → เงียบ
+
+  // สถานะ: กำลังจัดทำ (แจ้งสั้น ๆ ในกลุ่ม แล้วลบทีหลัง)
+  const wip = await tg("sendMessage", { chat_id: chatId, text: "🧾 กำลังจัดทำใบสำคัญรับเงินให้อัตโนมัติค่ะ...", ...sendOpts(threadId) }).catch(() => null);
+  await sendResultSends(chatId, data.sends || [], threadId);
+  if (wip?.result?.message_id) await tg("deleteMessage", { chat_id: chatId, message_id: wip.result.message_id }).catch(() => {});
+
+  await reactMsg(chatId, msgId, data.allOk ? "✅" : "⚠️");
+
+  // สรุป (แบบ Image#42) + แท็กเจ้าของ + ปุ่ม อนุมัติ/แก้ไข (เฉพาะเคสที่ทำเอกสารได้)
+  if ((data.status === "ok" || data.status === "amount_mismatch") && data.summaryCaption) {
+    const mn = buildMention(data.tagTarget);
+    const head = data.allOk
+      ? "✅ จัดทำและตรวจเอกสารเรียบร้อย พร้อมอนุมัติค่ะ"
+      : "⚠️ จัดทำเอกสารแล้ว แต่มีจุดที่ต้องตรวจ (ดูรายงานด้านบน) ค่ะ";
+    const extra = { ...sendOpts(threadId), reply_markup: keyboardFromButtons([{ text: "อนุมัติ ✅", data: "aff:ok" }, { text: "แก้ไข", data: "aff:edit" }]) };
+    let text = `${head}\n\n${data.summaryCaption}`;
+    if (mn) { text = `${mn.prefix}\n${text}`; if (mn.entity) extra.entities = [mn.entity]; }
+    const sent = await tg("sendMessage", { chat_id: chatId, text, ...extra }).catch(() => null);
+    // เก็บร่างไว้ให้ปุ่ม "อนุมัติ" หยิบไปตอบ (reply เข้า noti + แนบไฟล์ + สรุป + แท็ก)
+    const smId = sent?.result?.message_id;
+    if (smId) {
+      const doc = (data.sends || []).find((s) => s.kind === "document");
+      affDrafts[smId] = {
+        chatId: String(chatId), notiMsgId: msgId, threadId: threadId ? String(threadId) : "",
+        summary: data.summaryCaption, tag: data.tagTarget || null,
+        pdfB64: doc?.dataBase64 || null, filename: doc?.filename || "ใบสำคัญรับเงิน.pdf",
+        notiText, until: Date.now() + 24 * 3600 * 1000,
+      };
+    }
+  }
 }
 
 // ทำสไลด์ "จากไฟล์ที่แนบ" (เช่น reply PDF แล้วสั่งทำสไลด์) — อ่านเนื้อหาไฟล์นั้นมาทำ ไม่ใช่ดึงข้อมูลระบบ
@@ -284,25 +377,30 @@ async function startStatus(chatId, steps) {
   };
 }
 
-async function sendResultSends(chatId, sends) {
+async function sendResultSends(chatId, sends, defaultThread) {
   for (const s of sends || []) {
-    if (s.kind === "text") await tg("sendMessage", { chat_id: chatId, text: s.text, ...(s.parseMode ? { parse_mode: s.parseMode } : {}) });
+    const tc = s.chatId || chatId;      // ส่งข้ามแชท/กลุ่มได้ (เช่น รายงานเข้าห้อง Lead)
+    const thr = s.threadId || (s.chatId ? undefined : defaultThread); // ถ้าข้ามแชท ใช้ thread ของ send เท่านั้น
+    if (s.kind === "text") await tg("sendMessage", { chat_id: tc, text: s.text, ...sendOpts(thr, { ...(s.parseMode ? { parse_mode: s.parseMode } : {}), ...(s.buttons ? { reply_markup: keyboardFromButtons(s.buttons) } : {}) }) });
     else if (s.kind === "document") {
-      await tg("sendChatAction", { chat_id: chatId, action: "upload_document" });
-      const r = await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } });
-      const buf = Buffer.from(await r.arrayBuffer());
+      await tg("sendChatAction", { chat_id: tc, action: "upload_document" });
+      const buf = s.dataBase64 ? Buffer.from(s.dataBase64, "base64")
+        : Buffer.from(await (await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } })).arrayBuffer());
       const form = new FormData();
-      form.append("chat_id", String(chatId));
+      form.append("chat_id", String(tc));
+      if (thr) form.append("message_thread_id", String(thr));
       if (s.caption) form.append("caption", s.caption);
+      if (s.buttons) form.append("reply_markup", JSON.stringify(keyboardFromButtons(s.buttons)));
       form.append("document", new Blob([new Uint8Array(buf)]), s.filename || "file");
       await fetch(API("sendDocument"), { method: "POST", body: form });
     }
     else if (s.kind === "photo") {
-      await tg("sendChatAction", { chat_id: chatId, action: "upload_photo" });
+      await tg("sendChatAction", { chat_id: tc, action: "upload_photo" });
       const buf = s.dataBase64 ? Buffer.from(s.dataBase64, "base64")
         : Buffer.from(await (await fetch(APP_URL + s.url, { headers: { "x-internal-token": INTERNAL } })).arrayBuffer());
       const form = new FormData();
-      form.append("chat_id", String(chatId));
+      form.append("chat_id", String(tc));
+      if (thr) form.append("message_thread_id", String(thr));
       if (s.caption) form.append("caption", s.caption);
       form.append("photo", new Blob([new Uint8Array(buf)]), s.filename || "screenshot.png");
       await fetch(API("sendPhoto"), { method: "POST", body: form });
@@ -310,12 +408,28 @@ async function sendResultSends(chatId, sends) {
   }
 }
 
-async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles) {
+async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles, threadId, chatTitle) {
   const res = await fetch(APP_URL + "/api/telegram/ingest", {
     method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [] }),
+    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", chatTitle: chatTitle || "", replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [] }),
   });
   return res.json();
+}
+
+// ปุ่ม inline: string → callback opt:<index> (Lead) · {text,data} → callback ตามที่กำหนด (เช่น gfunc:aff)
+function keyboardFromButtons(buttons) {
+  if (!buttons || !buttons.length) return undefined;
+  return {
+    inline_keyboard: buttons.map((b, i) =>
+      typeof b === "object" && b.data
+        ? [{ text: String(b.text).slice(0, 64), callback_data: String(b.data).slice(0, 64) }]
+        : [{ text: String(b).slice(0, 64), callback_data: `opt:${i}` }],
+    ),
+  };
+}
+// ตัวเลือกส่งข้อความที่รองรับ topic (message_thread_id) + ปุ่ม
+function sendOpts(threadId, extra = {}) {
+  return { ...(threadId ? { message_thread_id: Number(threadId) } : {}), ...extra };
 }
 
 // ดึง mention/แท็กจากข้อความ (text_mention มี user.id, mention เป็น @username)
@@ -337,7 +451,7 @@ function extractMentions(msgs) {
   return out;
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions, imagePaths) {
+async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions, imagePaths, threadId, chatTitle) {
   const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
@@ -347,12 +461,12 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
     ]);
     let data;
-    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths); }
+    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle); }
     catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
     await status.finishDone("✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ");
-    await sendResultSends(chatId, sends);
+    await sendResultSends(chatId, sends, threadId);
     await reactMsg(chatId, msgId, "✅");
     await notifyDelivery(chatId, isGroup, from, text, mentions, "สไลด์");
     return;
@@ -363,12 +477,12 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   const typingTimer = setInterval(() => tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {}), 4000);
   let softId = null;
   const softTimer = setTimeout(async () => {
-    const m = await tg("sendMessage", { chat_id: chatId, text: "🔎 กำลังหาข้อมูลให้อยู่แป๊บนะคะ..." }).catch(() => null);
+    const m = await tg("sendMessage", { chat_id: chatId, text: "🔎 กำลังหาข้อมูลให้อยู่แป๊บนะคะ...", ...sendOpts(threadId) }).catch(() => null);
     softId = m?.result?.message_id || null;
   }, 7000);
 
   let data;
-  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths); }
+  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle); }
   catch {
     clearInterval(typingTimer); clearTimeout(softTimer);
     const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
@@ -384,9 +498,13 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   // คำตอบข้อความเดี่ยว (ไม่มีไฟล์/รูปแนบ)
   if (texts.length === 1 && sends.length === 1) {
     const pm = texts[0].parseMode ? { parse_mode: texts[0].parseMode } : {};
+    const kb = keyboardFromButtons(texts[0].buttons);
+    const kbExtra = kb ? { reply_markup: kb } : {};
     // ในกลุ่ม: แท็ก "คนที่ควรถูกพูดด้วย" = ถ้าผู้ส่งแท็กใครไว้ → คนนั้น (เช่น "ทักทาย Orin") ไม่งั้น → คนที่ถามเอง
     if (isGroup && msgId) {
       if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
+      // การ์ดระบบ (usage/board) — ส่งตรงๆ ไม่ต้องแท็กใคร
+      if (texts[0].plain) { await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...sendOpts(threadId, { ...pm, ...kbExtra }) }); return; }
       const addressee = (mentions && mentions.length) ? mentions[0] : from;
       // ตัดคำนำหน้าที่ AI อาจเผลอใส่ (ทั้ง "@ชื่อ" และชื่อคนที่พูดด้วยล้วนๆ) กันแท็กซ้ำสองรอบ
       let body = String(texts[0].text || "").replace(/^\s*@\S+[\s,:!.\-]*/, "");
@@ -397,7 +515,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       body = body.trimStart();
       const mn = buildMention(addressee);
       // reply thread เฉพาะตอนตอบ "คนที่ถามเอง"; ถ้าพูดกับคนที่ถูกแท็ก ไม่ต้อง thread ไปที่ผู้ส่ง
-      const extra = (mentions && mentions.length) ? {} : { reply_to_message_id: msgId };
+      const extra = { ...sendOpts(threadId, kbExtra), ...((mentions && mentions.length) ? {} : { reply_to_message_id: msgId }) };
       let outText = body;
       if (mn) {
         outText = `${mn.prefix} ${body}`;
@@ -408,20 +526,22 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       }
       await tg("sendMessage", { chat_id: chatId, text: outText, ...extra });
     } else if (softId) {
-      await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text, ...pm }).catch(() => {});
+      await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text, ...pm, ...kbExtra }).catch(() => {});
     } else {
-      await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...pm });
+      await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...sendOpts(threadId, { ...pm, ...kbExtra }) });
     }
     return;
   }
-  // มีรูป/ไฟล์แนบด้วย → ถ้ามีข้อความ ให้แก้ soft msg เป็นข้อความแรก แล้วส่งเฉพาะรูป/ไฟล์ที่เหลือ
+  // มีรูป/ไฟล์แนบด้วย → ถ้ามีข้อความ ให้แก้ soft msg เป็นข้อความแรก (คงปุ่ม+parse_mode ไว้) แล้วส่งเฉพาะรูป/ไฟล์ที่เหลือ
   if (softId && texts.length >= 1) {
-    await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text }).catch(() => {});
-    await sendResultSends(chatId, sends.filter((s) => s !== texts[0]));
+    const t0 = texts[0];
+    const kb0 = keyboardFromButtons(t0.buttons);
+    await tg("editMessageText", { chat_id: chatId, message_id: softId, text: t0.text, ...(t0.parseMode ? { parse_mode: t0.parseMode } : {}), ...(kb0 ? { reply_markup: kb0 } : {}) }).catch(() => {});
+    await sendResultSends(chatId, sends.filter((s) => s !== t0), threadId);
     return;
   }
   if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
-  await sendResultSends(chatId, sends);
+  await sendResultSends(chatId, sends, threadId);
 }
 
 function personOf(u) {
@@ -464,12 +584,19 @@ async function notifyDelivery(chatId, isGroup, from, text, mentions, label, forc
     // แจ้งเจ้าของทางแชทส่วนตัว (เฉพาะงานที่ทำในกลุ่ม)
     if (isGroup && OWNER_CHAT_ID && String(chatId) !== String(OWNER_CHAT_ID)) {
       const to = recip ? ` และส่งให้ ${recip.name || recip.username || "ทีม"} แล้ว` : "";
-      await tg("sendMessage", { chat_id: OWNER_CHAT_ID, text: `แจ้งพี่โด้ค่ะ ทำ${label}ในกลุ่มเสร็จเรียบร้อยแล้ว${to}ค่ะ 👀` });
+      await tg("sendMessage", { chat_id: OWNER_CHAT_ID, text: `รายงานค่ะ ทำ${label}ในกลุ่มเสร็จเรียบร้อยแล้ว${to}ค่ะ 👀` });
     }
   } catch { /* แจ้งเตือนพลาดไม่เป็นไร ไม่ให้กระทบงานหลัก */ }
 }
 
 // สร้างการแท็กที่ "ติดจริง": มี username → @username (auto-link) · ไม่มี → text_mention entity (คลิกได้แม้ไม่มี username)
+// เจ้าของ (โด้) เป็น mention — ใช้ id จากแชทส่วนตัว (= user id) + ชื่อจากรายชื่อทีม
+function ownerMention() {
+  if (!OWNER_CHAT_ID) return null;
+  const r = (ROSTER || []).find((m) => String(m.id) === String(OWNER_CHAT_ID));
+  return { id: OWNER_CHAT_ID, name: (r && r.name) || "พี่โด้", username: r && r.username };
+}
+
 function buildMention(from) {
   if (!from) return null;
   if (from.username) return { prefix: `@${from.username}`, entity: null };
@@ -479,10 +606,25 @@ function buildMention(from) {
   return { prefix: name, entity: { type: "text_mention", offset: 0, length: name.length, user: { id: uid } } };
 }
 
+const privateDeclined = new Set(); // จำแชทส่วนตัวที่ไม่ใช่เจ้าของ — แจ้งปฏิเสธครั้งเดียวพอ
+
 async function processBatch(chatId, msgs) {
   const chatType = msgs[0]?.chat?.type || "private";
   const isGroup = chatType === "group" || chatType === "supergroup";
+  const threadId = msgs[0]?.message_thread_id ? String(msgs[0].message_thread_id) : "";
+  const chatTitle = msgs[0]?.chat?.title || "";
   const from = personOf(msgs[0]?.from);
+
+  // แชทส่วนตัว: ใช้ได้เฉพาะเจ้าของ (โด้) เท่านั้น — คนอื่น DM มา บอทไม่ตอบ (แจ้งปฏิเสธครั้งเดียว)
+  // fail-open ถ้ายังโหลด OWNER_CHAT_ID ไม่ได้ กันล็อกเจ้าของออกเอง
+  if (!isGroup && OWNER_CHAT_ID && String(from?.id || "") !== String(OWNER_CHAT_ID)) {
+    if (!privateDeclined.has(String(chatId))) {
+      privateDeclined.add(String(chatId));
+      await tg("sendMessage", { chat_id: chatId, text: "ขออภัยค่ะ บอทนี้เป็นผู้ช่วยส่วนตัวของผู้ดูแลระบบ ใช้งานได้เฉพาะเจ้าของค่ะ 🙏" }).catch(() => {});
+    }
+    console.log(`ปฏิเสธแชทส่วนตัวจาก ${from?.name || from?.id} (ไม่ใช่เจ้าของ)`);
+    return;
+  }
   const replyMsg = msgs.find((m) => m.reply_to_message)?.reply_to_message;
   const replyTo = replyMsg ? personOf(replyMsg.from) : null;
   const replyText = replyMsg ? (replyMsg.text || replyMsg.caption || "") : "";
@@ -510,6 +652,27 @@ async function processBatch(chatId, msgs) {
   recentTexts[chatId] = (recentTexts[chatId] || []).filter((t) => now - t.ts < BUFFER_TTL);
   if (text) recentTexts[chatId].push({ text, ts: now });
 
+  // noti "กำลังรออนุมัติ" จากบอทระบบ → จำข้อมูล (ยูสเซอร์/วันที่/ยอด) ไว้ cross-check + กดรีแอครับทราบ
+  // ยังไม่ตรวจ รอแอดมินส่งไฟล์ + แท็กเอง แล้วค่อยตรวจ
+  // บอทระบบแจ้ง "อนุมัติเรียบร้อย" (เงินออกสำเร็จ) → กดหัวใจรับทราบ ไม่ต้องทำเอกสาร
+  if (/(อนุมัติเรียบร้อย|อนุมัติแล้ว)/.test(text) && !/กำลังรออนุมัติ/.test(text) && /(ได้แจ้งถอนเงิน|รายละเอียดบัญชี)/.test(text)) {
+    await reactMsg(chatId, triggerMsgId, "❤️");
+    return;
+  }
+
+  if (/กำลังรออนุมัติ/.test(text) && /(ได้แจ้งถอนเงิน|รายละเอียดบัญชี)/.test(text)) {
+    await reactMsg(chatId, triggerMsgId, "👀");
+    try {
+      await fetch(APP_URL + "/api/telegram/aff-notify", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), text }),
+      });
+    } catch { /* จำไม่ได้ก็ยังตรวจได้จากวันที่ในเอกสาร */ }
+    // ใหม่: ถ้ากลุ่มนี้ทำหน้าที่ aff → วานจัดทำใบสำคัญรับเงินเอง + ตรวจเอง แล้วรอเจ้าของกดอนุมัติ
+    await doAffMake(chatId, text, from, isGroup, triggerMsgId, threadId).catch((e) => console.error("affMake err:", e.message));
+    return;
+  }
+
   // ตรวจเอกสาร Affiliate อัตโนมัติ — แอดมินแนบ PDF + ข้อความแพตเทิร์นเดิม (หรือสั่งตรวจไว้แล้ว forward ไฟล์ตามมา)
   // (backend ตรวจสิทธิ์: กลุ่มที่ผูกแล้ว หรือแชทเจ้าของ)
   const affActive = affPending[chatId] && now < affPending[chatId];
@@ -526,7 +689,7 @@ async function processBatch(chatId, msgs) {
     recentFiles[chatId] = [];
     recentTexts[chatId] = [];
     await reactMsg(chatId, triggerMsgId, "👀"); // เห็นเอกสารแล้ว กำลังตรวจ
-    await doAffCheck(chatId, affText, files, from, isGroup, triggerMsgId);
+    await doAffCheck(chatId, affText, files, from, isGroup, triggerMsgId, threadId, replyText);
     return;
   }
 
@@ -535,8 +698,13 @@ async function processBatch(chatId, msgs) {
     const repliedToBot = msgs.some((m) => m.reply_to_message?.from?.id === BOT_ID);
     const mentioned = BOT_USERNAME && text.toLowerCase().includes("@" + BOT_USERNAME.toLowerCase());
     const calledByName = /น้องวาน/.test(text);
-    const namePrefix = /^\s*วาน[\s,:ๆจ]/i.test(text);
-    const triggered = repliedToBot || mentioned || calledByName || namePrefix;
+    // ขึ้นต้นด้วย "วาน" = เรียกน้องวาน (ติดคำถัดไปก็ได้ เช่น "วานเชื่อมกลุ่ม") ยกเว้น วานนี้/วานซืน/วานซาน (=เมื่อวาน)
+    const namePrefix = /^\s*วาน(?!นี้|ซืน|ซาน)/i.test(text);
+    // คำสั่งตั้งค่า/แอดมิน — พิมพ์ตรงๆ ได้ ไม่ต้องมี "วาน" นำ (สะดวกตอนตั้งห้อง/ผูกกลุ่ม/ดู usage)
+    const setupCmd = /^\s*(ตั้งห้องนี้เป็น|ห้องนี้คือ|บทบาท|set\s*role|ผูกกลุ่ม|bind|แนะนำตัว|เชื่อมกลุ่ม|เริ่มงาน|บอร์ด|board|สรุปงาน|เพิ่มงาน|\+task|ลงงาน|อัปเดต\s*T\d|ปิดงาน\s*T\d|ตรวจเสร็จให้แท็ก|usage|monitor|สรุปการใช้งาน|การใช้งาน)/i.test(text);
+    // กลุ่ม dedicated (เช่น ขยายวันหมดอายุ Thunder) = ประมวลผลทุกข้อความ ไม่ต้องขึ้นต้น "วาน"
+    const isDedicated = dedicatedGroups.has(String(chatId));
+    const triggered = repliedToBot || mentioned || calledByName || namePrefix || setupCmd || isDedicated;
     const armed = armedUntil[chatId] && now < armedUntil[chatId];
     const memoWaiting = memoPending[chatId] && now < memoPending[chatId];
     const haveFiles = (recentFiles[chatId] || []).length > 0;
@@ -546,7 +714,7 @@ async function processBatch(chatId, msgs) {
     if (triggered) {
       text = text
         .replace(/น้องวาน/g, "")
-        .replace(/^\s*วาน[\s,:ๆจ]*/i, "")
+        .replace(/^\s*วาน(?!นี้|ซืน|ซาน)[\s,:ๆจ]*/i, "")
         .replace(new RegExp("@" + BOT_USERNAME, "gi"), "")
         .trim();
     }
@@ -557,7 +725,7 @@ async function processBatch(chatId, msgs) {
     const bufferedNow = (recentFiles[chatId] || []).filter((f) => !seenNow.has(f.file_id) && seenNow.add(f.file_id));
     if (triggered && text.length < 2 && bufferedNow.length === 0) {
       armedUntil[chatId] = now + 90000;
-      await tg("sendMessage", { chat_id: chatId, text: "ค่ะพี่โด้ ว่ามาได้เลยค่ะ 👀 พิมพ์ แนบไฟล์ หรือฟอร์เวิร์ดข้อความมาได้เลยนะคะ" });
+      await tg("sendMessage", { chat_id: chatId, text: "ค่ะ ว่ามาได้เลยค่ะ 👀 พิมพ์ แนบไฟล์ หรือฟอร์เวิร์ดข้อความมาได้เลยนะคะ" });
       return;
     }
     if (!text) text = "สวัสดี";
@@ -566,6 +734,17 @@ async function processBatch(chatId, msgs) {
   // กดอิโมจิรีแอคชันบนข้อความสั่ง (วิเคราะห์เนื้อหา) เป็นการรับรู้ทันที ก่อนลงมือทำ
   const haveFilesNow = (recentFiles[chatId] || []).length > 0;
   await reactMsg(chatId, triggerMsgId, pickReaction(text, { hasFiles: haveFilesNow, isMemo: MEMO_INTENT.test(text) }));
+
+  // โหมดแก้ใบสำคัญรับเงิน AFF: กด "แก้ไข" แล้วพิมพ์คำสั่งแก้ → สร้างเอกสารใหม่ตามที่แก้ (ไม่หลุดไปแชททั่วไป)
+  const editingAffNow = editingAff[chatId] && now < editingAff[chatId].until;
+  if (editingAffNow && text) {
+    const ctx = editingAff[chatId];
+    delete editingAff[chatId];
+    delete armedUntil[chatId];
+    await reactMsg(chatId, triggerMsgId, "👀");
+    await doAffMake(chatId, ctx.notiText, from, isGroup, ctx.notiMsgId, ctx.threadId, text);
+    return;
+  }
 
   // โหมดแก้เอกสาร: กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ตัวเดิม (ไม่หลุดไปแชททั่วไป)
   const editing = editingMemo[chatId] && now < editingMemo[chatId].until;
@@ -607,7 +786,7 @@ async function processBatch(chatId, msgs) {
     if (all.length === 0) {
       memoPending[chatId] = now + BUFFER_TTL;
       armedUntil[chatId] = now + BUFFER_TTL;
-      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions);
+      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, null, threadId, chatTitle);
       return;
     }
     // มีไฟล์แล้ว → รวมข้อความที่ buffer ไว้ทั้งหมด (คำสั่ง + เนื้อหาที่ forward มา) เป็น rawText
@@ -627,7 +806,7 @@ async function processBatch(chatId, msgs) {
   }
   if (text) {
     const imgPaths = await downloadRecentImages(chatId); // ถ้ามีรูปที่ส่งมา → ให้ AI อ่าน/วิเคราะห์
-    await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, imgPaths);
+    await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, imgPaths, threadId, chatTitle);
     return;
   }
 }
@@ -647,6 +826,127 @@ async function handleMessage(msg) {
 async function handleCallback(cb) {
   const chatId = cb.message?.chat?.id;
   if (!chatId) return;
+  // กดปุ่มเลือก "หน้าที่กลุ่ม" (gfunc:<id>[:<targetChatId>]) — เจ้าของเท่านั้น
+  const gf = String(cb.data || "").match(/^gfunc:[a-z_]+/);
+  if (gf) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    let out;
+    try {
+      const res = await fetch(APP_URL + "/api/telegram/callback", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), fromId: String(cb.from?.id || ""), data: cb.data || "" }),
+      });
+      out = await res.json();
+    } catch { out = { answer: "ระบบหลังบ้านไม่พร้อม", sends: [] }; }
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.answer || "" }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    await sendResultSends(chatId, out.sends || [], thr);
+    return;
+  }
+  // กดปุ่มตั้งบทบาทห้อง (setrole:<role>[:<targetChatId>]) เช่น ตั้งกลุ่มเป็นห้อง Usage Monitor — เจ้าของเท่านั้น
+  const srb = String(cb.data || "").match(/^setrole:[a-z]+/);
+  if (srb) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    let out;
+    try {
+      const res = await fetch(APP_URL + "/api/telegram/callback", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), fromId: String(cb.from?.id || ""), data: cb.data || "" }),
+      });
+      out = await res.json();
+    } catch { out = { answer: "ระบบหลังบ้านไม่พร้อม", sends: [] }; }
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.answer || "" }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    await sendResultSends(chatId, out.sends || [], thr);
+    return;
+  }
+  // กดปุ่มตั้งกลุ่มเป็นห้องมอนิเตอร์แชท OHO (ohomon[:<targetChatId>]) — เจ้าของเท่านั้น
+  const omb = String(cb.data || "").match(/^ohomon/);
+  if (omb) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    let out;
+    try {
+      const res = await fetch(APP_URL + "/api/telegram/callback", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), fromId: String(cb.from?.id || ""), data: cb.data || "" }),
+      });
+      out = await res.json();
+    } catch { out = { answer: "ระบบหลังบ้านไม่พร้อม", sends: [] }; }
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: out.answer || "" }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    await sendResultSends(chatId, out.sends || [], thr);
+    return;
+  }
+  // กดปุ่มยืนยัน/ยกเลิก ปรับวันหมดอายุ Thunder (texp:ok:<username> | texp:cancel) — เจ้าของ/ทีมที่อนุญาต
+  const texpb = String(cb.data || "").match(/^texp:/);
+  if (texpb) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    const fromName = [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || cb.from?.username || "";
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: /cancel/.test(cb.data) ? "ยกเลิกแล้ว" : "กำลังปรับให้ค่ะ รอสักครู่..." }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    let out;
+    try {
+      const res = await fetch(APP_URL + "/api/telegram/callback", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), fromId: String(cb.from?.id || ""), fromName, data: cb.data || "" }),
+      });
+      out = await res.json();
+    } catch { out = { sends: [{ kind: "text", text: "ระบบหลังบ้านไม่พร้อมค่ะ" }] }; }
+    await sendResultSends(chatId, out.sends || [], thr);
+    return;
+  }
+  // กดปุ่มอนุมัติ/แก้ไข ใบสำคัญรับเงินที่วานจัดทำ (aff:ok | aff:edit)
+  const affCb = String(cb.data || "").match(/^aff:(ok|edit)$/);
+  if (affCb) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: affCb[1] === "ok" ? "อนุมัติแล้ว ✅" : "รับทราบ จะแก้ให้ค่ะ" }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    const d = affDrafts[cb.message.message_id];
+    if (affCb[1] === "edit") {
+      // จำว่ากำลังแก้เคสไหน + เปิดหูรอคำสั่งแก้ถัดไป (แม้ไม่แท็ก)
+      if (d) {
+        editingAff[chatId] = { notiText: d.notiText, notiMsgId: d.notiMsgId, threadId: d.threadId, until: Date.now() + EDIT_TTL };
+        armedUntil[chatId] = Date.now() + EDIT_TTL;
+      }
+      await tg("sendMessage", { chat_id: chatId, text: "รับทราบค่ะ อยากให้แก้ตรงไหน พิมพ์บอกได้เลยนะคะ\n(เช่น \"วันที่ 7/07/69\" · \"ยอด 1420\" · \"ธนาคาร: กสิกรไทย เลขบัญชี: 1234567890\" · \"ที่อยู่ บ้านเลขที่ 12 หมู่ 3 ต.X อ.Y จ.Z\")", ...sendOpts(thr), reply_to_message_id: cb.message.message_id }).catch(() => {});
+      return;
+    }
+    // อนุมัติ: Reply เข้าข้อความ noti บอทระบบ + แนบไฟล์ + สรุป (ชุด reply เดียว) แล้ว "อนุมัติแล้วค่ะ✅ + แท็ก"
+    if (d && d.pdfB64) {
+      const form = new FormData();
+      form.append("chat_id", d.chatId);
+      if (d.threadId) form.append("message_thread_id", d.threadId);
+      form.append("reply_to_message_id", String(d.notiMsgId));
+      form.append("caption", d.summary);
+      form.append("document", new Blob([Buffer.from(d.pdfB64, "base64")]), d.filename);
+      await fetch(API("sendDocument"), { method: "POST", body: form }).catch(() => {});
+      const mn = buildMention(d.tag);
+      const extra = { ...sendOpts(d.threadId), reply_to_message_id: Number(d.notiMsgId) };
+      let text = "อนุมัติแล้วค่ะ✅";
+      if (mn) { text = `${mn.prefix} ${text}`; if (mn.entity) extra.entities = [{ ...mn.entity, offset: 0 }]; }
+      await tg("sendMessage", { chat_id: d.chatId, text, ...extra }).catch(() => {});
+      delete affDrafts[cb.message.message_id];
+    } else {
+      await tg("sendMessage", { chat_id: chatId, text: "✅ อนุมัติแล้วค่ะ เอกสารพร้อมนำไปใช้ได้เลย", ...sendOpts(thr), reply_to_message_id: cb.message.message_id }).catch(() => {});
+    }
+    return;
+  }
+  // กดปุ่มตัวเลือกของ Lead (opt:<index>) → เอา label ปุ่มนั้นเป็นคำตอบของเจ้าของ แล้วเดินเรื่องต่อในห้องเดิม
+  const optM = String(cb.data || "").match(/^opt:(\d+)$/);
+  if (optM) {
+    const idx = Number(optM[1]);
+    const kb = (cb.message?.reply_markup?.inline_keyboard || []).flat();
+    const choice = kb[idx]?.text || "";
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: choice ? `เลือก: ${choice}` : "" }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    if (choice) {
+      const chatType = cb.message?.chat?.type || "group";
+      const isGroup = chatType === "group" || chatType === "supergroup";
+      const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+      await chatIngest(chatId, choice, personOf(cb.from), isGroup, null, cb.message.message_id, "", [], null, thr);
+    }
+    return;
+  }
   // กด "แก้ไข" → จำว่ากำลังแก้เอกสารตัวไหน + เปิดหูรอคำสั่งถัดไป (แม้ไม่แท็กชื่อ)
   const rev = String(cb.data || "").match(/^memo:revise:(.+)$/);
   if (rev) {
@@ -736,6 +1036,34 @@ async function main() {
   };
   setTimeout(checkCalendar, 15000);
   setInterval(checkCalendar, 5 * 60 * 1000);
+
+  // Usage Monitor — โพสต์การ์ดเข้าห้อง monitor + เตือนเจ้าของเมื่อใกล้เต็ม
+  const monitorMinutes = Number(process.env.USAGE_MONITOR_MINUTES || 60);
+  const runMonitor = async () => {
+    try {
+      const r = await fetch(APP_URL + "/api/monitor/usage", { method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL } });
+      const j = await r.json();
+      if (j.target && j.target.chatId) {
+        if (j.imageBase64) {
+          // การ์ดภาพ (หลอด progress) — ถ้าเรนเดอร์ได้ ส่งเป็นรูป
+          await sendResultSends(j.target.chatId, [{ kind: "photo", dataBase64: j.imageBase64, filename: "usage-monitor.png" }], j.target.threadId).catch(() => {});
+        } else if (j.text) {
+          // เรนเดอร์ภาพไม่ได้ → ส่ง text สำรอง
+          await tg("sendMessage", { chat_id: j.target.chatId, text: j.text, ...sendOpts(j.target.threadId) }).catch(() => {});
+        }
+      }
+      if (Array.isArray(j.alerts) && j.alerts.length && j.ownerChatId) {
+        await tg("sendMessage", { chat_id: j.ownerChatId, text: "เตือนการใช้งานค่ะ\n- " + j.alerts.join("\n- ") }).catch(() => {});
+      }
+    } catch { /* รอบหน้าลองใหม่ */ }
+  };
+  setTimeout(runMonitor, 30000);
+  setInterval(runMonitor, monitorMinutes * 60 * 1000);
+
+  // โหลดรายชื่อกลุ่ม dedicated (thunder_expiry) + รีเฟรชทุก 3 นาที
+  await refreshDedicated();
+  setInterval(refreshDedicated, 3 * 60 * 1000);
+
   let offset = 0;
   while (true) {
     try {

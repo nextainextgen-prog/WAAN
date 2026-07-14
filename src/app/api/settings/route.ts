@@ -21,8 +21,19 @@ export async function GET() {
   ]);
 
   const connections = {
+    codex: {
+      ok: brain.codex,
+      detail: brain.codex
+        ? `${process.env.CODEX_MODEL || "gpt-5.5"} · ${process.env.CODEX_CLI_PATH || "Codex CLI"}`
+        : "ยังไม่พบ Codex CLI",
+    },
     claude: { ok: true, detail: process.env.CLAUDE_CLI_PATH || "claude" },
-    gemini: { ok: Boolean(process.env.GEMINI_CLI_PATH), detail: process.env.GEMINI_CLI_PATH || "ยังไม่ตั้งค่า" },
+    gemini: {
+      ok: Boolean(process.env.GEMINI_API_KEY || process.env.GEMINI_CLI_PATH?.includes("/")),
+      detail: process.env.GEMINI_API_KEY
+        ? `${process.env.GEMINI_MODEL || "gemini-2.5-flash"} · REST API`
+        : "ยังไม่ตั้งค่า (ตั้ง GEMINI_API_KEY)",
+    },
     hermes: {
       ok: brain.hermes,
       detail: brain.hermes

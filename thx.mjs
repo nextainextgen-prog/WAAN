@@ -1,0 +1,35 @@
+import fs from "node:fs"; import path from "node:path"; import { chromium } from "playwright";
+const CWD=process.cwd();
+for(const line of fs.readFileSync(path.join(CWD,".env"),"utf8").split("\n")){const m=line.match(/^\s*([A-Z0-9_]+)\s*=\s*"?(.*?)"?\s*$/);if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}
+const BASE=(process.env.THUNDER_ADMIN_URL||"https://old.thunder.in.th").replace(/\/$/,"");
+const OUT="/private/tmp/claude-501/-Users-mx-Projects-AITransformation/fe6f78d4-2844-4fa3-8ae8-9a57315927b5/scratchpad";
+const TH=["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
+const b=await chromium.launch({args:["--no-sandbox"]});
+const ctx=await b.newContext({storageState:path.join(CWD,".thunder-session.json"),viewport:{width:1700,height:1000},locale:"th-TH"});
+const page=await ctx.newPage();
+await page.goto(`${BASE}/admin/service`,{waitUntil:"domcontentloaded"}); await page.waitForTimeout(5000);
+const box=page.getByPlaceholder(/9bomeiei/i).first();
+await box.click(); await box.pressSequentially("mongdu",{delay:60}); await page.waitForTimeout(300);
+await page.getByRole("button",{name:/ค้นหา/}).first().click(); await page.waitForTimeout(5000);
+await page.locator("table tbody tr").first().locator("td").nth(12).locator("button").first().click(); await page.waitForTimeout(1200);
+const dlg=page.locator('[class*=Modal],[role=dialog]').filter({hasText:/แก้ไขวันหมดอายุ/}).first();
+await dlg.locator('input[readonly]').first().click(); await page.waitForTimeout(700);
+const now=new Date(); const targetHdr=`${TH[now.getMonth()]} ${now.getFullYear()}`;
+const headerBtn=()=>page.locator('button').filter({hasText:new RegExp(`^(${TH.join("|")})\\s*\\d{4}$`)}).first();
+for(let i=0;i<24;i++){const cur=(await headerBtn().textContent().catch(()=>"")).trim(); if(cur===targetHdr)break;
+  const [mN,yS]=cur.split(/\s+/); const ci=TH.indexOf(mN)+(+yS)*12, ti=now.getMonth()+now.getFullYear()*12;
+  let btn=ci<ti?page.locator('button[data-direction="next"]').first():page.locator('button[data-direction="previous"]').first();
+  await btn.click().catch(()=>{}); await page.waitForTimeout(400);}
+await page.locator(`button[class*=DatePicker-day]:not([data-outside])`).filter({hasText:new RegExp(`^${now.getDate()}$`)}).first().click().catch(()=>{});
+await page.waitForTimeout(800);
+const hh=String(now.getHours()).padStart(2,"0"), mm=String(now.getMinutes()).padStart(2,"0");
+console.log("ต้องการ เวลา:",hh+":"+mm);
+const hourF=dlg.locator('input:not([readonly])').nth(0), minF=dlg.locator('input:not([readonly])').nth(1);
+await hourF.click({clickCount:3}); await page.waitForTimeout(150); await hourF.pressSequentially(hh,{delay:100}); await page.waitForTimeout(200);
+await minF.click({clickCount:3}); await page.waitForTimeout(150); await minF.pressSequentially(mm,{delay:100}); await page.waitForTimeout(200);
+const vals=await dlg.locator("input").evaluateAll(els=>els.map(e=>e.value));
+console.log("ได้:",JSON.stringify(vals));
+await page.screenshot({path:`${OUT}/thx-final.png`}).catch(()=>{});
+await page.getByRole("button",{name:/^ยกเลิก$/}).first().click().catch(()=>{});
+console.log(">>> ยกเลิก ไม่บันทึก");
+await b.close();

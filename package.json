@@ -16,10 +16,15 @@
     "postinstall": "prisma generate",
     "thunder:auth": "node scripts/thunder-auth.mjs",
     "oho:auth": "node scripts/oho-auth.mjs",
-    "oho:watch": "node scripts/oho-watch.mjs"
+    "oho:watch": "node scripts/oho-watch.mjs",
+    "fb:auth": "node scripts/fb-auth.mjs",
+    "fb:watch": "node scripts/fb-watch.mjs",
+    "line:auth": "node scripts/line-auth.mjs",
+    "line:watch": "node scripts/line-watch.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
+    "@pdf-lib/fontkit": "^1.1.1",
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",

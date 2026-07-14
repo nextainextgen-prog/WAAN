@@ -11,6 +11,42 @@ const A = {
 const OWNER = { id: "7750653134", name: "พี่โด้" };
 const MANAGER = A.ning;
 
+// ชื่อแอดมินที่ OHO แสดง (header "กำลังดูแล") → คนที่ต้องแท็กใน Telegram
+// ใช้ตอนแอดมิน "รับแชทแล้ว" เพื่อแท็กเฉพาะคนที่ดูแลจริง (ไม่ปลุกทั้งเวร)
+const AGENT_TAG = {
+  owner: [MANAGER, OWNER], // Owner → พี่หนิง พี่โด้
+  "d.arunjai": [A.nong], // D.Arunjai → พี่น้อง
+  "d'noey": [A.noey], // D'Noey → เนย
+  "n.korn": [A.korn], // N.Korn → พี่กร
+  "n.prae": [A.prae], // N.Prae → พี่แพร
+};
+// ปรับชื่อให้เทียบ key ได้ (ตัดช่องว่าง, แปลง ' โค้ง→ตรง, พิมพ์เล็ก)
+function normAgent(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[‘’ʼ`]/g, "'")
+    .replace(/\s+/g, "");
+}
+// คืนรายชื่อที่ต้องแท็กจากชื่อแอดมินที่ OHO แสดง — ไม่รู้จัก = [] (ให้ผู้เรียก fallback เป็นเวร)
+// ใช้ includes เพราะบางชื่อมีคำต่อท้าย เช่น "Owner ทีมช่วยเหลือ", "D.Arunjai Day"
+export function tagsForAgent(name) {
+  const n = normAgent(name);
+  if (!n) return [];
+  for (const key of Object.keys(AGENT_TAG)) if (n.includes(key)) return AGENT_TAG[key];
+  return [];
+}
+
+// แท็กตาม "ช่องทาง/บริการ" (สำคัญกว่าชื่อแอดมิน) — บาง product มีเจ้าภาพเฉพาะ
+// EasySlip = ดูแลโดยพี่หนิง+พี่โด้เท่านั้น ไม่ต้องปลุกเวร Thunder
+const CHANNEL_TAG = [
+  { match: /easy\s*slip|easy\.beam/i, tags: [MANAGER, OWNER] }, // EASYSLIP / EASY.Beam → พี่หนิง พี่โด้
+];
+export function tagsForChannel(channel) {
+  const c = String(channel || "");
+  for (const r of CHANNEL_TAG) if (r.match.test(c)) return r.tags;
+  return [];
+}
+
 // เวลาปัจจุบันโซนไทย
 function bkkParts(date) {
   const f = new Intl.DateTimeFormat("en-GB", {

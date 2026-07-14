@@ -62,3 +62,10 @@ credentials.json
 
 # oho session
 .oho-session.json
+
+# facebook / line OA sessions (login cookies — do not commit)
+.fb-session.json
+.line-session.json
+
+# stray debug log
+aff-debug.log

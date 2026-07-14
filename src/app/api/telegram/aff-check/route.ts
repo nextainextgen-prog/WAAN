@@ -5,6 +5,7 @@ import { getAllowedChatId, getAllowedGroups } from "@/lib/telegram";
 import { isOwner, isAuthorized } from "@/lib/team";
 import { runAffCheck } from "@/lib/aff-check";
 import { saveChat } from "@/lib/secretary";
+import { resolveAffTag } from "@/lib/roles";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -14,6 +15,16 @@ interface Send {
   text?: string;
   caption?: string;
   dataBase64?: string;
+  parseMode?: "HTML" | "Markdown";
+}
+
+// ถอด <tg-spoiler> + คืน entity HTML กลับเป็นตัวอักษรจริง (ไว้เก็บลงประวัติ/ให้ AI อ่าน — ไม่ต้องมีแท็ก)
+function stripHtml(s: string): string {
+  return s
+    .replace(/<\/?tg-spoiler>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }
 
 export async function POST(req: Request) {
@@ -24,6 +35,7 @@ export async function POST(req: Request) {
   const fromId = String(body.fromId || "");
   const isGroup = Boolean(body.isGroup);
   const rawText = String(body.rawText || "");
+  const replyText = String(body.replyText || ""); // ข้อความ noti ที่แอดมิน Reply ถึง (ไว้เช็คว่าเอกสารตรงรายการ)
   const files = (body.files as { path: string; filename: string }[]) || [];
   if (!chatId) return NextResponse.json({ error: "bad_request" }, { status: 400 });
 
@@ -42,11 +54,11 @@ export async function POST(req: Request) {
   if (!pdf) return NextResponse.json({ ok: false, error: "no_pdf" });
 
   try {
-    const result = await runAffCheck(pdf.path, rawText);
+    const result = await runAffCheck(pdf.path, rawText, undefined, chatId, replyText);
     // บันทึกผลตรวจลงประวัติสนทนา เพื่อให้ตอบตามเรื่องเดิมได้ (เช่น "ที่ว่าเลขบัญชีไม่ตรง...")
     if (rawText) await saveChat("user", `[ขอตรวจเอกสาร Affiliate] ${rawText}`.slice(0, 1000)).catch(() => {});
-    await saveChat("assistant", `[ผลตรวจเอกสาร Affiliate ที่เพิ่งทำ]\n${result.reportText}`.slice(0, 3500)).catch(() => {});
-    const sends: Send[] = [{ kind: "text", text: result.reportText }];
+    await saveChat("assistant", `[ผลตรวจเอกสาร Affiliate ที่เพิ่งทำ]\n${stripHtml(result.reportText)}`.slice(0, 3500)).catch(() => {});
+    const sends: Send[] = [{ kind: "text", text: result.reportText, parseMode: "HTML" }];
     for (const im of result.images) {
       try {
         const b64 = fs.readFileSync(im.path).toString("base64");
@@ -55,7 +67,9 @@ export async function POST(req: Request) {
         /* ข้ามภาพที่อ่านไม่ได้ */
       }
     }
-    return NextResponse.json({ ok: true, sends });
+    // ตรวจผ่าน (ยอดตรงระบบ) + คนที่ต้องแท็ก (per-group หรือ global) → ให้บอท reply แอดมิน + แท็กให้
+    const tagTarget = await resolveAffTag(chatId);
+    return NextResponse.json({ ok: true, passed: result.allOk, tagTarget, sends });
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ ok: false, error: detail });

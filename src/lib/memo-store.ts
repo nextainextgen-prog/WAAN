@@ -4,11 +4,17 @@ import { randomUUID } from "node:crypto";
 import { buildRefundMemoHtml, type RefundMemoData } from "./memo";
 import { renderHtmlToPdf } from "./html-pdf";
 import { generateRefundMemo, type MemoValidation } from "./memo-generate";
+import { lockPdf } from "./pdf-lock";
 
 const DIR = path.join(process.cwd(), ".generated", "memos");
 
 async function ensureDir() {
   await fs.mkdir(DIR, { recursive: true });
+}
+
+// เขียนไฟล์ PDF ที่ล็อกรหัสแล้วเสมอ (เปิดต้องใส่รหัส) — choke point เดียวของทุก path
+async function writePdf(id: string, pdf: Buffer) {
+  await fs.writeFile(path.join(DIR, `${id}.pdf`), await lockPdf(pdf));
 }
 
 export interface MemoRecord {
@@ -25,7 +31,7 @@ export async function saveMemoDraft(data: RefundMemoData, pdf: Buffer, rawText?:
   const id = randomUUID().replace(/-/g, "").slice(0, 10);
   const rec: MemoRecord = { id, data: { ...data, signed: false }, signed: false, createdAt: new Date().toISOString(), rawText };
   await fs.writeFile(path.join(DIR, `${id}.json`), JSON.stringify(rec, null, 2));
-  await fs.writeFile(path.join(DIR, `${id}.pdf`), pdf);
+  await writePdf(id, pdf);
   return id;
 }
 
@@ -46,7 +52,7 @@ export async function reviseMemo(
   await ensureDir();
   const next: MemoRecord = { ...rec, data: { ...res.data, signed: false }, signed: false, rawText: rec.rawText };
   await fs.writeFile(path.join(DIR, `${id}.json`), JSON.stringify(next, null, 2));
-  await fs.writeFile(path.join(DIR, `${id}.pdf`), res.pdf);
+  await writePdf(id, res.pdf);
   return { ok: true, data: res.data, validation: res.validation };
 }
 
@@ -75,7 +81,7 @@ export async function signMemo(id: string): Promise<{ ok: boolean; data?: Refund
   const data = { ...rec.data, signed: true };
   const pdf = await renderHtmlToPdf(buildRefundMemoHtml(data));
   await ensureDir();
-  await fs.writeFile(path.join(DIR, `${id}.pdf`), pdf);
+  await writePdf(id, pdf);
   await fs.writeFile(
     path.join(DIR, `${id}.json`),
     JSON.stringify({ ...rec, data, signed: true }, null, 2),
@@ -83,16 +89,16 @@ export async function signMemo(id: string): Promise<{ ok: boolean; data?: Refund
   return { ok: true, data };
 }
 
-// ตั้งชื่อไฟล์ให้ดูเป็นทางการ: เลขเอกสาร + ชื่อลูกค้า + สถานะ
-// เช่น "TS-CS-RF-1234567 บันทึกขอคืนเงินหัก ณ ที่จ่าย - เดอะ พีเอ็กซ์ กรุ๊ป (ร่าง).pdf"
+// ตั้งชื่อไฟล์ให้สั้น อ่านง่าย ไม่โดน Telegram ตัด: เลขเอกสาร + ชื่อลูกค้า + สถานะ
+// เช่น "TS-CS-RF-9461995 คืนเงินภาษี เดอะ พีเอ็กซ์ กรุ๊ป (ร่าง).pdf"
 export function memoFilename(data: RefundMemoData, signed: boolean): string {
   const who = (data.serviceName || data.accountName || "ลูกค้า")
     .replace(/[^\p{L}\p{N}ก-๙\s._-]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 40) || "ลูกค้า";
+    .slice(0, 24) || "ลูกค้า";
   const docNo = (data.docNo || "").replace(/[^\w-]/g, "");
   const prefix = docNo ? `${docNo} ` : "";
   const status = signed ? "(ลงนามแล้ว)" : "(ร่าง)";
-  return `${prefix}บันทึกขอคืนเงินหัก ณ ที่จ่าย - ${who} ${status}.pdf`;
+  return `${prefix}คืนเงินภาษี ${who} ${status}.pdf`;
 }

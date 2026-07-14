@@ -32,15 +32,17 @@ interface SettingsData {
 }
 
 const MODELS = [
-  { key: "claude", label: "Claude", desc: "หลัก · ผ่าน Max subscription", icon: Sparkles },
-  { key: "gemini", label: "Gemini", desc: "ทางเลือก · Google login", icon: Bot },
-  { key: "hermes", label: "Hermes", desc: "agent เดิมของคุณ", icon: Webhook },
-  { key: "auto", label: "อัตโนมัติ", desc: "Claude ก่อน สลับสำรองเอง", icon: BrainCircuit },
+  { key: "hermes", label: "น้องวาน (Hermes)", desc: "หลัก · agent gpt-5.5 · คิด+ใช้ tool เอง", icon: BrainCircuit },
+  { key: "codex", label: "Codex GPT-5.5", desc: "gpt-5.5 ตรง · ไม่ผ่าน agent (เร็วกว่า)", icon: Sparkles },
+  { key: "claude", label: "Claude", desc: "co-brain · ร่างเอกสาร/สไลด์/รีวิว", icon: Sparkles },
+  { key: "gemini", label: "Gemini", desc: "สำรอง · REST API", icon: Bot },
+  { key: "auto", label: "อัตโนมัติ", desc: "น้องวาน ก่อน สลับสำรองเอง", icon: BrainCircuit },
 ];
 
 const CONN_META: Record<string, { label: string; icon: React.ComponentType<{ className?: string }> }> = {
+  codex: { label: "Codex GPT-5.5", icon: Sparkles },
   claude: { label: "Claude CLI", icon: Sparkles },
-  gemini: { label: "Gemini CLI", icon: Bot },
+  gemini: { label: "Gemini API", icon: Bot },
   hermes: { label: "Hermes agent", icon: Webhook },
   telegram: { label: "Telegram", icon: Send },
   obsidian: { label: "Obsidian vault", icon: NotebookPen },
@@ -52,7 +54,7 @@ export function SettingsView() {
   const [style, setStyle] = useState("");
   const [savingStyle, setSavingStyle] = useState(false);
   const [savedStyle, setSavedStyle] = useState(false);
-  const [model, setModel] = useState("claude");
+  const [model, setModel] = useState("hermes");
 
   async function load() {
     const res = await fetch("/api/settings");

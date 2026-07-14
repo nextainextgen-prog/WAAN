@@ -1,7 +1,18 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+
+// โฟลเดอร์ว่างสำหรับรัน hermes (กันไม่ให้ AGENTS.md/SOUL.md/rules ของโปรเจกต์รั่วเข้า persona น้องวาน)
+function cleanCwd(): string {
+  const dir = path.join(os.tmpdir(), "waan-hermes-cwd");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  return dir;
+}
 
 /**
  * ตัวเชื่อม Hermes — agent ของ Nous Research (NousResearch/hermes-agent)
@@ -36,7 +47,7 @@ function askHermesCli(message: string, context: string, timeoutMs: number): Prom
     if (process.env.HERMES_MODEL) args.push("-m", process.env.HERMES_MODEL);
     if (process.env.HERMES_PROVIDER) args.push("--provider", process.env.HERMES_PROVIDER);
 
-    const child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"], env: process.env, cwd: cleanCwd() });
     let stdout = "";
     let stderr = "";
     let done = false;

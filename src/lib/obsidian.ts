@@ -116,6 +116,42 @@ export async function appendAiNote(relativePath: string, content: string): Promi
   return true;
 }
 
+// เขียน/อ่านไฟล์ binary (PDF/PNG) ในโฟลเดอร์ AI เท่านั้น (ปลอดภัย)
+export async function writeAiBinary(relativePath: string, data: Buffer | Uint8Array): Promise<boolean> {
+  const target = resolveAiPath(relativePath);
+  if (!target) return false;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, data);
+  return true;
+}
+
+// path เต็มของไฟล์ในโฟลเดอร์ AI (null ถ้า traversal/ไม่มี vault) — ใช้ส่งต่อให้ pdf-lib/telegram
+export function aiFilePath(relativePath: string): string | null {
+  return resolveAiPath(relativePath);
+}
+
+export async function readAiText(relativePath: string): Promise<string | null> {
+  const target = resolveAiPath(relativePath);
+  if (!target || !existsSync(target)) return null;
+  try {
+    return await fs.readFile(target, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// รายชื่อโฟลเดอร์ย่อยในโฟลเดอร์ AI (เช่น aff-customers/*)
+export async function listAiSubdirs(relativePath: string): Promise<string[]> {
+  const target = resolveAiPath(relativePath);
+  if (!target || !existsSync(target)) return [];
+  try {
+    const entries = await fs.readdir(target, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
 // สร้างโครงสร้างโฟลเดอร์ AI เริ่มต้น (แยกจากงาน/ส่วนตัว)
 export async function ensureAiStructure(): Promise<boolean> {
   const vault = getVaultPath();

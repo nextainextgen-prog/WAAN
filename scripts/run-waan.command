@@ -1,5 +1,7 @@
 #!/bin/bash
 # เปิดน้องวาน + ระบบทั้งหมด (ดับเบิลคลิกไฟล์นี้ได้เลย) — รันถาวร ไม่ผูกกับเซสชัน Claude
+# รองรับทั้งดับเบิลคลิก และเรียกจาก launchd (auto-start ตอนล็อกอิน)
+export PATH="/Users/mx/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 cd "$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 
 echo "=== หยุดของเดิม (กันรันซ้อน) ==="
@@ -20,6 +22,11 @@ sleep 2
 
 echo "=== เริ่ม Google Drive watcher ==="
 nohup npm run drive:watch > .run-logs/drive.log 2>&1 &
+sleep 1
+
+echo "=== เริ่ม OHO chat monitor (เตือนแชทค้าง + แท็กเวร) ==="
+pkill -f "oho-watch.mjs" 2>/dev/null
+nohup npm run oho:watch > .run-logs/oho.log 2>&1 &
 sleep 1
 
 echo ""

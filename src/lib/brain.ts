@@ -1,3 +1,4 @@
+import { askCodex, codexConfigured } from "./codex";
 import { askClaude } from "./claude";
 import { askGemini } from "./gemini";
 import { askHermes, hermesConfigured } from "./hermes";
@@ -18,16 +19,16 @@ async function recentConversation(): Promise<string> {
 /**
  * "สมอง AI" ของ Changoh — รวมแหล่งความรู้และโมเดลเข้าด้วยกัน
  *  ความรู้ (context): ข้อมูลทุนวิจัยจริง + Obsidian vault (second brain)
- *  โมเดล (reasoning): Claude (หลัก) / Gemini / Hermes agent
+ *  โมเดล (reasoning): Codex gpt-5.5 (หลัก) + Claude (co-brain) / Gemini (สำรอง) / Hermes agent
  */
-export type BrainModel = "claude" | "gemini" | "hermes" | "auto";
+export type BrainModel = "codex" | "claude" | "gemini" | "hermes" | "auto";
 
-const VALID: BrainModel[] = ["claude", "gemini", "hermes", "auto"];
+const VALID: BrainModel[] = ["codex", "claude", "gemini", "hermes", "auto"];
 
 export async function getDefaultModel(): Promise<BrainModel> {
   const row = await db.setting.findUnique({ where: { key: "brain_model" } });
-  const v = (row?.value || process.env.BRAIN_DEFAULT_MODEL || "claude") as BrainModel;
-  return VALID.includes(v) ? v : "claude";
+  const v = (row?.value || process.env.BRAIN_DEFAULT_MODEL || "hermes") as BrainModel;
+  return VALID.includes(v) ? v : "hermes";
 }
 
 export async function setDefaultModel(model: BrainModel) {
@@ -61,6 +62,8 @@ async function callModel(
   context: string,
 ): Promise<string> {
   switch (model) {
+    case "codex":
+      return askCodex(message, { system: context, timeoutMs: 150_000 });
     case "claude":
       return askClaude(message, { system: context, timeoutMs: 150_000 });
     case "gemini":
@@ -80,10 +83,12 @@ export async function askBrain(
   if (convo) context += `\n\n${convo}`;
   if (opts.extraContext) context += `\n\n${opts.extraContext}`;
 
-  // โหมด auto: Claude ก่อน ถ้าล้มเหลวลอง Gemini แล้วค่อย Hermes
+  // โหมด auto: Hermes (น้องวาน agent gpt-5.5) ด่านหน้า → Codex → Claude co-brain → Gemini สำรอง
   if (requested === "auto") {
-    const order: Exclude<BrainModel, "auto">[] = ["claude", "gemini"];
+    const order: Exclude<BrainModel, "auto">[] = [];
     if (hermesConfigured()) order.push("hermes");
+    if (codexConfigured()) order.push("codex");
+    order.push("claude", "gemini");
     let lastErr: unknown;
     for (let i = 0; i < order.length; i++) {
       try {
@@ -104,6 +109,7 @@ export async function askBrain(
 export async function brainStatus() {
   return {
     defaultModel: await getDefaultModel(),
+    codex: codexConfigured(),
     hermes: hermesConfigured(),
     obsidian: obsidianStatus(),
   };
