@@ -140,25 +140,32 @@ async function handleThunderExpiry(text: string, threadId: string, fromUsername:
             ? `เจอ "${username}" แต่ไม่มีแถวที่เป็น "สาขาหลัก" ค่ะ (มี ${pv.otherCount} แถวที่เป็นสาขาย่อย/ชื่อไม่ตรง) ยังไม่ปรับให้นะคะ`
             : `ตรวจสอบระบบหลังบ้านไม่สำเร็จค่ะ (${pv.error || "unknown"})`;
     const sends: Send[] = [{ kind: "text", text: `${tag}${msg}`, threadId: thr }];
-    if (pv.screenshotBase64) sends.push({ kind: "photo", dataBase64: pv.screenshotBase64, caption: "หน้าจอระบบหลังบ้าน", threadId: thr });
+    if (pv.shotLeftBase64) sends.push({ kind: "photo", dataBase64: pv.shotLeftBase64, caption: "หน้าจอระบบหลังบ้าน", threadId: thr });
     return sends;
   }
   const now = new Date();
   const nowStr = now.toLocaleString("th-TH-u-ca-gregory", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const n = pv.mainRows.length;
+  const expired = pv.expiredCount;
   const list = pv.mainRows
-    .map((r, i) => `${i + 1}. ${r.shopName || "-"} (id ${r.serviceId || "-"}) · เดิม: ${r.currentExpiry || "-"}`)
+    .map((r, i) => `${i + 1}. ${r.shopName || "-"} (id ${r.serviceId || "-"}) · ${r.expired ? "🔴 หมดอายุ" : "🟢 ยังไม่หมด"} · เดิม: ${r.currentExpiry || "-"}`)
     .join("\n");
   const caption =
     `${tag}📅 ยืนยันปรับวันหมดอายุ?\n` +
-    `👤 ยูสเซอร์: ${username} · ${pv.mainRows.length} สาขาหลัก\n${list}\n` +
+    `👤 ยูสเซอร์: ${username} · ${n} สาขาหลัก${n > 1 ? ` (หมดอายุ ${expired})` : ""}\n${list}\n` +
     `➡️ จะตั้งวันหมดอายุใหม่เป็น ${nowStr} (วัน/เวลาปัจจุบัน)` +
-    (pv.otherCount ? `\n(ข้าม ${pv.otherCount} แถวสาขาย่อย/ชื่อไม่ตรง)` : "");
-  const buttons = [
-    { text: "✅ ยืนยันปรับ", data: `texp:ok:${username}`.slice(0, 64) },
-    { text: "❌ ยกเลิก", data: "texp:cancel" },
-  ];
+    (pv.otherCount ? `\n(ข้าม ${pv.otherCount} แถวสาขาย่อย/ยูสเซอร์ไม่ตรง)` : "");
+  // ปุ่ม: 1 สาขา → ยืนยันเดี่ยว | หลายสาขาปนกัน → เลือกเฉพาะหมดอายุ/ทุกสาขา | หลายสาขาหมดหมด → ยืนยันทั้งหมด
+  const okAll = { text: n > 1 ? `✅ ยืนยันปรับทั้งหมด (${n})` : "✅ ยืนยันปรับ", data: `texp:ok:all:${username}`.slice(0, 64) };
+  const okExpired = { text: `✅ ปรับเฉพาะที่หมดอายุ (${expired})`, data: `texp:ok:expired:${username}`.slice(0, 64) };
+  const cancel = { text: "❌ ยกเลิก", data: "texp:cancel" };
+  let buttons: { text: string; data: string }[];
+  if (n <= 1) buttons = [okAll, cancel];
+  else if (expired > 0 && expired < n) buttons = [okExpired, { text: `ปรับทุกสาขา (${n})`, data: `texp:ok:all:${username}`.slice(0, 64) }, cancel];
+  else buttons = [okAll, cancel]; // หมดอายุหมด หรือไม่มีตัวหมดอายุเลย → ให้ผู้ใช้ตัดสินใจปรับทั้งหมด/ยกเลิก
   const sends: Send[] = [{ kind: "text", text: caption, threadId: thr, buttons }];
-  if (pv.screenshotBase64) sends.push({ kind: "photo", dataBase64: pv.screenshotBase64, caption: `ช่องวันหมดอายุปัจจุบันของ ${username}`, threadId: thr });
+  if (pv.shotLeftBase64) sends.push({ kind: "photo", dataBase64: pv.shotLeftBase64, caption: `ยูสเซอร์/สาขาของ ${username}`, threadId: thr });
+  if (pv.shotRightBase64) sends.push({ kind: "photo", dataBase64: pv.shotRightBase64, caption: "วันหมดอายุปัจจุบัน + สถานะ", threadId: thr });
   return sends;
 }
 

@@ -24,22 +24,29 @@ export interface ExpiryRow {
   shopName: string;
   branchType: string;
   currentExpiry: string;
+  status: string;
+  expired: boolean;
 }
 export interface PreviewResult {
   ok: boolean;
   error?: "no_session" | "session_expired" | "not_found" | "no_main_branch" | string;
   username: string;
   mainRows: ExpiryRow[];
+  expiredCount: number;
   otherCount: number;
-  screenshotBase64?: string;
+  // รูปครอป 2 ฝั่งของแถวเป้าหมาย (ซ้าย=ยูสเซอร์/สาขา, ขวา=วันหมดอายุ/สถานะ) ตีกรอบแดง
+  shotLeftBase64?: string;
+  shotRightBase64?: string;
 }
+export type ExpiryScope = "expired" | "all";
 export interface ExecuteResult {
   ok: boolean;
   error?: "no_session" | "session_expired" | "not_found" | "no_main_branch" | "expiry_col_not_found" | "no_row_updated" | string;
   updated: number;
   updatedRows: { shopName: string; serviceId: string; oldExpiry: string }[];
   otherCount: number;
-  screenshotBase64?: string;
+  shotLeftBase64?: string;
+  shotRightBase64?: string;
 }
 
 // สกัด username จากข้อความแอดมิน เช่น "preechapanit101 ปรับวันหมดอายุให้หน่อย"
@@ -75,13 +82,19 @@ async function openAndSearch(username: string) {
   await box.pressSequentially(username, { delay: 60 });
   await page.waitForTimeout(400);
   const searchBtn = page.getByRole("button", { name: /ค้นหา/ }).first();
-  // ระบบหลังบ้านโหลดช้าได้ → รอผลลัพธ์ (ขึ้น "มีข้อมูล N รายการ" หรือมีแถว) สูงสุด 15 วิ ก่อนค่อยสรุปว่าไม่เจอ
+  // ระบบหลังบ้านโหลดช้าได้ → รอผลลัพธ์จริง สูงสุด 15 วิ ก่อนค่อยสรุปว่าไม่เจอ
+  // สำคัญ: การพิมพ์ในช่องค้นหาจะรีเซ็ต count เป็น "มีข้อมูล 0 รายการ" ทันที ซึ่ง match regex เดิม
+  // → ต้องรอ count ที่ "ไม่ใช่ 0" จริง (หรือมีแถวจริง) ไม่งั้น resolve เร็วเกินแล้วอ่าน 0 แถว
   const waitResults = () =>
     page
       .waitForFunction(
-        () => /มีข้อมูล\s*[\d,]+\s*รายการ/.test(document.body.innerText) || document.querySelectorAll("table tbody tr").length > 0,
+        () => {
+          const m = document.body.innerText.match(/มีข้อมูล\s*([\d,]+)\s*รายการ/);
+          const nonZero = !!m && m[1].replace(/,/g, "") !== "0";
+          return nonZero || document.querySelectorAll("table tbody tr").length > 0;
+        },
         null,
-        { timeout: 15000, polling: 800 },
+        { timeout: 15000, polling: 500 },
       )
       .catch(() => {});
   await searchBtn.click().catch(() => {});
@@ -103,11 +116,12 @@ async function columnIndexes(page: Page) {
     const clean = (s: string | null) => (s || "").replace(/\s+/g, " ").trim();
     const heads = [...document.querySelectorAll("table thead th, table thead td")].map((h) => clean(h.textContent));
     const idx = (re: RegExp) => heads.findIndex((h) => re.test(h));
-    return { user: idx(/^username$|ชื่อผู้ใช้/i), branch: idx(/ประเภทสาขา/), expiry: idx(/วันที่บอทหมดอายุ/), shop: idx(/ชื่อร้านค้า(?!.*ภายใน)/), id: idx(/ไอดีร้านค้า/) };
+    // สถานะ = คอลัมน์ในตาราง (ไม่ใช่ "สถานะการเชื่อมต่อ" ซึ่งขึ้นต้นเหมือนกัน) → บังคับ exact
+    return { user: idx(/^username$|ชื่อผู้ใช้/i), branch: idx(/ประเภทสาขา/), expiry: idx(/วันที่บอทหมดอายุ/), shop: idx(/ชื่อร้านค้า(?!.*ภายใน)/), id: idx(/ไอดีร้านค้า/), status: idx(/^สถานะ$/) };
   });
 }
 
-async function readRows(page: Page, username: string, cols: { user: number; branch: number; expiry: number; shop: number; id: number }) {
+async function readRows(page: Page, username: string, cols: { user: number; branch: number; expiry: number; shop: number; id: number; status: number }) {
   return page.evaluate(
     ({ uname, c }) => {
       const clean = (s: string | null) => (s || "").replace(/\s+/g, " ").trim();
@@ -120,7 +134,11 @@ async function readRows(page: Page, username: string, cols: { user: number; bran
         const branch = c.branch >= 0 ? cells[c.branch] : "";
         if (u.toLowerCase() !== uname.toLowerCase()) { other++; continue; }
         if (!/สาขาหลัก/.test(branch)) { other++; continue; }
-        main.push({ serviceId: c.id >= 0 ? cells[c.id] : "", username: u, shopName: c.shop >= 0 ? cells[c.shop] : "", branchType: branch, currentExpiry: c.expiry >= 0 ? cells[c.expiry] : "" });
+        const currentExpiry = c.expiry >= 0 ? cells[c.expiry] : "";
+        const status = c.status >= 0 ? cells[c.status] : "";
+        // ตัดสิน "หมดอายุ" จากคอลัมน์สถานะเป็นหลัก, ไม่มีคอลัมน์ → fallback ข้อความวันที่
+        const expired = c.status >= 0 ? /หมดอายุ/.test(status) : /หมดอายุแล้ว/.test(currentExpiry);
+        main.push({ serviceId: c.id >= 0 ? cells[c.id] : "", username: u, shopName: c.shop >= 0 ? cells[c.shop] : "", branchType: branch, currentExpiry, status, expired });
       }
       return { mainRows: main, otherCount: other };
     },
@@ -128,43 +146,128 @@ async function readRows(page: Page, username: string, cols: { user: number; bran
   ) as Promise<{ mainRows: ExpiryRow[]; otherCount: number }>;
 }
 
-// แคปเฉพาะช่อง "วันที่บอทหมดอายุ" ของแถวสาขาหลักแรกที่ username ตรง (fallback ทั้งหน้า)
-async function shotExpiryCell(page: Page, username: string, cols: { user: number; branch: number; expiry: number }): Promise<string | undefined> {
+// หา index ของแถวสาขาหลัก (username ตรง) ในตาราง — คืน index ของ tbody tr เพื่อใช้ตีกรอบ/แคป/แก้ไข
+async function findMainRowIdxs(page: Page, username: string, cols: { user: number; branch: number }): Promise<number[]> {
   const rowCount = await page.locator("table tbody tr").count().catch(() => 0);
+  const idxs: number[] = [];
   for (let i = 0; i < rowCount; i++) {
     const row = page.locator("table tbody tr").nth(i);
     const u = (await row.locator("td").nth(cols.user).textContent().catch(() => ""))?.trim() || "";
     const br = (await row.locator("td").nth(cols.branch).textContent().catch(() => ""))?.trim() || "";
-    if (u.toLowerCase() === username.toLowerCase() && /สาขาหลัก/.test(br)) {
-      const cell = row.locator("td").nth(cols.expiry);
-      await cell.scrollIntoViewIfNeeded().catch(() => {});
-      await page.waitForTimeout(250);
-      const s = await cell.screenshot({ type: "png" }).catch(() => null);
-      if (s) return s.toString("base64");
-      break;
-    }
+    if (u.toLowerCase() === username.toLowerCase() && /สาขาหลัก/.test(br)) idxs.push(i);
   }
-  const full = await page.screenshot({ type: "png" }).catch(() => null);
-  return full?.toString("base64");
+  return idxs;
+}
+
+// ตีกรอบแดงรอบแถวเป้าหมาย แล้วแคป 2 ฝั่ง (ซ้าย=ยูสเซอร์/สาขา, ขวา=วันหมดอายุ/สถานะ)
+// เพราะตารางกว้างเกินจอ — เลื่อน scroll container ซ้ายสุด/ขวาสุด แล้ว clip เฉพาะ thead+แถวเป้าหมาย
+async function shotRowsTwoParts(page: Page, rowIdxs: number[]): Promise<{ left?: string; right?: string }> {
+  if (!rowIdxs.length) {
+    const full = await page.screenshot({ type: "png" }).catch(() => null);
+    return { left: full?.toString("base64"), right: undefined };
+  }
+  const meta = await page.evaluate((idxs: number[]) => {
+    const table = document.querySelector("table");
+    if (!table) return null;
+    const rows = [...document.querySelectorAll("table tbody tr")];
+    const targets = idxs.map((i) => rows[i]).filter(Boolean) as HTMLElement[];
+    if (!targets.length) return null;
+    // เลื่อนหน้าให้ thead อยู่ใกล้บนจอ (โฟกัสตาราง)
+    const thead = table.querySelector("thead") as HTMLElement | null;
+    (thead || table).scrollIntoView({ block: "start" });
+    window.scrollBy(0, -16);
+    // วาดกรอบแดงรอบทุก td ของแถวเป้าหมาย (บน/ล่างทุกช่อง + ซ้ายช่องแรก + ขวาช่องสุดท้าย)
+    const RED = "#e11d1d";
+    for (const r of targets) {
+      const tds = [...r.querySelectorAll("td")] as HTMLElement[];
+      tds.forEach((td, i) => {
+        const parts = [`inset 0 3px 0 ${RED}`, `inset 0 -3px 0 ${RED}`];
+        if (i === 0) parts.push(`inset 3px 0 0 ${RED}`);
+        if (i === tds.length - 1) parts.push(`inset -3px 0 0 ${RED}`);
+        td.style.boxShadow = parts.join(", ");
+      });
+    }
+    // scroll container = บรรพบุรุษที่เลื่อนแนวนอนได้จริง
+    let sc: HTMLElement | null = table.parentElement;
+    while (sc && sc.scrollWidth <= sc.clientWidth + 2 && sc !== document.body) sc = sc.parentElement;
+    const scrollable = !!(sc && sc.scrollWidth > sc.clientWidth + 2);
+    const cont = (scrollable ? sc : table.parentElement || document.body) as HTMLElement;
+    cont.setAttribute("data-shot-scroll", "1");
+    const cr = cont.getBoundingClientRect();
+    const top = (thead || table).getBoundingClientRect().top;
+    let bottom = top;
+    for (const r of targets) bottom = Math.max(bottom, r.getBoundingClientRect().bottom);
+    // ฝั่งขวา: เลื่อนให้คอลัมน์ "วันที่บอทหมดอายุ" มาชิดซ้าย (เห็นทั้งวันหมดอายุ+สถานะ) ไม่ใช่เลื่อนสุด
+    const heads = [...(thead?.querySelectorAll("th, td") || [])] as HTMLElement[];
+    const expiryTh = heads.find((h) => /วันที่บอทหมดอายุ/.test(h.textContent || ""));
+    const maxScroll = cont.scrollWidth - cont.clientWidth;
+    let rightScrollX = maxScroll;
+    if (expiryTh) {
+      const thLeftInContent = expiryTh.getBoundingClientRect().left - cr.left + cont.scrollLeft;
+      rightScrollX = Math.max(0, Math.min(maxScroll, Math.round(thLeftInContent) - 8));
+    }
+    return {
+      scrollable,
+      isBody: cont === document.body || cont === document.documentElement,
+      x: Math.max(0, Math.floor(cr.left)),
+      y: Math.max(0, Math.floor(top) - 4),
+      width: Math.ceil(Math.min(cr.width, window.innerWidth - Math.max(0, cr.left))),
+      bottom: Math.ceil(bottom) + 6,
+      rightScrollX,
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+    };
+  }, rowIdxs);
+  if (!meta) {
+    const full = await page.screenshot({ type: "png" }).catch(() => null);
+    return { left: full?.toString("base64"), right: undefined };
+  }
+  const height = Math.max(24, Math.min(meta.bottom, meta.vh) - meta.y);
+  const clip = { x: meta.x, y: meta.y, width: Math.min(meta.width, meta.vw - meta.x), height };
+  await page.waitForTimeout(200);
+  const setScroll = (x: number) =>
+    page.evaluate(
+      ({ x, isBody }: { x: number; isBody: boolean }) => {
+        const el = document.querySelector("[data-shot-scroll]") as HTMLElement | null;
+        if (!el) return;
+        if (isBody) window.scrollTo(x, window.scrollY);
+        else el.scrollLeft = x;
+      },
+      { x, isBody: meta.isBody },
+    );
+  // ฝั่งซ้าย
+  await setScroll(0).catch(() => {});
+  await page.waitForTimeout(250);
+  const leftBuf = await page.screenshot({ type: "png", clip }).catch(() => null);
+  // ฝั่งขวา (ถ้าตารางไม่กว้างพอ ไม่ต้องแคปซ้ำ)
+  let rightBuf: Buffer | null = null;
+  if (meta.scrollable) {
+    await setScroll(meta.rightScrollX).catch(() => {});
+    await page.waitForTimeout(300);
+    rightBuf = await page.screenshot({ type: "png", clip }).catch(() => null);
+  }
+  return { left: leftBuf?.toString("base64"), right: rightBuf?.toString("base64") };
 }
 
 // ===== เฟส 1: พรีวิว (ค้นหา + อ่าน + แคปช่องวันหมดอายุปัจจุบัน ให้ยืนยัน) =====
 export async function previewExpiry(username: string): Promise<PreviewResult> {
-  if (!thunderSessionReady()) return { ok: false, error: "no_session", username, mainRows: [], otherCount: 0 };
+  if (!thunderSessionReady()) return { ok: false, error: "no_session", username, mainRows: [], expiredCount: 0, otherCount: 0 };
   const { browser, page, error } = await openAndSearch(username);
-  if (error) return { ok: false, error, username, mainRows: [], otherCount: 0 };
+  if (error) return { ok: false, error, username, mainRows: [], expiredCount: 0, otherCount: 0 };
   try {
     const cols = await columnIndexes(page);
     const { mainRows, otherCount } = await readRows(page, username, cols);
     if (!mainRows.length) {
       // แยก "session หมด" ออกจาก "ไม่พบจริง": ถ้า header ไม่มีชื่อบัญชีที่ล็อกอิน = token หมด (SPA เรนเดอร์ shell ได้แต่ดึงข้อมูลไม่ได้ → คืน 0 ทุก user)
       const authed = await page.evaluate(() => /easycarwash|nining|ออกจากระบบ|logout|โปรไฟล์/i.test(document.body.innerText) && !!document.querySelector("table thead"));
-      if (!authed) return { ok: false, error: "session_expired", username, mainRows: [], otherCount: 0 };
+      if (!authed) return { ok: false, error: "session_expired", username, mainRows: [], expiredCount: 0, otherCount: 0 };
       const shot = await page.screenshot({ type: "png" }).catch(() => null);
-      return { ok: false, error: otherCount ? "no_main_branch" : "not_found", username, mainRows: [], otherCount, screenshotBase64: shot?.toString("base64") };
+      return { ok: false, error: otherCount ? "no_main_branch" : "not_found", username, mainRows: [], expiredCount: 0, otherCount, shotLeftBase64: shot?.toString("base64") };
     }
-    const screenshotBase64 = await shotExpiryCell(page, username, cols);
-    return { ok: true, username, mainRows, otherCount, screenshotBase64 };
+    const rowIdxs = await findMainRowIdxs(page, username, cols);
+    const { left, right } = await shotRowsTwoParts(page, rowIdxs);
+    const expiredCount = mainRows.filter((r) => r.expired).length;
+    return { ok: true, username, mainRows, expiredCount, otherCount, shotLeftBase64: left, shotRightBase64: right };
   } finally {
     await browser.close();
   }
@@ -221,8 +324,9 @@ async function setTime(dlg: Locator, hh: string, mm: string) {
   await minF.pressSequentially(mm, { delay: 90 }).catch(() => {});
 }
 
-// ===== เฟส 2: ลงมือ (ตั้งวัน/เวลาปัจจุบัน + บันทึก ทุกแถวสาขาหลัก) =====
-export async function executeExpiry(username: string): Promise<ExecuteResult> {
+// ===== เฟส 2: ลงมือ (ตั้งวัน/เวลาปัจจุบัน + บันทึก) =====
+// scope="expired" (ดีฟอลต์): ปรับเฉพาะแถวสาขาหลักที่ "หมดอายุ" | scope="all": ปรับทุกแถวสาขาหลัก
+export async function executeExpiry(username: string, scope: ExpiryScope = "expired"): Promise<ExecuteResult> {
   if (!thunderSessionReady()) return { ok: false, error: "no_session", updated: 0, updatedRows: [], otherCount: 0 };
   const { browser, page, error } = await openAndSearch(username);
   if (error) return { ok: false, error, updated: 0, updatedRows: [], otherCount: 0 };
@@ -236,7 +340,7 @@ export async function executeExpiry(username: string): Promise<ExecuteResult> {
     const hh = String(now.getHours()).padStart(2, "0");
     const mm = String(now.getMinutes()).padStart(2, "0");
     let updated = 0;
-    let lastRowIdx = -1;
+    const updatedRowIdxs: number[] = [];
     const updatedRows: { shopName: string; serviceId: string; oldExpiry: string }[] = [];
     const rowCount = await page.locator("table tbody tr").count();
     for (let i = 0; i < rowCount; i++) {
@@ -244,6 +348,13 @@ export async function executeExpiry(username: string): Promise<ExecuteResult> {
       const uCell = (await row.locator("td").nth(cols.user).textContent().catch(() => ""))?.trim() || "";
       const bCell = (await row.locator("td").nth(cols.branch).textContent().catch(() => ""))?.trim() || "";
       if (uCell.toLowerCase() !== username.toLowerCase() || !/สาขาหลัก/.test(bCell)) continue;
+      // scope=expired → ข้ามแถวที่ยังไม่หมดอายุ (ดูจากคอลัมน์สถานะเป็นหลัก, ไม่มี→ดูข้อความวันที่)
+      if (scope === "expired") {
+        const statusTxt = cols.status >= 0 ? ((await row.locator("td").nth(cols.status).textContent().catch(() => ""))?.trim() || "") : "";
+        const expiryTxt = (await row.locator("td").nth(cols.expiry).textContent().catch(() => ""))?.trim() || "";
+        const rowExpired = cols.status >= 0 ? /หมดอายุ/.test(statusTxt) : /หมดอายุแล้ว/.test(expiryTxt);
+        if (!rowExpired) continue;
+      }
       const oldExpiry = (await row.locator("td").nth(cols.expiry).textContent().catch(() => ""))?.trim() || "";
       const shopName = cols.shop >= 0 ? ((await row.locator("td").nth(cols.shop).textContent().catch(() => ""))?.trim() || "") : "";
       const serviceId = cols.id >= 0 ? ((await row.locator("td").nth(cols.id).textContent().catch(() => ""))?.trim() || "") : "";
@@ -266,23 +377,12 @@ export async function executeExpiry(username: string): Promise<ExecuteResult> {
       await dlg.getByRole("button", { name: /บันทึกข้อมูล/ }).first().click({ timeout: 4000 }).catch(() => {});
       await page.waitForTimeout(2500); // รอ save เสร็จ (มี spinner)
       updated++;
-      lastRowIdx = i;
+      updatedRowIdxs.push(i);
       updatedRows.push({ shopName, serviceId, oldExpiry });
     }
-    // แคปเฉพาะช่อง "วันที่บอทหมดอายุ" ของแถวที่ปรับ (โฟกัสเฉพาะส่วนที่เปลี่ยน) — ไม่ใช่ทั้งหน้า
-    let shotB64: string | undefined;
-    if (lastRowIdx >= 0) {
-      const cell = page.locator("table tbody tr").nth(lastRowIdx).locator("td").nth(cols.expiry);
-      await cell.scrollIntoViewIfNeeded().catch(() => {});
-      await page.waitForTimeout(300);
-      const s = await cell.screenshot({ type: "png" }).catch(() => null);
-      if (s) shotB64 = s.toString("base64");
-    }
-    if (!shotB64) {
-      const full = await page.screenshot({ type: "png" }).catch(() => null);
-      shotB64 = full?.toString("base64");
-    }
-    return { ok: updated > 0, updated, updatedRows, otherCount, error: updated ? undefined : "no_row_updated", screenshotBase64: shotB64 };
+    // แคป 2 ฝั่งของแถวที่ปรับ ตีกรอบแดง (ซ้าย=ยูสเซอร์/สาขา, ขวา=วันหมดอายุ/สถานะ)
+    const { left, right } = await shotRowsTwoParts(page, updatedRowIdxs);
+    return { ok: updated > 0, updated, updatedRows, otherCount, error: updated ? undefined : "no_row_updated", shotLeftBase64: left, shotRightBase64: right };
   } finally {
     await browser.close();
   }

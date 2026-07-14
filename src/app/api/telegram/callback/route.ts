@@ -117,28 +117,32 @@ export async function POST(req: Request) {
     });
   }
 
-  // ปุ่มยืนยันปรับวันหมดอายุ Thunder (texp:ok:<username> | texp:cancel)
-  const texp = dataStr.match(/^texp:(ok|cancel)(?::(.+))?$/);
+  // ปุ่มยืนยันปรับวันหมดอายุ Thunder (texp:ok[:expired|all]:<username> | texp:cancel)
+  const texp = dataStr.match(/^texp:(ok|cancel)(?::(expired|all))?(?::(.+))?$/);
   if (texp) {
     if (!((await isOwner(fromId)) || (await isAuthorized(fromId)))) return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
     if (texp[1] === "cancel") return NextResponse.json({ answer: "ยกเลิกแล้ว", sends: [{ kind: "text", text: "ยกเลิกการปรับวันหมดอายุแล้วค่ะ" }] });
-    const username = (texp[2] || "").trim();
+    const scope = texp[2] === "all" ? "all" : "expired"; // ไม่ระบุ (back-compat) = expired
+    const username = (texp[3] || "").trim();
     if (!username) return NextResponse.json({ answer: "ข้อมูลไม่ครบ", sends: [] });
-    const res = await executeExpiry(username);
+    const res = await executeExpiry(username, scope);
     if (!res.ok) {
       const msg =
         res.error === "no_session" || res.error === "session_expired"
           ? "session ระบบหลังบ้าน Thunder หมดอายุค่ะ รบกวนพี่โด้รัน `npm run thunder:auth` แล้วสั่งใหม่นะคะ"
-          : `ปรับวันหมดอายุไม่สำเร็จค่ะ (${res.error || "unknown"})`;
+          : res.error === "no_row_updated"
+            ? "ไม่มีสาขาหลักที่หมดอายุให้ปรับค่ะ (ลองกด \"ปรับทุกสาขา\" ถ้าต้องการปรับทั้งหมด)"
+            : `ปรับวันหมดอายุไม่สำเร็จค่ะ (${res.error || "unknown"})`;
       const sends: { kind: string; text?: string; dataBase64?: string; caption?: string }[] = [{ kind: "text", text: msg }];
-      if (res.screenshotBase64) sends.push({ kind: "photo", dataBase64: res.screenshotBase64, caption: "หน้าจอระบบหลังบ้าน" });
+      if (res.shotLeftBase64) sends.push({ kind: "photo", dataBase64: res.shotLeftBase64, caption: "หน้าจอระบบหลังบ้าน" });
       return NextResponse.json({ answer: "ไม่สำเร็จ", sends });
     }
     const tag = fromName ? `<a href="tg://user?id=${fromId}">${escH(fromName)}</a> ` : "";
     const sends: { kind: string; text?: string; parseMode?: string; dataBase64?: string; caption?: string }[] = [
       { kind: "text", text: `${tag}✅ แก้ไขวันหมดอายุของ <b>${escH(username)}</b> เรียบร้อยแล้วค่ะ (${res.updated} สาขาหลัก · ตั้งเป็นวัน/เวลาปัจจุบัน)`, parseMode: "HTML" },
     ];
-    if (res.screenshotBase64) sends.push({ kind: "photo", dataBase64: res.screenshotBase64, caption: "หน้าจอหลังปรับวันหมดอายุ" });
+    if (res.shotLeftBase64) sends.push({ kind: "photo", dataBase64: res.shotLeftBase64, caption: "ยูสเซอร์/สาขาที่ปรับ" });
+    if (res.shotRightBase64) sends.push({ kind: "photo", dataBase64: res.shotRightBase64, caption: "วันหมดอายุใหม่ + สถานะ" });
     return NextResponse.json({ answer: "เรียบร้อย", sends });
   }
 
