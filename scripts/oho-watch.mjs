@@ -99,6 +99,31 @@ function mmss(sec) {
   return `${m}:${String(s).padStart(2, "0")} นาที`;
 }
 
+// ปิด popup/modal ที่ OHO เด้งขึ้นมาบังหน้าแชท (ประกาศอัปเดตระบบ, แบบสอบถามความพึงพอใจ ฯลฯ)
+// → กดกากบาท (.el-dialog__headerbtn) ปิดเอง ไม่งั้นบังการแคป/อ่านห้องแชท
+async function dismissPopups(page) {
+  try {
+    const closed = await page.evaluate(() => {
+      const isVisible = (el) => {
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+      };
+      // เฉพาะ modal ที่เป็น "ประกาศ/แจ้งเตือน/แบบสอบถาม" (ไม่แตะ dialog ใช้งานปกติ)
+      const KEY = /แจ้งอัปเดตระบบ|ขอแจ้งอัปเดต|ปรับปรุงประสิทธิภาพ|ประกาศ|แบบสอบถาม|ความเห็นของคุณลูกค้า|ความพึงพอใจ/;
+      let n = 0;
+      for (const w of document.querySelectorAll(".el-dialog__wrapper, [role=dialog]")) {
+        if (!isVisible(w) || !KEY.test(w.textContent || "")) continue;
+        const btn = w.querySelector(".el-dialog__headerbtn, .el-dialog__close");
+        if (btn) { (btn.closest("button") || btn).click(); n++; }
+      }
+      return n;
+    });
+    if (closed) { await page.waitForTimeout(600); console.log(`[oho] ปิด popup ${closed} อัน`); }
+    return closed;
+  } catch { return 0; }
+}
+
 // สแกนแชทค้าง (เลื่อน virtual list เก็บให้ครบ)
 // จับ "ลูกค้าทักแล้วยังไม่มีคนอ่าน/ตอบ" = มี .message.unread (ครอบคลุมทั้งแชทใหม่รอรับ และแชทที่ปิดแล้วลูกค้าทักใหม่)
 async function scanWaiting(page, maxAgeSec) {
@@ -181,6 +206,7 @@ async function inspectRoom(page, convId) {
   try {
     await page.goto(`${URL}?room=${convId}`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(3500);
+    await dismissPopups(page); // popup อาจเด้งใหม่หลังโหลดหน้า → ปิดก่อนอ่าน/แคป
     await page.evaluate(() => {
       const c = document.querySelector(".message-container") || document.querySelector("[class*=message-list]");
       if (c) c.scrollTop = c.scrollHeight; // เลื่อนไปข้อความล่าสุด
@@ -245,6 +271,7 @@ async function tick(page) {
   }
   sessionWarned = false;
 
+  await dismissPopups(page); // ปิด popup ประกาศ/แบบสอบถามที่บังหน้าแชทก่อนสแกน
   await refreshAlertChat(); // อัปเดตกลุ่มเป้าหมาย (เผื่อเปลี่ยนผ่านปุ่มห้อง Lead)
   const waiting = await scanWaiting(page, MAX_AGE);
   const activeIds = new Set(waiting.map((w) => w.convId));
