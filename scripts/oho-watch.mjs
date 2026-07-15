@@ -7,6 +7,7 @@ import { getTaggees, formatTags, tagsForAgent, tagsForChannel } from "./oho-shif
 import { classifyOho, brandOf, platformEmoji, platformLabel, topicId } from "./lib/routes.mjs";
 import { analyzeChat } from "./lib/ai-analyze.mjs";
 import { copyReplyText } from "./lib/notify.mjs";
+import { logActivity } from "./lib/activity.mjs";
 
 function loadEnv() {
   const p = path.join(process.cwd(), ".env");
@@ -119,7 +120,11 @@ async function dismissPopups(page) {
       }
       return n;
     });
-    if (closed) { await page.waitForTimeout(600); console.log(`[oho] ปิด popup ${closed} อัน`); }
+    if (closed) {
+      await page.waitForTimeout(600);
+      console.log(`[oho] ปิด popup ${closed} อัน`);
+      logActivity({ source: "oho", kind: "popup-dismiss", severity: "info", summary: `ปิด popup ที่ OHO เด้งบังหน้าแชทอัตโนมัติ ${closed} อัน (เช่น ประกาศอัปเดตระบบ/แบบสอบถาม)` });
+    }
     return closed;
   } catch { return 0; }
 }
@@ -264,6 +269,7 @@ async function tick(page) {
       if (!sessionWarned) {
         sessionWarned = true;
         await tg("sendMessage", { chat_id: OWNER_ID, text: "⚠️ เซสชัน OHO หมดอายุ/หลุด — รบกวนพี่โด้รัน npm run oho:auth ใหม่นะคะ (การเฝ้าแชทหยุดชั่วคราว)" });
+        logActivity({ source: "oho", kind: "session-expired", severity: "error", summary: "เซสชัน OHO หมดอายุ/หลุด — การเฝ้าแชทหยุดชั่วคราว ต้องรัน npm run oho:auth ใหม่" });
       }
       await page.goto(URL, { waitUntil: "domcontentloaded" }).catch(() => {});
       return;
@@ -357,6 +363,8 @@ async function tick(page) {
             if (photo) await sendPhoto(caption, photo, kb, thread);
             else await tg("sendMessage", { chat_id: ALERT_CHAT, message_thread_id: thread, parse_mode: "HTML", text: caption, reply_markup: kb });
             console.log(new Date().toISOString(), "close-remind", w.channel, w.customer, mmss(insp.handlingSec), insp.assignedName, "→", route?.company || "?");
+            logActivity({ source: "oho", kind: "close-remind", severity: "warn", company: route?.company, channel: w.channel, platform: w.platform, customer: w.customer, admin: insp.assignedName, shiftNames, convId: w.convId, chatId: String(ALERT_CHAT), waitSec: insp.handlingSec,
+              summary: `เตือน "อย่าลืมปิดแชท" — ${insp.assignedName || "แอดมิน"} รับเคส ${w.customer || "-"} (${w.channel || "-"}) มาแล้ว ${mmss(insp.handlingSec)} ยังไม่ปิด` });
           } catch (e) { console.error("send fail", e?.message); }
           state.set(w.convId, { ...prev, level: lv, shiftNames, firstTs: prev?.firstTs || Date.now(), closeReminded: true });
         }
@@ -367,6 +375,8 @@ async function tick(page) {
       pendingClose.add(w.convId);
       state.set(w.convId, { ...prev, level: lv, shiftNames, firstTs: prev?.firstTs || Date.now() });
       console.log(new Date().toISOString(), "watch-close", w.channel, w.customer, mmss(insp.handlingSec));
+      logActivity({ source: "oho", kind: "watch-close", company: route?.company, channel: w.channel, platform: w.platform, customer: w.customer, admin: insp.assignedName, convId: w.convId, waitSec: insp.handlingSec,
+        summary: `${insp.assignedName || "แอดมิน"} กำลังดูแลเคส ${w.customer || "-"} (${w.channel || "-"}) รับมา ${mmss(insp.handlingSec)} (ยังไม่ถึงเกณฑ์เตือนปิด)` });
       continue;
     }
 
@@ -415,6 +425,8 @@ async function tick(page) {
           if (aiReply && sent?.ok) await tg("sendMessage", { chat_id: ALERT_CHAT, message_thread_id: thread, reply_to_message_id: sent.result.message_id, parse_mode: "HTML", text: copyReplyText(aiReply) });
           if (sent?.ok) recentAlert.set(w.convId, { level: lv, ts: nowMs }); // จำเวลาเตือนล่าสุด กันซ้ำระดับเดิม
           console.log(new Date().toISOString(), `alert L${lv} (ค้าง-ลูกค้ารอ)`, w.channel, w.customer, w.platform, mmss(w.waitSec), "→", route?.topicKey || "?");
+          logActivity({ source: "oho", kind: "waiting-alert", severity: lv >= 3 ? "warn" : "info", level: lv, company: route?.company, channel: w.channel, platform: w.platform, customer: w.customer, shiftNames, convId: w.convId, chatId: String(ALERT_CHAT), waitSec: w.waitSec,
+            summary: `แจ้งแชทค้างระดับ ${lv} (${L.label}) — ${w.customer || "-"} (${w.channel || "-"}) รอมาแล้ว ${mmss(w.waitSec)} ยังไม่มีคนรับ` });
         } catch (e) { console.error("send fail", e?.message); }
       }
       state.set(w.convId, { ...prev, level: Math.max(lv, prev?.level || 0), shiftNames, firstTs: prev?.firstTs || Date.now(), closeCheckedAt: nowMs });
@@ -454,7 +466,7 @@ async function main() {
   await tg("sendMessage", { chat_id: OWNER_ID, text: "เริ่มเฝ้าแชท OHO แล้วค่ะ 👀 เจอแชทค้างเกิน 3 นาทีจะเตือนในกลุ่มพร้อมแท็กเวรให้เลย" }).catch(() => {});
 
   for (;;) {
-    try { await tick(page); } catch (e) { console.error("tick error", e?.message); }
+    try { await tick(page); } catch (e) { console.error("tick error", e?.message); logActivity({ source: "oho", kind: "tick-error", severity: "error", summary: `รอบเฝ้าแชท OHO ล้ม: ${String(e?.message || e).slice(0, 200)}` }); }
     await new Promise((r) => setTimeout(r, POLL));
   }
 }

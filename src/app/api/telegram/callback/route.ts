@@ -7,6 +7,7 @@ import { setGroupFunc, getGroupFunc, GROUP_FUNCS, isGroupFunc, setTopicRole, ROL
 import { readUsage, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { executeExpiry } from "@/lib/thunder-expiry";
+import { logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const maxDuration = 240; // automation Thunder ใช้เวลานาน
@@ -137,6 +138,14 @@ export async function POST(req: Request) {
       if (res.shotLeftBase64) sends.push({ kind: "photo", dataBase64: res.shotLeftBase64, caption: "หน้าจอระบบหลังบ้าน" });
       return NextResponse.json({ answer: "ไม่สำเร็จ", sends });
     }
+    await logActivity({
+      source: "thunder",
+      kind: "expiry",
+      customer: username,
+      requestedBy: fromName || fromId || undefined,
+      outcome: `updated ${res.updated}`,
+      summary: `ปรับวันหมดอายุ Thunder ของ ${username} ${res.updated} สาขาหลัก (${scope === "all" ? "ทุกสาขา" : "เฉพาะที่หมดอายุ"}) ตามที่ ${fromName || "แอดมิน"} สั่ง`,
+    });
     const tag = fromName ? `<a href="tg://user?id=${fromId}">${escH(fromName)}</a> ` : "";
     const sends: { kind: string; text?: string; parseMode?: string; dataBase64?: string; caption?: string }[] = [
       { kind: "text", text: `${tag}✅ แก้ไขวันหมดอายุของ <b>${escH(username)}</b> เรียบร้อยแล้วค่ะ (${res.updated} สาขาหลัก · ตั้งเป็นวัน/เวลาปัจจุบัน)`, parseMode: "HTML" },

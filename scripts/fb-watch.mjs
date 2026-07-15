@@ -8,6 +8,7 @@ import { brandOf, platformEmoji, platformLabel, topicId } from "./lib/routes.mjs
 import { getTaggees, formatTags } from "./oho-shifts.mjs";
 import { analyzeChat } from "./lib/ai-analyze.mjs";
 import { esc, mmss, openChatButton, sendCard, copyReplyText } from "./lib/notify.mjs";
+import { logActivity } from "./lib/activity.mjs";
 
 // โซนคอลัมน์บทสนทนา (กลางจอ) สำหรับแคป — วัดจาก layout Business Suite ที่ 1500x1000
 const FB_CLIP = { x: 528, y: 150, width: 624, height: 725 };
@@ -209,6 +210,8 @@ async function tick(pages, navigate) {
         alerted.set(key, Date.now());
         if (aiReply) await sendCard(TOKEN, ALERT_CHAT, { threadId: topicId(P.topicKey), caption: copyReplyText(aiReply), replyTo: res.result.message_id });
         console.log(new Date().toISOString(), "fb-alert", P.key, r.name, r.timeText, mmss(waitSec));
+        logActivity({ source: "fb", kind: "waiting-alert", platform: "fb", company: P.title || P.key, channel: P.title || P.key, customer: r.name, chatId: String(ALERT_CHAT), waitSec,
+          summary: `แจ้งแชท Facebook ค้าง — ${r.name || "-"} (เพจ ${P.title || P.key}) รอมาแล้ว ${mmss(waitSec)} ยังไม่มีคนตอบ` });
       } else console.error("send fail", JSON.stringify(res).slice(0, 200));
     } catch (e) { console.error("send fail", e?.message); }
   }

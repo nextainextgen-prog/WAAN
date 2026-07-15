@@ -7,6 +7,7 @@ import { brandOf, platformEmoji, topicId } from "./lib/routes.mjs";
 import { getTaggees, formatTags } from "./oho-shifts.mjs";
 import { analyzeChat } from "./lib/ai-analyze.mjs";
 import { esc, mmss, openChatButton, sendCard, copyReplyText } from "./lib/notify.mjs";
+import { logActivity } from "./lib/activity.mjs";
 
 function loadEnv() {
   const p = path.join(process.cwd(), ".env");
@@ -188,6 +189,8 @@ async function tick(pages, navigate) {
         alerted.set(key, Date.now());
         if (aiReply) await sendCard(TOKEN, ALERT_CHAT, { threadId: topicId(OA.topicKey), caption: copyReplyText(aiReply), replyTo: res.result.message_id });
         console.log(new Date().toISOString(), "line-alert", OA.key, `[${type}]`, r.name, r.timeText, mmss(waitSec));
+        logActivity({ source: "line", kind: "waiting-alert", platform: "line", company: OA.title || OA.key, channel: OA.title || OA.key, customer: r.name, chatId: String(ALERT_CHAT), waitSec, outcome: type,
+          summary: `แจ้งแชท LINE ค้าง [${type === "read" ? "อ่านแล้วยังไม่ตอบ" : "ยังไม่อ่าน"}] — ${r.name || "-"} (OA ${OA.title || OA.key}) รอมาแล้ว ${mmss(waitSec)}` });
       } else console.error("send fail", JSON.stringify(res).slice(0, 200));
     } catch (e) { console.error("send fail", e?.message); }
   }

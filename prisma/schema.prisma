@@ -106,3 +106,30 @@ model CalendarEvent {
 
   @@index([notified, date])
 }
+
+// บันทึกสิ่งที่น้องวานทำ/เฝ้า (append-only) — ให้วานตอบย้อนหลังได้ว่าทำอะไรไป + รายงานสุขภาพตัวเอง
+model BotActivity {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  source      String                            // oho | fb | line | usage | aff | thunder | bot
+  kind        String                            // waiting-alert | close-remind | watch-close | aff-check | expiry | usage-alert | popup-dismiss | session-expired | tick-error ...
+  severity    String   @default("info")         // info | warn | error (self-report สุขภาพ)
+  company     String?                            // แบรนด์/บริษัท
+  platform    String?                            // line | fb | oho
+  channel     String?                            // ชื่อ OA/เพจ
+  customer    String?
+  admin       String?                            // แอดมินที่รับ/ลืมปิดเคส (assignedName)
+  shiftNames  String?                            // แอดมินเวรตอนนั้น
+  convId      String?
+  chatId      String?                            // กลุ่ม Telegram ปลายทาง
+  level       Int?                               // ระดับ escalation
+  waitSec     Int?
+  requestedBy String?                            // คนสั่ง (aff/thunder)
+  outcome     String?                            // passed/failed, จำนวน ฯลฯ
+  summary     String                             // ประโยคเดียวอ่านรู้เรื่อง (ฉีดเข้า prompt)
+  payload     String?                            // JSON เสริม
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+  @@index([source, createdAt])
+}

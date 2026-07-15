@@ -6,6 +6,7 @@ import { isOwner, isAuthorized } from "@/lib/team";
 import { runAffCheck } from "@/lib/aff-check";
 import { saveChat } from "@/lib/secretary";
 import { resolveAffTag } from "@/lib/roles";
+import { logActivity } from "@/lib/activity";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -67,6 +68,18 @@ export async function POST(req: Request) {
         /* ข้ามภาพที่อ่านไม่ได้ */
       }
     }
+    // จดผลตรวจลง activity log ให้วานตอบย้อนหลังได้ (เช่น "วันนี้ตรวจ AFF ผ่านกี่ราย")
+    const affUser = result?.fields?.username || "";
+    await logActivity({
+      source: "aff",
+      kind: "aff-check",
+      severity: result.allOk ? "info" : "warn",
+      chatId,
+      customer: affUser,
+      requestedBy: fromId || undefined,
+      outcome: result.allOk ? "passed" : "failed",
+      summary: `ตรวจเอกสาร Affiliate ${affUser ? `ของ ${affUser} ` : ""}— ${result.allOk ? "ผ่าน (ยอดตรงระบบ)" : "ไม่ผ่าน/ต้องตรวจเพิ่ม"}`,
+    });
     // ตรวจผ่าน (ยอดตรงระบบ) + คนที่ต้องแท็ก (per-group หรือ global) → ให้บอท reply แอดมิน + แท็กให้
     const tagTarget = await resolveAffTag(chatId);
     return NextResponse.json({ ok: true, passed: result.allOk, tagTarget, sends });

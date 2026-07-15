@@ -4,6 +4,8 @@ import { readUsage, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { findRoleTopic } from "@/lib/roles";
 import { getAllowedChatId } from "@/lib/telegram";
+import { logActivity } from "@/lib/activity";
+import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -25,6 +27,14 @@ export async function POST(req: Request) {
     imageBase64 = png.toString("base64");
   } catch {
     /* เรนเดอร์ไม่ได้ → ใช้ text สำรอง */
+  }
+
+  // จด usage-alert ลง activity (dedup 55 นาที กันจดซ้ำทุกรอบ monitor)
+  if (Array.isArray(alerts) && alerts.length) {
+    const last = await db.botActivity.findFirst({ where: { kind: "usage-alert" }, orderBy: { createdAt: "desc" } }).catch(() => null);
+    if (!last || now - new Date(last.createdAt).getTime() > 55 * 60 * 1000) {
+      await logActivity({ source: "usage", kind: "usage-alert", severity: "warn", outcome: alerts.join(" | ").slice(0, 120), summary: `เตือนการใช้งาน AI ใกล้เต็ม: ${alerts.join(" · ")}` });
+    }
   }
 
   const target = await findRoleTopic("monitor"); // ห้อง monitor (ถ้าตั้งไว้)
