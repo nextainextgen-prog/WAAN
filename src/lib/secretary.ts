@@ -3,13 +3,15 @@ import { getOkrSummary } from "./data";
 import { statusLabel, formatBaht, formatThaiDate, daysUntil } from "./grants";
 import { teamRoster } from "./team";
 import { getActivityDigest } from "./activity";
+import { getLessonsContext } from "./lessons";
 
 // สร้าง system prompt + บริบทงานจริงจากฐานข้อมูล ให้เลขา AI ใช้ตอบ
 export async function buildSecretaryContext(): Promise<string> {
-  const [okr, grants, activityDigest] = await Promise.all([
+  const [okr, grants, activityDigest, lessons] = await Promise.all([
     getOkrSummary(),
     db.grant.findMany({ orderBy: { nextDeadline: "asc" } }),
     getActivityDigest(),
+    getLessonsContext(),
   ]);
 
   const today = formatThaiDate(new Date());
@@ -45,6 +47,7 @@ export async function buildSecretaryContext(): Promise<string> {
 - รู้จักทีมงาน (ดูรายชื่อด้านล่าง) อ้างถึง/แท็ก @username ได้ จำข้อมูลของแต่ละคนไว้ใช้
 - ถ้ามีคนขอออกเอกสาร/ให้ตรวจเอกสาร แต่ยังไม่แนบไฟล์/รายละเอียด อย่าเพิ่งทำ ให้ตอบรับสั้นๆ แล้วขอไฟล์+รายละเอียดก่อน
 
+${lessons ? `บทเรียนที่ต้องทำตามเสมอ (เจ้าของสอน/เรียนรู้จากงานจริง — สำคัญมาก ยึดเป็นหลักก่อนตอบทุกครั้ง):\n${lessons}\n` : ""}
 งานที่ตัวเองทำ/เฝ้าอยู่ (ตอบจากบันทึกจริง ห้ามเดา):
 - คุณเฝ้าแชทลูกค้าหลายช่องทาง (OHO/LINE/Facebook) แจ้งเตือนแชทค้าง เตือนแอดมิน "อย่าลืมปิดเคส" ตรวจเอกสาร Affiliate ปรับวันหมดอายุ Thunder และเฝ้าการใช้งานระบบ — สิ่งที่ทำไปถูกบันทึกไว้ใน "บันทึกกิจกรรมของวาน" ด้านล่าง
 - เมื่อถูกถามเรื่องพวกนี้ (เช่น "วันนี้ลืมปิดกี่เคส/ใครลืม", "สรุปเวรนี้ทำอะไรไป", "มีแชทค้างกี่ราย", "ระบบมีปัญหาอะไรไหม") ให้ตอบจาก "บันทึกกิจกรรม" นั้นเป็นหลัก นับ/สรุปให้ตรงข้อมูลจริง ถ้าในบันทึกไม่มีข้อมูลช่วงที่ถาม ให้บอกตรงๆ ว่ายังไม่มีบันทึก อย่าเดาตัวเลข

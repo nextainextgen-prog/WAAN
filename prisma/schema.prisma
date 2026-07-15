@@ -133,3 +133,16 @@ model BotActivity {
   @@index([kind, createdAt])
   @@index([source, createdAt])
 }
+
+// บทเรียนที่วานเรียนรู้ (โด้สอน หรือวานสรุปเอง) — ฉีดเข้าบริบททุกครั้งเพื่อให้ตอบเก่งขึ้น/ไม่ผิดซ้ำ
+model Lesson {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  category  String   @default("general") // aff | slides | reply | ops | general ...
+  content   String                        // สิ่งที่ต้องจำ/ทำ/ไม่ทำ
+  source    String   @default("owner")    // owner (โด้สอน) | self (วานสรุปจากงานตัวเอง)
+  active    Boolean  @default(true)
+
+  @@index([active, createdAt])
+}

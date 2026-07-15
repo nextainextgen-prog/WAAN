@@ -6,6 +6,8 @@ import { isServiceRequest } from "@/lib/auth";
 import { getAllowedChatId, setAllowedChatId, getAllowedGroups, addAllowedGroup } from "@/lib/telegram";
 import { isOwner, isAuthorized, grantMember, revokeMember, rememberMember, findMemberByName } from "@/lib/team";
 import { askBrain } from "@/lib/brain";
+import { addLesson, listLessons, deactivateLessons } from "@/lib/lessons";
+import { getActivityDigest } from "@/lib/activity";
 import { saveChat } from "@/lib/secretary";
 import { extractEvent, createEvent, getUpcoming, thaiDate } from "@/lib/calendar";
 import { generateDeck } from "@/lib/deck-generate";
@@ -292,6 +294,28 @@ export async function POST(req: Request) {
     }
   }
 
+  // ===== บทเรียนของวาน (เจ้าของสอน → จำไว้ใช้ตอบครั้งต่อไป) — ไม่ต้อง reply/แท็กใคร =====
+  if (ownerHere && !grantTarget?.id) {
+    // ลืม/ลบบทเรียน (เช็คก่อน กันชนคำว่า "บทเรียน")
+    const forget = text.match(/^\s*(?:ลืม|ลบ|ยกเลิก)บทเรียน\s*[:：]?\s*([\s\S]+)/i);
+    if (forget) {
+      const n = await deactivateLessons(forget[1].trim());
+      return NextResponse.json({ sends: [{ kind: "text", text: n ? `ลืมบทเรียน ${n} ข้อที่ตรงกับ "${forget[1].trim()}" แล้วค่ะ` : `ไม่เจอบทเรียนที่ตรงกับ "${forget[1].trim()}" ค่ะ` }] as Send[] });
+    }
+    // ดูบทเรียนที่จำไว้
+    if (/^\s*(?:ดูบทเรียน|บทเรียนที่(?:จำ|สอน)|วาน(?:จำ)?บทเรียนอะไร|เรียนรู้อะไร(?:ไป)?บ้าง|มีบทเรียนอะไร)/i.test(text)) {
+      const rows = await listLessons(true);
+      const body = rows.length ? rows.map((r, i) => `${i + 1}. ${r.content}`).join("\n") : "ยังไม่มีบทเรียนที่จำไว้ค่ะ";
+      return NextResponse.json({ sends: [{ kind: "text", text: `บทเรียนที่จำไว้ตอนนี้ (${rows.length}):\n${body}` }] as Send[] });
+    }
+    // สอน/จดบทเรียนใหม่
+    const teach = text.match(/^\s*(?:สอนวาน|จำบทเรียน|บทเรียน\s*[:：]|จำไว้ว่า|จำไว้นะ(?:คะ|ครับ)?\s*ว่า)\s*[:：]?\s*([\s\S]+)/i);
+    if (teach && teach[1].trim().length >= 3) {
+      await addLesson({ content: teach[1].trim(), source: "owner" });
+      return NextResponse.json({ sends: [{ kind: "text", text: "รับทราบค่ะ จดเป็นบทเรียนไว้แล้ว จะยึดทำตามนี้ตั้งแต่นี้ไปนะคะ 🙏" }] as Send[] });
+    }
+  }
+
   if (isGroup) {
     // เจ้าของผูกกลุ่ม
     if (/^\s*(ผูกกลุ่ม|bind)/i.test(text)) {
@@ -511,6 +535,13 @@ export async function POST(req: Request) {
     // บทบาทของห้อง (topic) → เติม system prompt เฉพาะบทบาท + เลือก engine ตาม role
     const role = isGroup && threadId ? await getTopicRole(chatId, threadId) : null;
     if (role?.systemPrompt) ctxParts.push(role.systemPrompt);
+    // รีวิวตัวเอง: ขอให้สรุป/วิเคราะห์งานตัวเอง → แนบบันทึกกิจกรรม 7 วัน + ให้เสนอบทเรียน
+    if (/รีวิวตัวเอง|สรุป(งาน)?(สัปดาห์|อาทิตย์)|วิเคราะห์งานตัวเอง|เรียนรู้อะไรจาก(สัปดาห์|อาทิตย์|งาน)|self.?review/i.test(text)) {
+      const wk = await getActivityDigest(7);
+      ctxParts.push(
+        `[คำสั่ง: รีวิวตัวเอง] นี่คือบันทึกกิจกรรมของคุณ 7 วันล่าสุด — วิเคราะห์แล้วตอบเป็นข้อ: (1) สรุปทำอะไรไปบ้าง (2) ปัญหา/แพตเทิร์นที่เกิดซ้ำ (3) เสนอ "บทเรียนที่ควรจำ" 2-3 ข้อ (สั้น ทำได้จริง) แล้วบอกเจ้าของว่าถ้าเห็นด้วยพิมพ์ "สอนวาน: <บทเรียน>" ได้เลย จะได้จำไว้ใช้ครั้งต่อไป\n${wk}`,
+      );
+    }
     // การจัดการไฟล์: ให้บอก path ของไฟล์ที่สร้าง (ระบบจะแนบไฟล์เข้าแชทให้เอง + ซ่อน path จากผู้ใช้)
     ctxParts.push(
       `[การส่งไฟล์] ถ้าเธอสร้างไฟล์ (PDF/เอกสาร/รูป/ฯลฯ) ให้พิมพ์ path เต็มของไฟล์นั้นไว้ในคำตอบด้วย ระบบจะแนบไฟล์จริงเข้าแชทให้อัตโนมัติและซ่อน path ออกจากข้อความเอง — ห้ามขอโทษว่าแนบไฟล์ไม่ได้ เพราะแนบได้ ให้บอกสั้นๆ ว่าทำไฟล์อะไรเสร็จแล้ว`,

@@ -63,13 +63,16 @@ const mmss = (sec?: number | null) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} นาที`;
 };
 
-// สรุปกิจกรรมล่าสุด (48 ชม.) เป็นข้อความกระชับ ฉีดเข้า system prompt ให้วานตอบเรื่องงานเฝ้าแชท/เคส/สุขภาพระบบ
-export async function getActivityDigest(): Promise<string> {
-  const since = new Date(Date.now() - 48 * 3600 * 1000);
+// สรุปกิจกรรมล่าสุดเป็นข้อความกระชับ ฉีดเข้า system prompt ให้วานตอบเรื่องงานเฝ้าแชท/เคส/สุขภาพระบบ
+// days=2 (ดีฟอลต์ ฉีดทุกข้อความ) · days=7 (สำหรับรีวิวตัวเอง)
+export async function getActivityDigest(days = 2): Promise<string> {
+  const hours = Math.max(1, Math.round(days * 24));
+  const since = new Date(Date.now() - hours * 3600 * 1000);
+  const recentLimit = days > 3 ? 60 : 30;
   const rows = await db.botActivity
-    .findMany({ where: { createdAt: { gte: since } }, orderBy: { createdAt: "desc" }, take: 300 })
+    .findMany({ where: { createdAt: { gte: since } }, orderBy: { createdAt: "desc" }, take: 500 })
     .catch(() => []);
-  if (!rows.length) return "(ยังไม่มีบันทึกกิจกรรมในช่วง 48 ชม.ที่ผ่านมา)";
+  if (!rows.length) return `(ยังไม่มีบันทึกกิจกรรมในช่วง ${hours} ชม.ที่ผ่านมา)`;
 
   const todayStr = thaiDate(new Date());
   const today = rows.filter((r) => thaiDate(r.createdAt) === todayStr);
@@ -95,9 +98,9 @@ export async function getActivityDigest(): Promise<string> {
     ? problems.slice(0, 8).map((r) => `[${r.severity}] ${thaiTime(r.createdAt)} ${r.summary}`).join("\n")
     : "ปกติดี ไม่มี error/warn วันนี้";
 
-  // (ง) รายการล่าสุด ~30 บรรทัด
+  // (ง) รายการล่าสุด
   const recent = rows
-    .slice(0, 30)
+    .slice(0, recentLimit)
     .map((r) => {
       const parts = [
         thaiTime(r.createdAt),
@@ -115,6 +118,6 @@ export async function getActivityDigest(): Promise<string> {
     `วันนี้ (${todayStr}) รวม ${today.length} รายการ · แยกประเภท: ${kindLine}`,
     `แอดมินที่ถูกเตือน "ลืมปิดเคส" วันนี้: ${closeLine}`,
     `สุขภาพระบบวันนี้:\n${healthLine}`,
-    `รายการล่าสุด (ย้อนหลังสูงสุด 48 ชม.):\n${recent}`,
+    `รายการล่าสุด (ย้อนหลังสูงสุด ${hours} ชม.):\n${recent}`,
   ].join("\n\n");
 }
