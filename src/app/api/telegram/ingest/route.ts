@@ -124,10 +124,11 @@ function escHtml(s: string): string {
 
 // กลุ่มขยายวันหมดอายุ Thunder: สกัด username → พรีวิว (ค้นหา+แคปช่องวันหมดอายุปัจจุบัน) → ปุ่มยืนยันก่อนปรับจริง
 // เงื่อนไข: username ตรงเป๊ะ + เฉพาะสาขาหลัก (ทำทุกสาขาหลัก) — ปลอดภัยจากการแตะ record ผิด
-async function handleThunderExpiry(text: string, threadId: string, fromUsername: string, fromName: string): Promise<Send[]> {
+async function handleThunderExpiry(text: string, threadId: string, fromUsername: string, fromName: string, replyText = ""): Promise<Send[]> {
   const thr = threadId || undefined;
   const tag = fromUsername ? `@${fromUsername} ` : fromName ? `${fromName} ` : "";
-  const username = extractUsername(text);
+  // username จากข้อความปัจจุบัน ถ้าไม่มี (เช่น reply ว่า "ลองหาใหม่อีกครั้ง") → ดึงจากข้อความที่ reply อ้างถึง
+  const username = extractUsername(text) || extractUsername(replyText);
   if (!username) {
     return [{ kind: "text", text: `${tag}พิมพ์ username ที่จะปรับวันหมดอายุมาได้เลยค่ะ เช่น "preechapanit101 ปรับวันหมดอายุให้หน่อย"`, threadId: thr }];
   }
@@ -149,6 +150,25 @@ async function handleThunderExpiry(text: string, threadId: string, fromUsername:
   const nowStr = now.toLocaleString("th-TH-u-ca-gregory", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
   const n = pv.mainRows.length;
   const expired = pv.expiredCount;
+  const cancel = { text: "❌ ยกเลิก", data: "texp:cancel" };
+  const withShots = (sends: Send[]): Send[] => {
+    if (pv.shotLeftBase64) sends.push({ kind: "photo", dataBase64: pv.shotLeftBase64, caption: `ยูสเซอร์/สาขาของ ${username}`, threadId: thr });
+    if (pv.shotRightBase64) sends.push({ kind: "photo", dataBase64: pv.shotRightBase64, caption: "วันหมดอายุปัจจุบัน + สถานะ", threadId: thr });
+    return sends;
+  };
+
+  // ไม่มีสาขาไหนหมดอายุเลย (วันที่บอทหมดอายุไม่แดง) → ทักกลับ ยังไม่ปรับให้ (ต้องกดยืนยันฝืนเอง)
+  if (expired === 0) {
+    const listPlain = pv.mainRows
+      .map((r, i) => `${i + 1}. ${r.shopName || "-"} (id ${r.serviceId || "-"}) · 🟢 ${r.currentExpiry || "ยังไม่หมด"}`)
+      .join("\n");
+    const warn =
+      `${tag}⚠️ ยูสเซอร์ ${username} ยังไม่หมดอายุค่ะ${n > 1 ? ` (${n} สาขาหลัก ไม่มีสาขาไหนหมดอายุ)` : ""}\n${listPlain}\n` +
+      `ยังไม่ถึงกำหนดต้องปรับนะคะ ถ้าต้องการปรับเป็นวัน/เวลาปัจจุบันจริงๆ กดปุ่มด้านล่างได้ค่ะ`;
+    const force = { text: `ปรับทั้งที่ยังไม่หมด (${n})`, data: `texp:ok:all:${username}`.slice(0, 64) };
+    return withShots([{ kind: "text", text: warn, threadId: thr, buttons: [force, cancel] }]);
+  }
+
   const list = pv.mainRows
     .map((r, i) => `${i + 1}. ${r.shopName || "-"} (id ${r.serviceId || "-"}) · ${r.expired ? "🔴 หมดอายุ" : "🟢 ยังไม่หมด"} · เดิม: ${r.currentExpiry || "-"}`)
     .join("\n");
@@ -157,18 +177,14 @@ async function handleThunderExpiry(text: string, threadId: string, fromUsername:
     `👤 ยูสเซอร์: ${username} · ${n} สาขาหลัก${n > 1 ? ` (หมดอายุ ${expired})` : ""}\n${list}\n` +
     `➡️ จะตั้งวันหมดอายุใหม่เป็น ${nowStr} (วัน/เวลาปัจจุบัน)` +
     (pv.otherCount ? `\n(ข้าม ${pv.otherCount} แถวสาขาย่อย/ยูสเซอร์ไม่ตรง)` : "");
-  // ปุ่ม: 1 สาขา → ยืนยันเดี่ยว | หลายสาขาปนกัน → เลือกเฉพาะหมดอายุ/ทุกสาขา | หลายสาขาหมดหมด → ยืนยันทั้งหมด
+  // ปุ่ม: หมดอายุหมด → ยืนยันปรับ | หลายสาขาปนกัน → เลือกเฉพาะหมดอายุ/ทุกสาขา
   const okAll = { text: n > 1 ? `✅ ยืนยันปรับทั้งหมด (${n})` : "✅ ยืนยันปรับ", data: `texp:ok:all:${username}`.slice(0, 64) };
   const okExpired = { text: `✅ ปรับเฉพาะที่หมดอายุ (${expired})`, data: `texp:ok:expired:${username}`.slice(0, 64) };
-  const cancel = { text: "❌ ยกเลิก", data: "texp:cancel" };
-  let buttons: { text: string; data: string }[];
-  if (n <= 1) buttons = [okAll, cancel];
-  else if (expired > 0 && expired < n) buttons = [okExpired, { text: `ปรับทุกสาขา (${n})`, data: `texp:ok:all:${username}`.slice(0, 64) }, cancel];
-  else buttons = [okAll, cancel]; // หมดอายุหมด หรือไม่มีตัวหมดอายุเลย → ให้ผู้ใช้ตัดสินใจปรับทั้งหมด/ยกเลิก
-  const sends: Send[] = [{ kind: "text", text: caption, threadId: thr, buttons }];
-  if (pv.shotLeftBase64) sends.push({ kind: "photo", dataBase64: pv.shotLeftBase64, caption: `ยูสเซอร์/สาขาของ ${username}`, threadId: thr });
-  if (pv.shotRightBase64) sends.push({ kind: "photo", dataBase64: pv.shotRightBase64, caption: "วันหมดอายุปัจจุบัน + สถานะ", threadId: thr });
-  return sends;
+  const buttons =
+    expired > 0 && expired < n
+      ? [okExpired, { text: `ปรับทุกสาขา (${n})`, data: `texp:ok:all:${username}`.slice(0, 64) }, cancel]
+      : [okAll, cancel];
+  return withShots([{ kind: "text", text: caption, threadId: thr, buttons }]);
 }
 
 // ===== แนบไฟล์ที่ agent (hermes) สร้างในเครื่อง แทนการพ่น path ให้ผู้ใช้ =====
@@ -333,7 +349,7 @@ export async function POST(req: Request) {
     // กลุ่ม "ขยายวันหมดอายุ Thunder" → จัดการเฉพาะทาง (ไม่ส่งเข้า agent ที่เปิดเว็บมั่ว)
     const gfEarly = await getGroupFunc(chatId);
     if (gfEarly?.id === "thunder_expiry") {
-      return NextResponse.json({ sends: await handleThunderExpiry(text, threadId, fromUsername, fromName) });
+      return NextResponse.json({ sends: await handleThunderExpiry(text, threadId, fromUsername, fromName, replyText) });
     }
   } else {
     // แชทส่วนตัว

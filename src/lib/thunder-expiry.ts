@@ -136,8 +136,8 @@ async function readRows(page: Page, username: string, cols: { user: number; bran
         if (!/สาขาหลัก/.test(branch)) { other++; continue; }
         const currentExpiry = c.expiry >= 0 ? cells[c.expiry] : "";
         const status = c.status >= 0 ? cells[c.status] : "";
-        // ตัดสิน "หมดอายุ" จากคอลัมน์สถานะเป็นหลัก, ไม่มีคอลัมน์ → fallback ข้อความวันที่
-        const expired = c.status >= 0 ? /หมดอายุ/.test(status) : /หมดอายุแล้ว/.test(currentExpiry);
+        // หมดอายุ = คอลัมน์สถานะขึ้น "หมดอายุ" หรือช่องวันหมดอายุมี "(หมดอายุแล้ว)" (= ตัวแดง) อย่างใดอย่างหนึ่ง
+        const expired = /หมดอายุ/.test(status) || /หมดอายุแล้ว/.test(currentExpiry);
         main.push({ serviceId: c.id >= 0 ? cells[c.id] : "", username: u, shopName: c.shop >= 0 ? cells[c.shop] : "", branchType: branch, currentExpiry, status, expired });
       }
       return { mainRows: main, otherCount: other };
@@ -352,7 +352,7 @@ export async function executeExpiry(username: string, scope: ExpiryScope = "expi
       if (scope === "expired") {
         const statusTxt = cols.status >= 0 ? ((await row.locator("td").nth(cols.status).textContent().catch(() => ""))?.trim() || "") : "";
         const expiryTxt = (await row.locator("td").nth(cols.expiry).textContent().catch(() => ""))?.trim() || "";
-        const rowExpired = cols.status >= 0 ? /หมดอายุ/.test(statusTxt) : /หมดอายุแล้ว/.test(expiryTxt);
+        const rowExpired = /หมดอายุ/.test(statusTxt) || /หมดอายุแล้ว/.test(expiryTxt);
         if (!rowExpired) continue;
       }
       const oldExpiry = (await row.locator("td").nth(cols.expiry).textContent().catch(() => ""))?.trim() || "";
