@@ -202,7 +202,10 @@ export async function makeAffReceipt(input: {
     gross, whtRate: WHT_RATE, wht, net,
     idCardImagePath: attach,
   });
-  const filename = `ใบสำคัญรับเงิน_${username}_${df.day}-${df.month}-${df.yearBE}.pdf`.normalize("NFC");
+  // ชื่อไฟล์: วันที่ DD.MM.YY (พ.ศ. 2 หลักท้าย) + เว้นวรรค + username เท่านั้น เช่น "16.07.69 suwan.pdf"
+  const dd = String(df.day).padStart(2, "0");
+  const yy = String(df.yearBE).slice(-2);
+  const filename = `${dd}.${df.month}.${yy} ${username}.pdf`.normalize("NFC");
   const pdfPath = path.join(dir, filename);
   fs.writeFileSync(pdfPath, pdf);
 
