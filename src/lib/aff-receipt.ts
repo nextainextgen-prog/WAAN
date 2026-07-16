@@ -126,6 +126,8 @@ export async function buildReceiptPdf(d: ReceiptData): Promise<Buffer> {
   const font = await pdf.embedFont(fs.readFileSync(SARABUN_TTF), { subset: true });
   const page = pdf.getPage(0);
   const BODY = 14.5;
+  // ยกข้อความในช่องเติมคำ (บนเส้นปะ) ให้ลอยห่างจากเส้นนิดหน่อย — สระล่าง/หางตัวอักษรไทยเดิมติดเส้นเกินไป
+  const LIFT = 3;
 
   const put = (
     text: string | number | null | undefined,
@@ -150,15 +152,15 @@ export async function buildReceiptPdf(d: ReceiptData): Promise<Buffer> {
   put(d.month, POS.month.cx, POS.month.y);
   put(d.yearBE, POS.year.cx, POS.year.y);
 
-  // ---- ผู้รับเงิน + ที่อยู่ ----
-  put(`${d.prefix}${d.name}`, POS.name.cx, POS.name.y, "left", BODY, POS.name.max);
-  put(d.taxId, POS.taxId.cx, POS.taxId.y, "center", BODY, POS.taxId.max);
-  put(d.houseNo, POS.houseNo.cx, POS.houseNo.y, "center", BODY, POS.houseNo.max);
-  put(d.moo, POS.moo.cx, POS.moo.y, "center", BODY, POS.moo.max);
-  put(d.road || "-", POS.road.cx, POS.road.y, "center", BODY, POS.road.max);
-  put(d.tambon, POS.tambon.cx, POS.tambon.y, "center", BODY, POS.tambon.max);
-  put(d.amphoe, POS.amphoe.cx, POS.amphoe.y, "center", BODY, POS.amphoe.max);
-  put(d.changwat, POS.changwat.cx, POS.changwat.y, "center", BODY, POS.changwat.max);
+  // ---- ผู้รับเงิน + ที่อยู่ (ยก LIFT ให้ลอยห่างเส้นปะ) ----
+  put(`${d.prefix}${d.name}`, POS.name.cx, POS.name.y + LIFT, "left", BODY, POS.name.max);
+  put(d.taxId, POS.taxId.cx, POS.taxId.y + LIFT, "center", BODY, POS.taxId.max);
+  put(d.houseNo, POS.houseNo.cx, POS.houseNo.y + LIFT, "center", BODY, POS.houseNo.max);
+  put(d.moo, POS.moo.cx, POS.moo.y + LIFT, "center", BODY, POS.moo.max);
+  put(d.road || "-", POS.road.cx, POS.road.y + LIFT, "center", BODY, POS.road.max);
+  put(d.tambon, POS.tambon.cx, POS.tambon.y + LIFT, "center", BODY, POS.tambon.max);
+  put(d.amphoe, POS.amphoe.cx, POS.amphoe.y + LIFT, "center", BODY, POS.amphoe.max);
+  put(d.changwat, POS.changwat.cx, POS.changwat.y + LIFT, "center", BODY, POS.changwat.max);
 
   // ---- ตารางยอด (ชิดขวาในคอลัมน์ บาท/สตางค์) ----
   const g = splitAmount(d.gross);
@@ -177,7 +179,7 @@ export async function buildReceiptPdf(d: ReceiptData): Promise<Buffer> {
   // ---- รับเงินโดย ☑ โอนเข้าบัญชี [ธนาคาร เลขบัญชี] — ต่อท้ายบรรทัด "ดังรายการต่อไปนี้ :-" (ยึดบัญชีจากระบบ) ----
   // auto-fit: ใช้ขนาดใหญ่สุด (≤ BODY ให้เท่าตัวอื่น) ที่ยังพอดีในช่องว่างขวาของบรรทัด
   if (d.bank || d.account) {
-    const y = 595.5, startX = 172, rightLimit = 556;
+    const y = 595.5 + LIFT, startX = 172, rightLimit = 556;
     const acct = `${d.bank || ""} ${d.account || ""}`.replace(/\s+/g, " ").trim();
     const parts = ["รับเงินโดย", "เงินสด", "โอนเข้าบัญชี", acct];
     const gap = 4;
@@ -202,12 +204,12 @@ export async function buildReceiptPdf(d: ReceiptData): Promise<Buffer> {
   }
 
   // ---- จำนวนเงินตัวหนังสือ (ในวงเล็บ) ----
-  put(bahtText(d.net), POS.netText.cx, POS.netText.y, "center", BODY, POS.netText.max);
+  put(bahtText(d.net), POS.netText.cx, POS.netText.y + LIFT, "center", BODY, POS.netText.max);
 
   // ---- ลายเซ็นผู้รับเงิน ----
-  put(d.name, POS.signName.cx, POS.signName.y, "center", BODY, POS.signName.max);
+  put(d.name, POS.signName.cx, POS.signName.y + LIFT, "center", BODY, POS.signName.max);
   // ต้นฉบับมี "(...)" อยู่แล้ว → วาดเฉพาะชื่อกึ่งกลางในวงเล็บ (ไม่ใส่วงเล็บซ้ำ)
-  put(`${d.prefix}${d.name}`, POS.signParen.cx, POS.signParen.y, "center", BODY, POS.signParen.max);
+  put(`${d.prefix}${d.name}`, POS.signParen.cx, POS.signParen.y + LIFT, "center", BODY, POS.signParen.max);
 
   // ---- หน้า 2: สำเนาบัตร ปชช. ผู้รับเงิน (แนบท้าย) ----
   if (d.idCardImagePath && fs.existsSync(d.idCardImagePath)) {
