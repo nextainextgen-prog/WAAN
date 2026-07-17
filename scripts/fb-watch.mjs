@@ -7,7 +7,7 @@ import { chromium } from "playwright";
 import { brandOf, platformEmoji, platformLabel, topicId } from "./lib/routes.mjs";
 import { getTaggees, formatTags } from "./oho-shifts.mjs";
 import { analyzeChat } from "./lib/ai-analyze.mjs";
-import { esc, mmss, openChatButton, sendCard, copyReplyText } from "./lib/notify.mjs";
+import { esc, mmss, openChatButton, sendCard, copyReplyText, refreshMuted, isChatMuted, isBrandMuted } from "./lib/notify.mjs";
 import { logActivity } from "./lib/activity.mjs";
 
 // โซนคอลัมน์บทสนทนา (กลางจอ) สำหรับแคป — วัดจาก layout Business Suite ที่ 1500x1000
@@ -42,6 +42,8 @@ loadEnv();
 const SESSION = process.env.FB_SESSION_PATH || path.join(process.cwd(), ".fb-session.json");
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ALERT_CHAT = process.env.OHO_ALERT_CHAT_ID;
+const APP_URL = process.env.APP_URL || "http://localhost:3000";
+const INTERNAL = process.env.INTERNAL_API_TOKEN || "";
 const POLL = Number(process.env.FB_POLL_SECONDS || 60) * 1000;
 const THRESHOLD = Number(process.env.FB_THRESHOLD_SECONDS || 180);
 const MAX_AGE = Number(process.env.FB_MAX_AGE_SECONDS || 86400);
@@ -136,6 +138,8 @@ let sessionWarned = false;
 const rowKey = (P, r) => `${P.key}|${r.name}|${r.preview.slice(0, 30)}`;
 
 async function tick(pages, navigate) {
+  await refreshMuted(APP_URL, INTERNAL); // กลุ่มสั่งปิดแจ้งเตือน → ข้ามการเตือนรอบนี้
+  if (isChatMuted(ALERT_CHAT)) return;
   const fresh = [];
   for (const { P, page } of pages) {
     let rows;
@@ -165,6 +169,7 @@ async function tick(pages, navigate) {
 
   const toAlert = fresh.filter((f) => !alerted.has(f.key)).sort((a, b) => b.waitSec - a.waitSec).slice(0, MAX_PER_TICK);
   for (const { P, page, r, waitSec, key } of toAlert) {
+    if (isBrandMuted(P.company)) continue; // แบรนด์นี้สั่งปิดแจ้งเตือน → ข้าม
     const brand = brandOf(P.company);
     const pEmoji = platformEmoji(P.company, "fb");
     const link = P.url;

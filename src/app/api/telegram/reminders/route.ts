@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getAllowedChatId, getBotToken, tgSendMessage } from "@/lib/telegram";
 import { statusLabel, formatThaiDate, daysUntil, formatBahtShort } from "@/lib/grants";
 import { getOkrSummary } from "@/lib/data";
+import { isMuted } from "@/lib/mute";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,8 @@ export async function POST(req: Request) {
   if (!getBotToken()) return NextResponse.json({ error: "no bot token" }, { status: 400 });
   const chatId = await getAllowedChatId();
   if (!chatId) return NextResponse.json({ error: "no bound chat" }, { status: 400 });
+  // กลุ่มนี้สั่งปิดแจ้งเตือนไว้ → ไม่ส่งสรุปประจำวัน (มีเตือนเช้า-เย็นแยกว่ายังปิดอยู่)
+  if (await isMuted(chatId)) return NextResponse.json({ ok: true, muted: true });
 
   const [grants, okr] = await Promise.all([
     db.grant.findMany({ where: { status: { not: "closed" } } }),

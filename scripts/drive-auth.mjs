@@ -20,7 +20,7 @@ loadEnv();
 const CRED = process.env.DRIVE_CREDENTIALS_PATH || path.join(process.cwd(), "credentials.json");
 const TOKEN = process.env.DRIVE_TOKEN_PATH || path.join(process.cwd(), ".drive-token.json");
 const PORT = 4571;
-const SCOPES = ["https://www.googleapis.com/auth/drive"];
+const SCOPES = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"];
 
 if (!fs.existsSync(CRED)) {
   console.error(`\nไม่พบไฟล์ credentials: ${CRED}`);
@@ -34,24 +34,46 @@ const oauth2 = new google.auth.OAuth2(conf.client_id, conf.client_secret, `http:
 
 const authUrl = oauth2.generateAuthUrl({ access_type: "offline", prompt: "consent", scope: SCOPES });
 
+const page = (title, body, color = "#0A2F5C") =>
+  `<!DOCTYPE html><html lang="th"><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:-apple-system,'IBM Plex Sans Thai',sans-serif;background:#F4F8FD;color:#0D1B2A;display:grid;place-items:center;height:100vh;margin:0}
+.c{background:#fff;border:1px solid #E3ECF6;border-radius:16px;padding:34px 40px;box-shadow:0 10px 30px rgba(10,47,92,.1);max-width:560px}
+h2{color:${color};margin:0 0 10px;font-size:22px}p{color:#5E6E84;line-height:1.6;margin:0;font-size:14px}</style></head>
+<body><div class="c"><h2>${title}</h2><p>${body}</p></div></body></html>`;
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const code = url.searchParams.get("code");
+  const err = url.searchParams.get("error");
+  // Google ส่ง error กลับมา (เช่น กดยกเลิก / ไม่มีสิทธิ์) — บอกให้ชัด ไม่ปล่อยหน้าขาว
+  if (err) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(page("อนุญาตไม่สำเร็จ", `Google แจ้งว่า: <b>${err}</b><br>ลองรัน <code>npm run drive:auth</code> ใหม่อีกครั้งนะครับ`, "#D9544D"));
+    console.error(`\n❌ Google ส่ง error กลับมา: ${err}\n`);
+    setTimeout(() => process.exit(1), 500);
+    return;
+  }
   if (!code) {
-    res.writeHead(400).end("no code");
+    // เปิด localhost:4571 ตรงๆ (ยังไม่ผ่านหน้าอนุญาต) — บอกวิธีให้ถูก ไม่ใช่หน้าขาว
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(page("ยังไม่ได้เริ่มขั้นตอนอนุญาต", `หน้านี้เป็นปลายทางรับผลจาก Google เท่านั้น<br>กรุณาเปิดลิงก์อนุญาตที่แสดงในเทอร์มินัลก่อนนะครับ`, "#E5B342"));
     return;
   }
   try {
     const { tokens } = await oauth2.getToken(code);
     fs.writeFileSync(TOKEN, JSON.stringify(tokens, null, 2));
+    const scopes = (tokens.scope || "").split(" ");
+    const hasCal = scopes.some((s) => s.includes("/auth/calendar"));
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end("<h2>เชื่อม Google Drive สำเร็จ! ปิดหน้านี้ได้เลย</h2>");
-    console.log(`\nบันทึก token แล้ว: ${TOKEN}`);
-    console.log("พร้อมรัน: npm run drive:watch\n");
+    res.end(page("เชื่อม Google สำเร็จ! ปิดหน้านี้ได้เลย", `ได้สิทธิ์: Drive${hasCal ? " + Calendar ✅" : " (ยังไม่มีสิทธิ์ Calendar ⚠️)"}`, "#22A06B"));
+    console.log(`\n✅ บันทึก token แล้ว: ${TOKEN}`);
+    console.log(`สิทธิ์ที่ได้: ${tokens.scope}`);
+    console.log(hasCal ? "→ ลง Google Calendar ได้แล้ว\n" : "⚠️ ยังไม่มี scope calendar — ตอนกด Allow ต้องติ๊กสิทธิ์ปฏิทินด้วย\n");
     setTimeout(() => process.exit(0), 500);
   } catch (e) {
-    res.writeHead(500).end("error: " + e.message);
-    console.error(e);
+    res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(page("แลก token ไม่สำเร็จ", String(e.message || e), "#D9544D"));
+    console.error("\n❌ แลก token ไม่สำเร็จ:", e.message || e, "\n");
     process.exit(1);
   }
 });

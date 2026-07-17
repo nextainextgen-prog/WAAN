@@ -338,14 +338,61 @@ async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId, menti
     } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
     if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
     if (!data.ok) { await status.finishText("ทำสไลด์จากไฟล์ไม่สำเร็จค่ะ: " + (data.error || "")); return; }
-    await status.finishDone(`✅ ทำสไลด์ "${data.title}" (${data.slideCount} สไลด์) จากไฟล์ให้แล้วค่ะ ส่งทั้ง PDF และไฟล์เด็คที่เลื่อนดูได้ให้เลยนะคะ`);
-    const safe = (data.title || "slides").replace(/[^\w฀-๿ ._-]/g, "").slice(0, 50) || "slides";
-    await sendResultSends(chatId, [
-      { kind: "document", url: data.files.pdf, filename: `${safe}.pdf`, caption: data.title },
-      { kind: "document", url: data.files.html, filename: `${safe}.html` },
-    ]);
+    await status.finishDone(`✅ ทำสไลด์ "${data.title}" (${data.slideCount} สไลด์) จากไฟล์ให้แล้วค่ะ ส่งพรีวิวทีละหน้า แล้วปิดท้ายด้วยไฟล์ให้เลยนะคะ`);
+    registerDeckMsgs(chatId, data.id, await sendResultSends(chatId, buildDeckSends(data)));
     await reactMsg(chatId, msgId, "✅");
     await notifyDelivery(chatId, isGroup, from, text, mentions, `สไลด์ "${data.title}"`);
+  } finally {
+    memoInFlight.delete(String(chatId));
+  }
+}
+
+// สร้างชุดข้อความส่งเด็ค: รูปทุกหน้า → ปิดท้ายด้วยไฟล์ (PDF+HTML) · ฝัง #deck:id ในแคปชันไฟล์ (ไว้ reply แก้)
+function buildDeckSends(data) {
+  const safe = (data.title || "slides").replace(/[^\w฀-๿ ._-]/g, "").slice(0, 50) || "slides";
+  const tag = `#deck:${data.id}`;
+  const pageSends = (data.pages || []).map((u, i) => ({
+    kind: "photo", url: u,
+    ...(i === 0 ? { caption: `🖼️ ${data.title} · ${data.slideCount} สไลด์ (พรีวิวทีละหน้า)  ${tag}` } : {}),
+  }));
+  return [
+    ...pageSends,
+    { kind: "document", url: data.files.pdf, filename: `${safe}.pdf`, caption: `📄 ${data.title} (PDF)  ${tag}` },
+    { kind: "document", url: data.files.html, filename: `${safe}.html`, caption: `🌐 ไฟล์เด็คเลื่อนดูได้ · อยากแก้/เพิ่มข้อมูล reply ไฟล์นี้หรือรูปไหนก็ได้ แล้วพิมพ์บอกได้เลยค่ะ  ${tag}` },
+  ];
+}
+
+// แก้/ต่อยอดเด็คเดิม (reply เด็คแล้วสั่งแก้ หรือแนบไฟล์เพิ่มข้อมูล)
+async function doSlideRevise(chatId, deckId, instruction, addFiles, from, isGroup, msgId, mentions) {
+  if (memoInFlight.has(String(chatId))) return;
+  memoInFlight.add(String(chatId));
+  try {
+    const status = await startStatus(chatId, [
+      "📥 รับเรื่องแก้สไลด์แล้วค่ะ เดี๋ยวจัดให้นะคะ ✏️",
+      "🔎 กำลังทบทวนเด็คเดิม + ข้อมูลที่เพิ่ม...",
+      "📊 กำลังปรับสไลด์และกราฟ...",
+      "🖼️ กำลังเรนเดอร์หน้าใหม่...",
+      "⏳ ใกล้เสร็จแล้วค่ะ...",
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-slide-"));
+    const saved = [];
+    for (const f of addFiles || []) {
+      try { const s = await downloadFile(f.file_id, dir, f.file_name); if (s) saved.push(s); } catch { /* skip */ }
+    }
+    let data;
+    try {
+      const r = await fetch(APP_URL + `/api/slides/${deckId}/revise`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ instruction: instruction || "", files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
+      });
+      data = await r.json();
+    } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+    if (!data.ok) { await status.finishText("แก้สไลด์ไม่สำเร็จค่ะ: " + (data.error || "")); return; }
+    await status.finishDone(`✅ แก้สไลด์ "${data.title}" ให้แล้วค่ะ (${data.slideCount} สไลด์) ส่งพรีวิวใหม่ทีละหน้า แล้วปิดท้ายด้วยไฟล์นะคะ`);
+    registerDeckMsgs(chatId, data.id, await sendResultSends(chatId, buildDeckSends(data)));
+    await reactMsg(chatId, msgId, "✅");
+    await notifyDelivery(chatId, isGroup, from, instruction || "แก้สไลด์", mentions, `แก้สไลด์ "${data.title}"`);
   } finally {
     memoInFlight.delete(String(chatId));
   }
@@ -377,11 +424,14 @@ async function startStatus(chatId, steps) {
   };
 }
 
+// ส่งชุดผลลัพธ์ → คืน message_id ทุกข้อความที่ส่งสำเร็จ (ไว้ผูก reply กับเด็ค)
 async function sendResultSends(chatId, sends, defaultThread) {
+  const ids = [];
   for (const s of sends || []) {
     const tc = s.chatId || chatId;      // ส่งข้ามแชท/กลุ่มได้ (เช่น รายงานเข้าห้อง Lead)
     const thr = s.threadId || (s.chatId ? undefined : defaultThread); // ถ้าข้ามแชท ใช้ thread ของ send เท่านั้น
-    if (s.kind === "text") await tg("sendMessage", { chat_id: tc, text: s.text, ...sendOpts(thr, { ...(s.parseMode ? { parse_mode: s.parseMode } : {}), ...(s.buttons ? { reply_markup: keyboardFromButtons(s.buttons) } : {}) }) });
+    let res = null;
+    if (s.kind === "text") res = await tg("sendMessage", { chat_id: tc, text: s.text, ...sendOpts(thr, { ...(s.parseMode ? { parse_mode: s.parseMode } : {}), ...(s.buttons ? { reply_markup: keyboardFromButtons(s.buttons) } : {}) }) });
     else if (s.kind === "document") {
       await tg("sendChatAction", { chat_id: tc, action: "upload_document" });
       const buf = s.dataBase64 ? Buffer.from(s.dataBase64, "base64")
@@ -392,7 +442,7 @@ async function sendResultSends(chatId, sends, defaultThread) {
       if (s.caption) form.append("caption", s.caption);
       if (s.buttons) form.append("reply_markup", JSON.stringify(keyboardFromButtons(s.buttons)));
       form.append("document", new Blob([new Uint8Array(buf)]), s.filename || "file");
-      await fetch(API("sendDocument"), { method: "POST", body: form });
+      res = await fetch(API("sendDocument"), { method: "POST", body: form }).then((x) => x.json()).catch(() => null);
     }
     else if (s.kind === "photo") {
       await tg("sendChatAction", { chat_id: tc, action: "upload_photo" });
@@ -403,9 +453,25 @@ async function sendResultSends(chatId, sends, defaultThread) {
       if (thr) form.append("message_thread_id", String(thr));
       if (s.caption) form.append("caption", s.caption);
       form.append("photo", new Blob([new Uint8Array(buf)]), s.filename || "screenshot.png");
-      await fetch(API("sendPhoto"), { method: "POST", body: form });
+      res = await fetch(API("sendPhoto"), { method: "POST", body: form }).then((x) => x.json()).catch(() => null);
     }
+    if (res?.result?.message_id) ids.push(res.result.message_id);
   }
+  return ids;
+}
+
+// จำว่า message ไหนเป็นของเด็คไหน (ไว้ให้ reply รูป/ไฟล์ไหนก็แก้เด็คนั้นได้ แม้รูปไม่มีแคปชัน)
+const deckByMsg = {}; // `${chatId}:${msgId}` -> { deckId, ts }
+function registerDeckMsgs(chatId, deckId, ids) {
+  const now = Date.now();
+  for (const k of Object.keys(deckByMsg)) if (now - deckByMsg[k].ts > 7 * 864e5) delete deckByMsg[k]; // prune >7 วัน
+  for (const id of ids || []) deckByMsg[`${chatId}:${id}`] = { deckId, ts: now };
+}
+function deckIdForReply(chatId, replyMsgId, replyText) {
+  const m = (replyText || "").match(/#deck:([a-f0-9]{8})/);
+  if (m) return m[1];
+  if (replyMsgId && deckByMsg[`${chatId}:${replyMsgId}`]) return deckByMsg[`${chatId}:${replyMsgId}`].deckId;
+  return null;
 }
 
 async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles, threadId, chatTitle) {
@@ -414,6 +480,14 @@ async function postIngest(chatId, text, from, isGroup, replyTo, replyText, menti
     body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", chatTitle: chatTitle || "", replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [] }),
   });
   return res.json();
+}
+
+// "ตั้งใจทำสไลด์จริงไหม" — เจตนาต้องอยู่ต้นประโยค กันประโยคยาวที่เอ่ยถึงสไลด์ลอยๆ ไปเด้งทำสไลด์ผิด
+function looksLikeSlide(text) {
+  const t = (text || "").replace(/^\s*(?:วาน|น้องวาน)[\s,:ๆจ]*/i, "").replace(/@\S+/g, "").trim();
+  if (/^\s*(?:\/slide|สร้างสไลด์|ทำสไลด์|ขอสไลด์|สไลด์|พรีเซนต์|นำเสนอ|เด็ค|deck)/i.test(t)) return true;
+  const idx = t.search(/สไลด์|slide|พรีเซนต์|นำเสนอ|เด็ค|deck/i);
+  return idx >= 0 && idx <= 18 && /(ทำ|สร้าง|ขอ|ช่วย|จัด|ออกแบบ|สรุป|แปลง|generate)/i.test(t.slice(0, idx + 12));
 }
 
 // ปุ่ม inline: string → callback opt:<index> (Lead) · {text,data} → callback ตามที่กำหนด (เช่น gfunc:aff)
@@ -452,7 +526,7 @@ function extractMentions(msgs) {
 }
 
 async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions, imagePaths, threadId, chatTitle) {
-  const isSlide = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
+  const isSlide = looksLikeSlide(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
   if (isSlide) {
@@ -466,7 +540,9 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
     await status.finishDone("✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ");
-    await sendResultSends(chatId, sends, threadId);
+    const dref = sends.map((s) => s.caption || "").join(" ").match(/#deck:([a-f0-9]{8})/);
+    const sentIds = await sendResultSends(chatId, sends, threadId);
+    if (dref) registerDeckMsgs(chatId, dref[1], sentIds);
     await reactMsg(chatId, msgId, "✅");
     await notifyDelivery(chatId, isGroup, from, text, mentions, "สไลด์");
     return;
@@ -503,8 +579,9 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
     // ในกลุ่ม: แท็ก "คนที่ควรถูกพูดด้วย" = ถ้าผู้ส่งแท็กใครไว้ → คนนั้น (เช่น "ทักทาย Orin") ไม่งั้น → คนที่ถามเอง
     if (isGroup && msgId) {
       if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
-      // การ์ดระบบ (usage/board) — ส่งตรงๆ ไม่ต้องแท็กใคร
-      if (texts[0].plain) { await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...sendOpts(threadId, { ...pm, ...kbExtra }) }); return; }
+      // การ์ดระบบ (usage/board) หรือข้อความ HTML ที่จัดฟอร์แมต/แท็กมาเองแล้ว (เช่น คำทักทายตอนเพิ่มทีม)
+      // → ส่งตรงด้วย parse_mode ไม่ต้องเติมชื่อนำหน้า/ใช้ entity (กัน HTML โชว์ดิบ + แท็กซ้ำ)
+      if (texts[0].plain || texts[0].parseMode === "HTML") { await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...sendOpts(threadId, { ...pm, ...kbExtra }) }); return; }
       const addressee = (mentions && mentions.length) ? mentions[0] : from;
       // ตัดคำนำหน้าที่ AI อาจเผลอใส่ (ทั้ง "@ชื่อ" และชื่อคนที่พูดด้วยล้วนๆ) กันแท็กซ้ำสองรอบ
       let body = String(texts[0].text || "").replace(/^\s*@\S+[\s,:!.\-]*/, "");
@@ -652,6 +729,17 @@ async function processBatch(chatId, msgs) {
   recentTexts[chatId] = (recentTexts[chatId] || []).filter((t) => now - t.ts < BUFFER_TTL);
   if (text) recentTexts[chatId].push({ text, ts: now });
 
+  // reply เด็คเดิม (รูป/ไฟล์ไหนก็ได้ของเด็คนั้น) + พิมพ์คำสั่ง/แนบไฟล์เพิ่ม → แก้/ต่อยอดเด็คนั้น (คงบริบทเดิม)
+  const replyDeckId = deckIdForReply(chatId, replyMsg?.message_id, replyText);
+  if (replyDeckId && (text || files.length)) {
+    const addFiles = msgs.map(extractFile).filter(Boolean); // เฉพาะไฟล์ที่แนบมาในข้อความนี้ (ไม่รวมไฟล์เด็คเดิมที่ถูก reply)
+    recentFiles[chatId] = [];
+    recentTexts[chatId] = [];
+    await reactMsg(chatId, triggerMsgId, "👀");
+    await doSlideRevise(chatId, replyDeckId, text, addFiles, from, isGroup, triggerMsgId, mentions).catch((e) => console.error("slideRevise err:", e.message));
+    return;
+  }
+
   // noti "กำลังรออนุมัติ" จากบอทระบบ → จำข้อมูล (ยูสเซอร์/วันที่/ยอด) ไว้ cross-check + กดรีแอครับทราบ
   // ยังไม่ตรวจ รอแอดมินส่งไฟล์ + แท็กเอง แล้วค่อยตรวจ
   // บอทระบบแจ้ง "อนุมัติเรียบร้อย" (เงินออกสำเร็จ) → กดหัวใจรับทราบ ไม่ต้องทำเอกสาร
@@ -748,7 +836,7 @@ async function processBatch(chatId, msgs) {
 
   // โหมดแก้เอกสาร: กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ตัวเดิม (ไม่หลุดไปแชททั่วไป)
   const editing = editingMemo[chatId] && now < editingMemo[chatId].until;
-  const isSlideish = /สไลด์|slide|พรีเซนต์|นำเสนอ/.test(text);
+  const isSlideish = looksLikeSlide(text);
   if (editing && text && !MEMO_INTENT.test(text) && !isSlideish) {
     const memoId = editingMemo[chatId].id;
     delete editingMemo[chatId];
@@ -811,8 +899,24 @@ async function processBatch(chatId, msgs) {
   }
 }
 
+// กลุ่มอัปเกรดเป็น supergroup → id เปลี่ยน (migrate_to/from_chat_id): คัดลอก config เก่า→ใหม่ กันหน้าที่กลุ่มหลุด
+async function migrateGroup(oldId, newId) {
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/migrate-group", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ oldId: String(oldId), newId: String(newId) }),
+    });
+    const j = await r.json();
+    console.log(`ย้าย config กลุ่ม ${oldId} → ${newId}:`, j.ok ? (j.changed || []).join(", ") || "(ไม่มีอะไรต้องย้าย)" : "ล้มเหลว");
+    await refreshDedicated(); // เผื่อกลุ่มนั้นเป็น dedicated (thunder_expiry)
+  } catch (e) { console.error("migrateGroup err:", e.message); }
+}
+
 async function handleMessage(msg) {
   const chatId = msg.chat.id;
+  // กลุ่มถูกอัปเกรดเป็น supergroup → คัดลอกการตั้งค่ากลุ่มไป id ใหม่ (ทำครั้งเดียวแล้วจบ)
+  if (msg.migrate_to_chat_id) { await migrateGroup(chatId, msg.migrate_to_chat_id); return; }
+  if (msg.migrate_from_chat_id) { await migrateGroup(msg.migrate_from_chat_id, chatId); return; }
   if (msg.media_group_id) {
     const g = groups[msg.media_group_id] || (groups[msg.media_group_id] = { msgs: [], chatId });
     g.msgs.push(msg);

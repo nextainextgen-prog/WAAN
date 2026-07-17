@@ -12,6 +12,7 @@
     "drive:auth": "node scripts/drive-auth.mjs",
     "drive:watch": "node scripts/drive-watch.mjs",
     "reminders": "node scripts/send-reminders.mjs",
+    "mute:reminders": "node scripts/mute-reminders.mjs",
     "db:push": "prisma db push",
     "postinstall": "prisma generate",
     "thunder:auth": "node scripts/thunder-auth.mjs",

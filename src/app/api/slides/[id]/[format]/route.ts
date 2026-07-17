@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserOrService } from "@/lib/auth";
-import { readSlideFile, getSlideMeta } from "@/lib/slide-store";
+import { readSlideFile, getSlideMeta, readSlidePng } from "@/lib/slide-store";
 
 export const runtime = "nodejs";
 
@@ -12,6 +12,15 @@ export async function GET(
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const { id, format } = await params;
+
+  // รูปหน้า: /api/slides/{id}/p0, p1, ... (พรีวิวทีละหน้า)
+  const pm = format.match(/^p(\d+)$/);
+  if (pm) {
+    const png = await readSlidePng(id, Number(pm[1]));
+    if (!png) return NextResponse.json({ error: "not found" }, { status: 404 });
+    return new NextResponse(new Uint8Array(png), { headers: { "Content-Type": "image/png" } });
+  }
+
   if (format !== "html" && format !== "pdf") {
     return NextResponse.json({ error: "invalid format" }, { status: 400 });
   }

@@ -309,3 +309,71 @@ export async function findRoleTopic(role: RoleId): Promise<{ chatId: string; thr
   }
   return null;
 }
+
+// ===== กลุ่มอัปเกรดเป็น supergroup → chatId เปลี่ยน: คัดลอก config ทั้งหมดจาก id เก่า → id ใหม่ =====
+// กันหน้าที่กลุ่ม (aff ฯลฯ) หลุดตอน Telegram เปลี่ยน id (สาเหตุที่กลุ่ม WITHDRAWAL เคยเงียบ)
+export async function migrateGroupId(oldId: string, newId: string): Promise<string[]> {
+  if (!oldId || !newId || oldId === newId) return [];
+  const changed: string[] = [];
+  const read = async (key: string) => {
+    const row = await db.setting.findUnique({ where: { key } });
+    return row?.value ?? null;
+  };
+  const write = async (key: string, value: string) => {
+    await db.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+  };
+
+  // 1) map ที่ key = chatId ตรงๆ (group_functions, aff_tag_targets)
+  for (const key of ["group_functions", "aff_tag_targets"]) {
+    const raw = await read(key);
+    if (!raw) continue;
+    try {
+      const map = JSON.parse(raw) as Record<string, unknown>;
+      if (map[oldId] !== undefined && map[newId] === undefined) {
+        map[newId] = map[oldId];
+        await write(key, JSON.stringify(map));
+        changed.push(key);
+      }
+    } catch { /* ข้าม */ }
+  }
+
+  // 2) map ที่ key ขึ้นต้นด้วย "chatId:" (topic_roles, aff_notify_cache)
+  for (const key of ["topic_roles", "aff_notify_cache"]) {
+    const raw = await read(key);
+    if (!raw) continue;
+    try {
+      const map = JSON.parse(raw) as Record<string, unknown>;
+      let touched = false;
+      for (const k of Object.keys(map)) {
+        if (k === oldId || k.startsWith(oldId + ":")) {
+          const nk = newId + k.slice(oldId.length);
+          if (map[nk] === undefined) { map[nk] = map[k]; touched = true; }
+        }
+      }
+      if (touched) { await write(key, JSON.stringify(map)); changed.push(key); }
+    } catch { /* ข้าม */ }
+  }
+
+  // 3) telegram_groups = array ของ chatId
+  {
+    const raw = await read("telegram_groups");
+    if (raw) {
+      try {
+        const arr = JSON.parse(raw) as string[];
+        if (Array.isArray(arr) && arr.includes(oldId) && !arr.includes(newId)) {
+          arr.push(newId);
+          await write("telegram_groups", JSON.stringify(arr));
+          changed.push("telegram_groups");
+        }
+      } catch { /* ข้าม */ }
+    }
+  }
+
+  // 4) oho_alert_chat = string เดี่ยว
+  {
+    const raw = await read("oho_alert_chat");
+    if (raw === oldId) { await write("oho_alert_chat", newId); changed.push("oho_alert_chat"); }
+  }
+
+  return changed;
+}

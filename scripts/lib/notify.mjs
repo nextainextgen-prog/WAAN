@@ -1,4 +1,27 @@
 // ตัวช่วยส่งการ์ดแจ้งเตือนเข้า Telegram Topic (ใช้ร่วมทุก watcher: oho/fb/line)
+
+// ทะเบียนที่ "ปิดแจ้งเตือน" — watcher เรียก refreshMuted() ทุก tick แล้วเช็ค isChatMuted()/isBrandMuted() ก่อนส่ง
+let _mutedChats = new Set();
+let _mutedBrands = new Set();
+export async function refreshMuted(appUrl, internal) {
+  try {
+    const r = await fetch(appUrl + "/api/telegram/muted-groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": internal },
+    });
+    const j = await r.json();
+    if (Array.isArray(j.groups)) _mutedChats = new Set(j.groups.map(String));
+    if (Array.isArray(j.brands)) _mutedBrands = new Set(j.brands.map(String));
+  } catch { /* ใช้ค่าเดิม */ }
+  return { chats: _mutedChats, brands: _mutedBrands };
+}
+export function isChatMuted(chatId) {
+  return _mutedChats.has(String(chatId));
+}
+export function isBrandMuted(brand) {
+  return brand ? _mutedBrands.has(String(brand)) : false;
+}
+
 export function esc(s) {
   return String(s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }

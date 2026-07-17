@@ -13,6 +13,11 @@ export function getOAuthClient() {
   return auth;
 }
 
+// Google Calendar client (ใช้ token ชุดเดียวกับ Drive — ต้อง re-auth ให้ token มี scope calendar ด้วย)
+export function getCalendar() {
+  return google.calendar({ version: "v3", auth: getOAuthClient() });
+}
+
 // โหลดไฟล์ดิบจาก Drive (รองรับไฟล์ Office เช่น .xlsx ที่อัปโหลด — ใช้ alt=media)
 export async function downloadDriveFile(fileId: string): Promise<Buffer> {
   const drive = google.drive({ version: "v3", auth: getOAuthClient() });
