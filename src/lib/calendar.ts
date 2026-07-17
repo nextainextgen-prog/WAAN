@@ -122,6 +122,23 @@ async function createGoogleEvent(parsed: ParsedEvent): Promise<{ link?: string; 
   }
 }
 
+// ขอ "ลิงก์ Meet" เฉยๆ (ไม่ได้สั่งลงปฏิทิน) — Google ผูกห้อง Meet กับ event เสมอ
+// จึงสร้าง event สั้นๆ เริ่มตอนนี้ 1 ชม. ให้ แล้วคืนลิงก์ห้อง (ไม่บันทึกลงตารางงานในระบบ)
+export async function createMeetLink(title?: string): Promise<{ meet?: string; link?: string; error?: string }> {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const end = new Date(now.getTime() + 60 * 60 * 1000);
+  // ถ้า +1 ชม. แล้วข้ามวัน ให้จบที่ 23:59 ของวันเดียวกัน (createGoogleEvent ใช้ date เดียวกับเวลาเริ่ม)
+  const endText = end.getDate() === now.getDate() ? `${pad(end.getHours())}:${pad(end.getMinutes())}` : "23:59";
+  return createGoogleEvent({
+    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+    timeText: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    endTime: endText,
+    title: title?.trim() || "ห้องประชุม",
+    needsMeet: true,
+  });
+}
+
 export async function createEvent(input: {
   chatId: string;
   parsed: ParsedEvent;

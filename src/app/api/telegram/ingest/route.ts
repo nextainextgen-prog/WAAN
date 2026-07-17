@@ -9,7 +9,7 @@ import { askBrain } from "@/lib/brain";
 import { addLesson, listLessons, deactivateLessons } from "@/lib/lessons";
 import { getActivityDigest } from "@/lib/activity";
 import { saveChat } from "@/lib/secretary";
-import { extractEvent, createEvent, getUpcoming, thaiDate, buildCalendarDayHtml } from "@/lib/calendar";
+import { extractEvent, createEvent, createMeetLink, getUpcoming, thaiDate, buildCalendarDayHtml } from "@/lib/calendar";
 import { generateDeck } from "@/lib/deck-generate";
 import { saveDeckFiles } from "@/lib/slide-store";
 import { renderDeckPngs, renderHtmlToPng } from "@/lib/html-pdf";
@@ -683,6 +683,28 @@ export async function POST(req: Request) {
     } catch {
       /* แยกวัน/งานไม่ได้ → ตกไปคุยปกติให้ AI ถามรายละเอียดเพิ่ม */
     }
+  }
+
+  // ขอลิงก์ Meet เฉยๆ (ไม่ได้สั่งลงปฏิทิน) → สร้างห้องให้เลย ไม่ต้องให้ผู้ใช้ไปเปิดเว็บเอง
+  if (/(สร้าง|ขอ|เอา|ทำ|ฝาก|อยากได้|ต้องการ).{0,12}(ลิ[ง้๊]ง?ก?|link|ห้อง)?\s*(มีต|มีท|มีตติ้ง|meet|google\s*meet|ประชุมออนไลน์)/i.test(text)) {
+    const title = /ประชุม/.test(text) ? "ประชุม" : "ห้องประชุม";
+    const r = await createMeetLink(title);
+    let reply: string;
+    if (r.meet) {
+      reply = [
+        `🎥 สร้างห้อง Google Meet ให้แล้วค่ะ`,
+        `• ลิงก์ห้อง: ${r.meet}`,
+        r.link ? `• ลงไว้ในปฏิทินให้ด้วย (เริ่มตอนนี้ 1 ชม.): ${r.link}` : "",
+        `ใช้ลิงก์นี้เข้าห้องได้เลย ถ้าอยากให้ลงปฏิทินวันเวลาอื่น บอกน้องวานได้นะคะ`,
+      ].filter(Boolean).join("\n");
+    } else if (r.error === "need_auth") {
+      reply = `⚠️ สร้างห้อง Meet ไม่ได้ค่ะ — บัญชี Google หมดสิทธิ์ใช้งาน รบกวนพี่โด้รัน \`npm run drive:auth\` (ติ๊กสิทธิ์ปฏิทินด้วย) แล้วสั่งใหม่นะคะ`;
+    } else {
+      reply = `⚠️ สร้างห้อง Meet ไม่สำเร็จค่ะ (${r.error}) — เปิดเองได้ที่ https://meet.google.com/new นะคะ`;
+    }
+    await saveChat("user", text);
+    await saveChat("assistant", reply);
+    return NextResponse.json({ sends: [{ kind: "text", text: reply, plain: true }] as Send[] });
   }
 
   // แชทปกติ → สมอง AI
