@@ -9,7 +9,7 @@ import { askBrain } from "@/lib/brain";
 import { addLesson, listLessons, deactivateLessons } from "@/lib/lessons";
 import { getActivityDigest } from "@/lib/activity";
 import { saveChat } from "@/lib/secretary";
-import { extractEvent, createEvent, createMeetLink, getUpcoming, thaiDate, buildCalendarDayHtml } from "@/lib/calendar";
+import { extractEvents, createEvent, createMeetLink, getUpcoming, thaiDate, buildCalendarDayHtml } from "@/lib/calendar";
 import { generateDeck } from "@/lib/deck-generate";
 import { saveDeckFiles } from "@/lib/slide-store";
 import { renderDeckPngs, renderHtmlToPng } from "@/lib/html-pdf";
@@ -36,6 +36,7 @@ import {
 
 import { addTask, updateTask, listTasks, formatBoard, type TaskStatus } from "@/lib/tasks";
 import { readUsage, formatMonitorCard } from "@/lib/usage";
+import { parseTaxIntent, answerTaxIntent } from "@/lib/tax-reply";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -56,7 +57,7 @@ interface Send {
 
 // ปุ่มเลือกหน้าที่กลุ่ม โดยฝัง chatId ของกลุ่มเป้าหมายไว้ใน callback (กดจากห้อง Lead แล้วตั้งค่าให้กลุ่มนั้น)
 function groupFuncButtons(targetChatId: string) {
-  const funcs: { text: string; data: string }[] = (["aff", "cs", "agent", "secretary", "thunder_expiry"] as const).map((id) => ({
+  const funcs: { text: string; data: string }[] = (["aff", "cs", "agent", "secretary", "thunder_expiry", "thunder_refund", "tax_invoice"] as const).map((id) => ({
     text: `${GROUP_FUNCS[id].emoji} ${GROUP_FUNCS[id].label}`,
     data: `gfunc:${id}:${targetChatId}`,
   }));
@@ -440,6 +441,9 @@ export async function POST(req: Request) {
   const fromName = String(body.fromName || "").trim();       // ชื่อผู้ที่ส่งข้อความนี้ (ไม่ใช่เจ้าของเสมอไป)
   const fromUsername = String(body.fromUsername || "").trim();
   const imageFiles = (body.imageFiles as string[] | undefined) || []; // path รูปที่ผู้ใช้ส่งมา (ให้ AI อ่าน/วิเคราะห์)
+  // ผู้ใช้เรียกวานตรง ๆ ไหม (แท็ก/พิมพ์ "วาน"/reply) — บอทตัดคำแท็กออกก่อนส่ง ingest เลยดูจากข้อความเองไม่ได้
+  // กลุ่ม dedicated บอทส่งทุกข้อความมาให้อยู่แล้ว ธงนี้เลยเป็นตัวเดียวที่แยก "ถามวาน" กับ "ทีมคุยกันเอง"
+  const addressed = body.addressed !== false; // ไม่ส่งมา = ถือว่าเรียก (เข้ากับ payload เดิม/แชทส่วนตัว)
   if (!chatId || !text) return NextResponse.json({ sends: [] });
 
   const owner = await getAllowedChatId();
@@ -523,6 +527,12 @@ export async function POST(req: Request) {
     if (gfEarly?.id === "thunder_expiry") {
       return NextResponse.json({ sends: await handleThunderExpiry(text, threadId, fromUsername, fromName, replyText) });
     }
+    // กลุ่ม "สถานะใบกำกับภาษี" = กลุ่ม dedicated (บอทส่งทุกข้อความมาให้ ไม่ต้องแท็ก)
+    // ถามเรื่องใบกำกับ → ตอบเลย · เรื่องอื่นต้องเรียกวานตรง ๆ ถึงจะตอบ ไม่งั้นเงียบ
+    // ไม่งั้นวานจะแทรกทุกประโยคที่ทีม 8 คนคุยกันเอง (เปลือง token + น่ารำคาญ)
+    if (gfEarly?.id === "tax_invoice" && !parseTaxIntent(text) && !addressed) {
+      return NextResponse.json({ sends: [] });
+    }
   } else {
     // แชทส่วนตัว
     if (!owner) {
@@ -576,6 +586,25 @@ export async function POST(req: Request) {
     const nowMs = Date.now();
     const card = formatMonitorCard(readUsage(nowMs), new Date(nowMs).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" }));
     return NextResponse.json({ sends: [{ kind: "text", text: card.text, threadId, plain: true }] as Send[] });
+  }
+
+  // ===== สถานะการนำส่งใบกำกับภาษี =====
+  // แอดมินโยนชื่อบริษัท/ยูสเซอร์มาถามตรง ๆ → อ่านชีตสด ตอบใบล่าสุด + ข้อความให้ก็อปส่งลูกค้า
+  // ต้องมาก่อน agent เพราะ agent ไม่มีชีตในบริบท (สแนปช็อต Obsidian เก่าและไม่ครบ)
+  const taxIntent = parseTaxIntent(text);
+  if (taxIntent) {
+    try {
+      const r = await answerTaxIntent(taxIntent);
+      const sends: Send[] = [{ kind: "text", text: r.text, parseMode: r.parseMode, threadId, plain: true }];
+      // ภาพแคปหน้าติดตามพัสดุจากไปรษณีย์ไทย (ถ้าแถวนั้นมีเลขพัสดุ)
+      for (const p of r.photos || []) sends.push({ kind: "photo", dataBase64: p.dataBase64, caption: p.caption, threadId, plain: true });
+      return NextResponse.json({ sends });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return NextResponse.json({
+        sends: [{ kind: "text", text: `วานเปิดชีตสถานะการนำส่งใบกำกับภาษีไม่ได้ค่ะ\nสาเหตุ: ${escHtml(msg)}`, threadId }] as Send[],
+      });
+    }
   }
 
   // ===== Task board (PM) =====
@@ -647,37 +676,49 @@ export async function POST(req: Request) {
   // ลงตารางงาน/ปฏิทิน
   if (/(ลง|ใส่|จด|บันทึก|เพิ่ม).{0,8}(ปฏิทิน|calendar|ตาราง(งาน)?|คิว|นัด(หมาย)?)|นัดหมาย|เตือน.{0,24}(ว่า|วันที่|พรุ่งนี้|มะรืน|วันนี้|จันทร์|อังคาร|พุธ|พฤหัส|ศุกร์|เสาร์|อาทิตย์|สิ้นเดือน)/i.test(text)) {
     try {
-      const parsed = await extractEvent(text);
-      const ev = await createEvent({ chatId, parsed, createdById: fromId, creatorName: fromName || undefined });
-      const timeStr = ev.timeText ? ` ${ev.timeText}${parsed.endTime ? `–${parsed.endTime}` : ""} น.` : " (ทั้งวัน)";
-      const em = ev.emoji ? ` ${ev.emoji}` : "";
-      const lines = [
-        `📅 ลงปฏิทินให้แล้วค่ะ${em}`,
-        `• เรื่อง: ${ev.title}`,
-        `• วัน–เวลา: ${thaiDate(ev.date)}${timeStr}`,
+      // ข้อความเดียวอาจสั่งลงได้หลายงาน (เช่น "ลง 2 งาน ครบกำหนดวันศุกร์")
+      const parsedList = await extractEvents(text);
+      const created = [];
+      for (const parsed of parsedList) {
+        const ev = await createEvent({ chatId, parsed, createdById: fromId, creatorName: fromName || undefined });
+        created.push({ ev, parsed });
+      }
+      const many = created.length > 1;
+      const authFailed = created.some((c) => c.ev.gcalError === "need_auth");
+      const lines: string[] = [
+        many ? `📅 ลงปฏิทินให้แล้ว ${created.length} งานค่ะ` : `📅 ลงปฏิทินให้แล้วค่ะ`,
       ];
-      if (parsed.attendees?.length) lines.push(`• เชิญ/ส่งเมลถึง: ${parsed.attendees.join(", ")}`);
-      if (ev.gcalLink) {
-        lines.push(`• เปิดใน Google Calendar: ${ev.gcalLink}`);
-        if (ev.meetLink) lines.push(`• ห้องประชุม Google Meet: ${ev.meetLink}`);
-        else if (parsed.needsMeet) lines.push(`• (ขอห้อง Meet มาแต่บัญชีนี้สร้างให้ไม่ได้ — เปิดเองที่ https://meet.google.com/new ได้ค่ะ)`);
-        lines.push(`ถึงวันน้องวานจะแจ้งเตือนอีกทีนะคะ`);
-      } else if (ev.gcalError === "need_auth") {
+      created.forEach(({ ev, parsed }, i) => {
+        const timeStr = ev.timeText ? ` ${ev.timeText}${parsed.endTime ? `–${parsed.endTime}` : ""} น.` : " (ทั้งวัน)";
+        const em = ev.emoji ? ` ${ev.emoji}` : "";
+        if (many) lines.push(``, `${i + 1}. ${ev.title}${em}`);
+        else lines.push(`• เรื่อง: ${ev.title}${em}`);
+        lines.push(`• วัน–เวลา: ${thaiDate(ev.date)}${timeStr}`);
+        if (parsed.attendees?.length) lines.push(`• เชิญ/ส่งเมลถึง: ${parsed.attendees.join(", ")}`);
+        if (ev.gcalLink) {
+          lines.push(`• เปิดใน Google Calendar: ${ev.gcalLink}`);
+          if (ev.meetLink) lines.push(`• ห้องประชุม Google Meet: ${ev.meetLink}`);
+          else if (parsed.needsMeet) lines.push(`• (ขอห้อง Meet มาแต่บัญชีนี้สร้างให้ไม่ได้ — เปิดเองที่ https://meet.google.com/new ได้ค่ะ)`);
+        } else if (ev.gcalError && ev.gcalError !== "need_auth") {
+          lines.push(`• ⚠️ จดในระบบให้แล้ว แต่ลง Google Calendar ไม่สำเร็จ (${ev.gcalError})`);
+        }
+      });
+      if (authFailed) {
         lines.push(`\n⚠️ จดในระบบให้แล้ว แต่ยังลง Google Calendar ไม่ได้ — รบกวนพี่โด้รัน \`npm run drive:auth\` (อนุญาตสิทธิ์ปฏิทินเพิ่ม) แล้วสั่งใหม่อีกครั้งนะคะ`);
-      } else if (ev.gcalError) {
-        lines.push(`\n⚠️ จดในระบบให้แล้ว แต่ลง Google Calendar ไม่สำเร็จ (${ev.gcalError})`);
       } else {
-        lines.push(`ถึงวันน้องวานจะแจ้งเตือนอีกทีนะคะ`);
+        lines.push(`\nถึงวันน้องวานจะแจ้งเตือนอีกทีนะคะ`);
       }
       const reply = lines.join("\n");
       await saveChat("user", text);
       await saveChat("assistant", reply);
-      // แคปหน้าปฏิทินวันนั้น (เรนเดอร์เองแนว Google Calendar) ส่งมาด้วย
+      // แคปหน้าปฏิทินของแต่ละงาน (เรนเดอร์เองแนว Google Calendar) ส่งมาด้วย
       const sends: Send[] = [];
-      try {
-        const png = await renderHtmlToPng(buildCalendarDayHtml(ev, parsed), { width: 1000 });
-        sends.push({ kind: "photo", dataBase64: png.toString("base64"), caption: `📅 ${ev.title} · ${thaiDate(ev.date)}` });
-      } catch { /* เรนเดอร์ภาพไม่ได้ก็ส่งข้อความอย่างเดียว */ }
+      for (const { ev, parsed } of created) {
+        try {
+          const png = await renderHtmlToPng(buildCalendarDayHtml(ev, parsed), { width: 1000 });
+          sends.push({ kind: "photo", dataBase64: png.toString("base64"), caption: `📅 ${ev.title} · ${thaiDate(ev.date)}` });
+        } catch { /* เรนเดอร์ภาพไม่ได้ก็ข้ามงานนั้นไป */ }
+      }
       sends.push({ kind: "text", text: reply, plain: true });
       return NextResponse.json({ sends });
     } catch {

@@ -14,21 +14,26 @@ export interface ParsedEvent {
   needsMeet?: boolean; // ขอห้องประชุมออนไลน์ (Google Meet) มาด้วย
 }
 
-const EXTRACT_SYSTEM = `คุณคือผู้ช่วยจดตารางงาน อ่านข้อความผู้ใช้แล้วดึงเป็นรายการปฏิทิน ตอบ JSON เท่านั้น ไม่มีข้อความอื่น ไม่มี \`\`\`
-โครงสร้าง: {"date":"YYYY-MM-DD","timeText":"HH:MM เวลาเริ่ม หรือว่าง","endTime":"HH:MM เวลาจบ หรือว่าง","title":"สิ่งที่ต้องทำ (สั้น กระชับ)","emoji":"อิโมจิที่ผู้ใช้พิมพ์มา ถ้าไม่มีให้ว่าง","needsMeet":true/false}
+const EXTRACT_SYSTEM = `คุณคือผู้ช่วยจดตารางงาน อ่านข้อความผู้ใช้แล้วดึงเป็น "รายการปฏิทิน" ตอบ JSON เท่านั้น ไม่มีข้อความอื่น ไม่มี \`\`\`
+ข้อความหนึ่งอาจมีได้ "หลายงาน" (เช่น สั่งลง 2-3 งานพร้อมกัน) — ให้แยกเป็นหลาย event
+โครงสร้าง: {"events":[{"date":"YYYY-MM-DD","timeText":"HH:MM เวลาเริ่ม หรือว่าง","endTime":"HH:MM เวลาจบ หรือว่าง","title":"สิ่งที่ต้องทำ (สั้น กระชับ)","emoji":"อิโมจิที่ผู้ใช้พิมพ์มา ถ้าไม่มีให้ว่าง","needsMeet":true/false}]}
 กติกา:
+- แยกงานแต่ละรายการเป็น 1 event · ถ้าผู้ใช้กำหนดวัน/กำหนดส่งรวมให้ทุกงาน (เช่น "ครบกำหนดวันศุกร์ทั้ง 2 งาน") ให้ใส่ date เดียวกันในทุก event
 - needsMeet=true เมื่อผู้ใช้ขอห้องประชุมออนไลน์/ลิงก์ประชุม เช่น พูดถึง Meet, Google Meet, ประชุมออนไลน์, ลิงก์ประชุม, ห้องประชุม, VC, call, zoom · ถ้าเป็นงานทั่วไปที่ไม่ต้องประชุมออนไลน์ให้ false
-- ตีความวันจากข้อความเทียบกับ "วันนี้" ที่ให้มา เช่น วันนี้/พรุ่งนี้/มะรืน/จันทร์หน้า/วันที่ 15/สิ้นเดือน → แปลงเป็น YYYY-MM-DD จริง
+- ตีความวันจากข้อความเทียบกับ "วันนี้" ที่ให้มา เช่น วันนี้/พรุ่งนี้/มะรืน/จันทร์หน้า/วันที่ 15/สิ้นเดือน/ศุกร์นี้/ศุกร์ของสัปดาห์นี้ → แปลงเป็น YYYY-MM-DD จริง
 - ถ้าไม่ได้ระบุวันเลย ให้ใช้ "วันนี้"
 - ถ้าระบุช่วงเวลา เช่น "09:00-12:00" หรือ "บ่าย 2 ถึง 4 โมง" → timeText=เวลาเริ่ม, endTime=เวลาจบ
 - title ตัดคำสั่ง (เช่น "ลงปฏิทิน", "จดไว้", "เตือน", "ยิงไปที่เมล...") + อีเมล ออก เหลือแต่เนื้องาน
 - emoji เอาเฉพาะที่ผู้ใช้พิมพ์มาในข้อความ ถ้าไม่มีให้เว้นว่าง`;
 
-function parseJson(text: string): ParsedEvent {
+function parseEvents(text: string): ParsedEvent[] {
   let t = text.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
   const a = t.indexOf("{"), b = t.lastIndexOf("}");
   if (a >= 0 && b > a) t = t.slice(a, b + 1);
-  return JSON.parse(t);
+  const d = JSON.parse(t);
+  // รองรับทั้งรูปแบบใหม่ {events:[...]} และรูปแบบเก่า {date,title,...} เดี่ยวๆ
+  const arr = Array.isArray(d?.events) ? d.events : Array.isArray(d) ? d : [d];
+  return arr.filter((e: unknown): e is ParsedEvent => !!e && typeof e === "object");
 }
 
 // เที่ยงคืนของวันที่ระบุ (เวลาเครื่อง = เวลาไทย)
@@ -36,21 +41,27 @@ function dayStart(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
 }
 
-export async function extractEvent(text: string): Promise<ParsedEvent> {
+// ดึงงานทั้งหมดจากข้อความ (รองรับหลายงานในข้อความเดียว)
+export async function extractEvents(text: string): Promise<ParsedEvent[]> {
   const now = new Date();
   const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const raw = await askClaude(`วันนี้คือ ${todayISO}\n\nข้อความ: ${text}`, { system: EXTRACT_SYSTEM, timeoutMs: 60_000 });
-  const ex = parseJson(raw);
-  if (!ex.title) throw new Error("ไม่พบรายละเอียดงานที่จะลง");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ex.date || "")) ex.date = todayISO;
-  // ดึงอีเมลจากข้อความตรงๆ (แม่นกว่าให้ LLM เดา) — ไว้เชิญเข้าปฏิทิน/ยิงเมล
-  const emails = (text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || []).map((e) => e.toLowerCase());
-  if (emails.length) ex.attendees = [...new Set(emails)];
-  // ขอ Meet: จับจากข้อความตรงๆ ด้วย (กัน LLM พลาด) — ตรงไหนตรงหนึ่งก็ถือว่าขอ
-  if (/\bmeet\b|google\s*meet|ประชุมออนไลน์|ลิงก์ประชุม|ลิ้งก์ประชุม|ห้องประชุมออนไลน์|\bvc\b|\bzoom\b/i.test(text)) {
-    ex.needsMeet = true;
+  const list = parseEvents(raw).filter((e) => e.title);
+  if (!list.length) throw new Error("ไม่พบรายละเอียดงานที่จะลง");
+  // อีเมล/Meet: จับจากข้อความตรงๆ (แม่นกว่าให้ LLM เดา) — ใช้ร่วมทุกงานในข้อความเดียว
+  const emails = [...new Set((text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || []).map((e) => e.toLowerCase()))];
+  const wantsMeet = /\bmeet\b|google\s*meet|ประชุมออนไลน์|ลิงก์ประชุม|ลิ้งก์ประชุม|ห้องประชุมออนไลน์|\bvc\b|\bzoom\b/i.test(text);
+  for (const ex of list) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ex.date || "")) ex.date = todayISO;
+    if (emails.length) ex.attendees = emails;
+    if (wantsMeet) ex.needsMeet = true;
   }
-  return ex;
+  return list;
+}
+
+// ดึงงานเดียว (คงไว้ให้โค้ดเดิมที่เรียกอยู่ — คืนงานแรก)
+export async function extractEvent(text: string): Promise<ParsedEvent> {
+  return (await extractEvents(text))[0];
 }
 
 export interface CalEvent {
