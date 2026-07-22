@@ -73,7 +73,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const attachNote = buildAttachNote(slotsWithFiles, form.otherDocLabel);
+    const attachNote = buildAttachNote(slotsWithFiles, form.otherDocLabel, form.docType);
     const date = thaiDate.format(new Date());
     const { data, pdf } = await createRefundMemoFromForm({ form, attachments, attachNote, date });
     const id = await saveMemoDraft(data, pdf);

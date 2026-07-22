@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea, Field } from "@/components/ui/Input";
 import { bahtText } from "@/lib/baht-text";
-import { UPLOAD_SLOTS, type Brand, type RefundFormInput } from "@/lib/refund-slots";
+import { UPLOAD_SLOTS, type Brand, type DocType, type RefundFormInput } from "@/lib/refund-slots";
 import { cn } from "@/lib/cn";
 
 const STEPS = [
@@ -20,20 +20,27 @@ const STEPS = [
 ];
 
 type FieldsState = {
+  docType: DocType;
   brand: Brand | "";
   user: string; userId: string; companyName: string; serviceLabel: string; reason: string;
   topupDate: string; amount: string; purchaseDate: string; packageName: string; months: string;
-  netPrice: string; remainingCredit: string; refund: string;
+  netPrice: string; remainingCredit: string; whtAmount: string; whtDate: string; refund: string;
   bank: string; accountNo: string; accountName: string;
   otherDocLabel: string;
 };
 
 const EMPTY: FieldsState = {
+  docType: "general",
   brand: "", user: "", userId: "", companyName: "", serviceLabel: "", reason: "",
   topupDate: "", amount: "", purchaseDate: "", packageName: "", months: "",
-  netPrice: "", remainingCredit: "", refund: "", bank: "", accountNo: "", accountName: "",
+  netPrice: "", remainingCredit: "", whtAmount: "", whtDate: "", refund: "", bank: "", accountNo: "", accountName: "",
   otherDocLabel: "",
 };
+
+const DOC_TYPES: { v: DocType; t: string; d: string }[] = [
+  { v: "general", t: "คืนเงินทั่วไป", d: "ยกเลิก / ใช้งานไม่ได้" },
+  { v: "wht", t: "คืนเงินหัก ณ ที่จ่าย", d: "ขอหักภาษี ณ ที่จ่ายย้อนหลัง" },
+];
 
 function num(s: string): number {
   const n = Number(String(s).replace(/[, ]/g, ""));
@@ -118,6 +125,7 @@ export function RefundWizard() {
 
     const payload: RefundFormInput = {
       brand: f.brand,
+      docType: f.docType,
       user: f.user.trim(),
       userId: f.userId.trim(),
       companyName: f.companyName.trim(),
@@ -130,6 +138,8 @@ export function RefundWizard() {
       months: num(f.months),
       netPrice: num(f.netPrice),
       remainingCredit: f.remainingCredit.trim() ? num(f.remainingCredit) : undefined,
+      whtAmount: f.whtAmount.trim() ? num(f.whtAmount) : undefined,
+      whtDate: f.whtDate.trim(),
       refund: num(f.refund),
       bank: f.bank.trim(),
       accountNo: f.accountNo.trim(),
@@ -200,6 +210,29 @@ export function RefundWizard() {
                 );
               })}
             </ol>
+          </div>
+
+          {/* เลือกชนิดเอกสาร */}
+          <div className="mt-4 rounded-2xl border border-border bg-surface p-3 shadow-sm">
+            <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">ชนิดเอกสาร</p>
+            <div className="mt-1 space-y-2">
+              {DOC_TYPES.map((dt) => {
+                const on = f.docType === dt.v;
+                return (
+                  <button
+                    key={dt.v}
+                    onClick={() => set("docType", dt.v)}
+                    className={cn(
+                      "block w-full rounded-xl border px-3 py-2.5 text-left transition-colors",
+                      on ? "border-primary bg-primary-soft ring-2 ring-primary/20" : "border-border-strong hover:bg-surface-2",
+                    )}
+                  >
+                    <span className={cn("block text-sm font-medium", on ? "text-primary" : "text-foreground")}>{dt.t}</span>
+                    <span className="block text-xs text-muted-foreground">{dt.d}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </aside>
 
@@ -275,9 +308,11 @@ export function RefundWizard() {
                 ))}
               </div>
             </div>
-            <Field label="เหตุผลขอคืน">
-              <Textarea rows={4} value={f.reason} onChange={(e) => set("reason", e.target.value)} placeholder="พิมพ์เหตุผลที่ลูกค้าขอคืนเงินได้ยาว ๆ ตามต้องการ..." />
-            </Field>
+            {f.docType !== "wht" && (
+              <Field label="เหตุผลขอคืน">
+                <Textarea rows={4} value={f.reason} onChange={(e) => set("reason", e.target.value)} placeholder="พิมพ์เหตุผลที่ลูกค้าขอคืนเงินได้ยาว ๆ ตามต้องการ..." />
+              </Field>
+            )}
           </Section>
 
           {/* 2. รายละเอียดเงิน */}
@@ -304,6 +339,16 @@ export function RefundWizard() {
               <Field label="เครดิตคงเหลือก่อนขอคืน (บาท)">
                 <Input value={f.remainingCredit} onChange={(e) => set("remainingCredit", e.target.value)} inputMode="decimal" />
               </Field>
+              {f.docType === "wht" && (
+                <>
+                  <Field label="ยอดหักภาษี ณ ที่จ่าย (บาท)">
+                    <Input value={f.whtAmount} onChange={(e) => set("whtAmount", e.target.value)} inputMode="decimal" />
+                  </Field>
+                  <Field label="วันที่หักภาษี ณ ที่จ่าย (ตามเอกสารจริง)">
+                    <Input value={f.whtDate} onChange={(e) => set("whtDate", e.target.value)} placeholder="วว/ดด/ปปปป" />
+                  </Field>
+                </>
+              )}
               <Field label="ยอดโอนคืนทั้งสิ้น (บาท)" required>
                 <Input value={f.refund} onChange={(e) => set("refund", e.target.value)} inputMode="decimal" />
               </Field>

@@ -11,9 +11,11 @@ export interface MemoAttachment {
 }
 
 export type Brand = "thunder" | "easyslip";
+export type DocType = "general" | "wht";
 
 export interface RefundMemoData {
   brand?: Brand; // ค่าเริ่มต้น thunder — เลือกตามที่แอดมินระบุบนหัวเรื่อง (Thunder/EasySlip)
+  docType?: DocType; // ชนิดเอกสาร: general = คืนเงินทั่วไป (ยกเลิก/ใช้ไม่ได้) · wht = ขอหักภาษี ณ ที่จ่ายย้อนหลัง
   docNo: string; // เลขที่ (รูปแบบ ปีเดือนลำดับ เช่น 20260701)
   date: string; // วันที่ออกเอกสาร (ปัจจุบัน)
 
@@ -32,6 +34,7 @@ export interface RefundMemoData {
   months: number; // 4. จำนวนเดือน
   netPrice: number; // 5. จำนวนเงินที่ซื้อบริการ
   remainingCredit?: number; // 6. เครดิตในระบบก่อนขอคืนคงเหลือ
+  whtDate?: string; // (เคส wht) วันที่หักภาษี ณ ที่จ่าย ตามเอกสารฉบับจริง — (whtAmount ใช้ field legacy ด้านล่าง)
   refund: number; // 7. จำนวนเงินที่ต้องโอนคืนลูกค้าทั้งสิ้น
   refundText?: string; // 7. จำนวนเงินแบบตัวอักษร (เติมอัตโนมัติจาก refund)
   bank: string; // 8. บัญชีธนาคาร
@@ -39,7 +42,7 @@ export interface RefundMemoData {
   accountName: string; // 8. ชื่อบัญชี
 
   // ---- เอกสารแนบ ----
-  attachChecks?: [boolean, boolean, boolean, boolean]; // ติ๊ก 4 ข้อ (ค่าเริ่มต้น = ติ๊กทุกช่อง)
+  attachChecks?: boolean[]; // ติ๊กเอกสารแนบ (general 4 · wht 5) — ค่าเริ่มต้น = ติ๊กทุกช่อง
   attachNote?: string; // ข้อ 4 รายละเอียดเอกสารแนบอื่นๆ (วานวิเคราะห์จากไฟล์/ภาพที่แนบ)
   attachments: MemoAttachment[];
 
@@ -138,8 +141,11 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   const logo = brandLogoUri(brand);
   const sig = signatureUri();
   const totalPages = 2 + d.attachments.length;
-  const checks = d.attachChecks || [true, true, true, true];
   const refundText = d.refundText || bahtText(d.refund);
+  const isWht = (d.docType || "general") === "wht";
+  const subject = isWht
+    ? "ขอคืนเงินลูกค้า (กรณี ขอหักภาษี ณ ที่จ่าย ย้อนหลัง)"
+    : "ขอคืนเงินลูกค้า (กรณีที่ลูกค้าลูกค้าใช้งานไม่ได้และต้องการขอคืนเงิน หรือ กรณีลูกค้ายกเลิกการใช้งาน )";
 
   const header = (page: number) => `
     <div class="head">
@@ -153,19 +159,29 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
 
   const foot = (page: number) => `<div class="pg">หน้า <b>${page}</b> จาก <b>${totalPages}</b></div>`;
 
-  // ---- ย่อหน้าเปิดเรื่อง ----
-  const intro = `<p class="intro">&emsp;&emsp;ลูกค้าบริการ${fv(d.serviceLabel, "180px")} ได้มีการชำระเงิน ค่าบริการเข้ามาเต็มจำนวน เมื่อลูกค้าชำระค่าบริการเข้ามาเสร็จสิ้นแล้ว จึงมีความประสงค์ที่จะไม่ใช้งานบริการ${fv(d.serviceLabel, "150px")}ต่อ เนื่องจาก${fv(d.reason, "180px")} จึงทำการขอคืนเงินค่าบริการที่ได้มีการชำระเข้ามาไว้ โดยส่งเอกสารการขอเงินคืนมายัง ${escapeHtml(B.nameTh)} ที่อยู่ : ${escapeHtml(B.address)} พร้อมรายละเอียด ขอคืนเงิน ดังนี้</p>`;
+  // ---- ย่อหน้าเปิดเรื่อง (ต่างตาม docType) ----
+  const intro = isWht
+    ? `<p class="intro">&emsp;&emsp;ลูกค้าบริการ${fv(d.serviceLabel, "180px")} ได้มีการชำระเงิน ค่าบริการเข้าเต็มจำนวน โดยไม่มีการหักภาษี ณ ที่จ่ายไว้ก่อน ที่จะมีการจ่ายชำระค่าบริการ เมื่อ ลูกค้าชำระค่าบริการเข้ามาเสร็จสิ้นแล้ว จึงมีการแจ้ง ขอหัก ณ ที่จ่าย และลูกค้าได้มีการออกเอกสาร หนังสือรับรองการหักภาษี ณ ที่จ่าย (50ทวิ) ย้อนหลัง ลูกค้าได้มีการส่งเอกสารหนังสือรับการหัก ภาษี ณ ที่จ่าย ฉบับจริงมายัง ${escapeHtml(B.nameTh)} ที่อยู่ : ${escapeHtml(B.address)} พร้อมขอคืนเงิน ตามจำนวน ที่มีการหักภาษี ณ ที่จ่าย รายละเอียดดังนี้</p>`
+    : `<p class="intro">&emsp;&emsp;ลูกค้าบริการ${fv(d.serviceLabel, "180px")} ได้มีการชำระเงิน ค่าบริการเข้ามาเต็มจำนวน เมื่อลูกค้าชำระค่าบริการเข้ามาเสร็จสิ้นแล้ว จึงมีความประสงค์ที่จะไม่ใช้งานบริการ${fv(d.serviceLabel, "150px")}ต่อ เนื่องจาก${fv(d.reason, "180px")} จึงทำการขอคืนเงินค่าบริการที่ได้มีการชำระเข้ามาไว้ โดยส่งเอกสารการขอเงินคืนมายัง ${escapeHtml(B.nameTh)} ที่อยู่ : ${escapeHtml(B.address)} พร้อมรายละเอียด ขอคืนเงิน ดังนี้</p>`;
 
-  const list = `
-    <div class="row"><span class="no">1.</span> ยูสเซอร์: ${fv(d.user, "200px")}&emsp;ไอดียูสเซอร์: ${fv(d.userId, "150px")}</div>
-    <div class="row"><span class="no">2.</span> ลูกค้าบริษัท : บริษัท/ห้างหุ้นส่วน ${fv(d.companyName, "300px")} จำกัด</div>
-    <div class="row"><span class="no">3.</span> เติมเงินเข้ามาวันที่ : ${fv(d.topupDate, "150px")}&emsp;จำนวนเงินที่เติมเครดิตเข้ามา : ${fbaht(d.amount, "120px")} บาท</div>
-    <div class="row"><span class="no">4.</span> รายละเอียดบริการที่ลูกค้าซื้อ : วันที่ ${fv(d.purchaseDate, "120px")} แพ็คเกจ ${fv(d.packageName, "160px")} จำนวน ${fv(d.months ? String(d.months) : "", "40px")} เดือน</div>
-    <div class="row"><span class="no">5.</span> จำนวนเงินที่ซื้อบริการ : ${fbaht(d.netPrice, "150px")} บาท</div>
-    <div class="row"><span class="no">6.</span> เครดิตในระบบก่อนขอคืนคงเหลือจำนวน : ${fbaht(d.remainingCredit, "150px")} บาท</div>
-    <div class="row"><span class="no">7.</span> จำนวนเงินที่ต้องโอนคืนลูกค้าทั้งสิ้น จำนวน : ${fbaht(d.refund, "120px")} บาท ( ${fv(refundText, "220px")} )</div>
-    <div class="row"><span class="no">8.</span> ช่องทางโอนกลับ : บัญชีธนาคาร ${fv(d.bank, "160px")} เลขที่บัญชี ${fv(d.accountNo, "180px")}</div>
-    <div class="row indent">ชื่อบัญชี ${fv(d.accountName, "300px")}</div>`;
+  // ---- รายการ: general = 8 ข้อ · wht = 10 ข้อ (แทรก ยอดหักภาษี + วันที่หักภาษี ก่อนยอดโอนคืน) ----
+  const rows: string[] = [
+    `ยูสเซอร์: ${fv(d.user, "200px")}&emsp;ไอดียูสเซอร์: ${fv(d.userId, "150px")}`,
+    `ลูกค้าบริษัท : บริษัท/ห้างหุ้นส่วน ${fv(d.companyName, "300px")} จำกัด`,
+    `เติมเงินเข้ามาวันที่ : ${fv(d.topupDate, "150px")}&emsp;จำนวนเงินที่เติมเครดิตเข้ามา : ${fbaht(d.amount, "120px")} บาท`,
+    `รายละเอียดบริการที่ลูกค้าซื้อ : วันที่ ${fv(d.purchaseDate, "120px")} แพ็คเกจ ${fv(d.packageName, "160px")} จำนวน ${fv(d.months ? String(d.months) : "", "40px")} เดือน`,
+    `จำนวนเงินที่ซื้อบริการ : ${fbaht(d.netPrice, "150px")} บาท`,
+    `เครดิตในระบบก่อนขอคืนคงเหลือจำนวน : ${fbaht(d.remainingCredit, "150px")} บาท`,
+  ];
+  if (isWht) {
+    rows.push(`ลูกค้าต้องการหักภาษี ณ ที่จ่าย จำนวน : ${fbaht(d.whtAmount, "150px")} บาท`);
+    rows.push(`วันที่ลูกค้าหักภาษี ณ ที่จ่าย (ตามเอกสารฉบับจริง) : ${fv(d.whtDate, "220px")}`);
+  }
+  rows.push(`จำนวนเงินที่ต้องโอนคืนลูกค้าทั้งสิ้น จำนวน : ${fbaht(d.refund, "120px")} บาท ( ${fv(refundText, "220px")} )`);
+  rows.push(`ช่องทางโอนกลับ : บัญชีธนาคาร ${fv(d.bank, "160px")} เลขที่บัญชี ${fv(d.accountNo, "180px")}`);
+  const list =
+    rows.map((r, i) => `<div class="row"><span class="no">${i + 1}.</span> ${r}</div>`).join("") +
+    `<div class="row indent">ชื่อบัญชี ${fv(d.accountName, "300px")}</div>`;
 
   // ---- บล็อกลงนาม ----
   const makerBlock = `
@@ -196,13 +212,25 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
       <div class="sig-line">วันที่ ${fv(d.date, "180px")}</div>
     </div>`;
 
+  // เอกสารแนบ: general = 4 ข้อ · wht = 5 ข้อ (เพิ่ม 50ทวิ เป็นข้อ 1) · ติ๊กทุกช่องเสมอ
+  const attachItems = isWht
+    ? [
+        "สำเนาเอกสารการหักภาษี ณ ที่จ่าย (50ทวิ)",
+        "สำเนาสมุดบัญชีธนาคาร บริษัท ที่ต้องการให้โอนเงินคืน",
+        "หลักฐานการชำระหรือสลิปที่ลูกค้ามีการโอนชำระค่าบริการเข้ามา",
+        "ภาพประกอบหรือหลักฐาน ที่แสดงว่าลูกค้ามีการขอ หัก ณ ที่จ่าย",
+        "รายละเอียดเอกสารแนบอื่นๆ",
+      ]
+    : [
+        "สำเนาสมุดบัญชีธนาคาร บริษัท ที่ต้องการให้โอนเงินคืน",
+        "หลักฐานการชำระหรือสลิปที่ลูกค้ามีการโอนชำระค่าบริการเข้ามา",
+        "ภาพประกอบหรือหลักฐาน ที่แสดงว่าลูกค้ามีการขอคืนเงินค่าบริการ",
+        "รายละเอียดเอกสารแนบอื่นๆ",
+      ];
   const attachSection = `
     <div class="attach-list">
       <div class="al-title">เอกสารแนบ :</div>
-      <div class="al-item">${chk(checks[0])} 1. สำเนาสมุดบัญชีธนาคาร บริษัท ที่ต้องการให้โอนเงินคืน</div>
-      <div class="al-item">${chk(checks[1])} 2. หลักฐานการชำระหรือสลิปที่ลูกค้ามีการโอนชำระค่าบริการเข้ามา</div>
-      <div class="al-item">${chk(checks[2])} 3. ภาพประกอบหรือหลักฐาน ที่แสดงว่าลูกค้ามีการขอคืนเงินค่าบริการ</div>
-      <div class="al-item">${chk(checks[3])} 4. รายละเอียดเอกสารแนบอื่นๆ</div>
+      ${attachItems.map((t, i) => `<div class="al-item">${chk(d.attachChecks?.[i] ?? true)} ${i + 1}. ${escapeHtml(t)}</div>`).join("")}
       <div class="al-note">${d.attachNote ? escapeHtml(d.attachNote) : "<span class='dotline'></span><span class='dotline short'></span>"}</div>
     </div>`;
 
@@ -299,7 +327,7 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
       <div>วันที่ ${fv(d.date, "220px")}</div>
       <div>เลขที่ ${fv(d.docNo, "220px")}</div>
     </div>
-    <div class="subj"><b>เรื่อง</b> <span class="u">ขอคืนเงินลูกค้า (กรณีที่ลูกค้าลูกค้าใช้งานไม่ได้และต้องการขอคืนเงิน หรือ กรณีลูกค้ายกเลิกการใช้งาน )</span></div>
+    <div class="subj"><b>เรื่อง</b> <span class="u">${escapeHtml(subject)}</span></div>
     <div class="subj"><b>เรียน</b> <span class="u">ผู้จัดการทั่วไป พร้อมทั้ง ฝ่ายบัญชีและการเงิน</span></div>
     <table class="purpose">
       <tr>

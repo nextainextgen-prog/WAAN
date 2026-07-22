@@ -1,6 +1,7 @@
 // นิยาม "ช่องอัพโหลดเอกสาร" + โครงข้อมูลฟอร์มคืนเงิน (pure — ใช้ได้ทั้ง client และ server)
 
 export type Brand = "thunder" | "easyslip";
+export type DocType = "general" | "wht"; // general = คืนเงินทั่วไป · wht = ขอหักภาษี ณ ที่จ่ายย้อนหลัง
 
 // ช่องอัพโหลดแยกตามประเภทเอกสาร — ผูกกับข้อ "เอกสารแนบ" ในฟอร์ม PDF
 // standard = เอกสารมาตรฐาน 3 ข้อแรก · extra = เอกสารเพิ่มเติม (เข้าข้อ 4 "อื่นๆ")
@@ -27,6 +28,7 @@ export const SLOT_BY_KEY: Record<string, UploadSlot> = Object.fromEntries(
 // ข้อมูลที่แอดมินกรอกในเว็บฟอร์ม → map ตรงเข้าฟอร์ม PDF (ไม่ผ่าน AI)
 export interface RefundFormInput {
   brand: Brand;
+  docType: DocType; // ชนิดเอกสาร (คืนเงินทั่วไป / ขอหักภาษี ณ ที่จ่ายย้อนหลัง)
   // ลูกค้า
   user: string; // ยูสเซอร์ / อีเมล
   userId?: string; // ไอดียูสเซอร์
@@ -41,6 +43,8 @@ export interface RefundFormInput {
   months?: number; // จำนวนเดือน
   netPrice?: number; // ราคาค่าบริการ
   remainingCredit?: number; // เครดิตคงเหลือก่อนขอคืน
+  whtAmount?: number; // (เคส wht) ยอดหักภาษี ณ ที่จ่าย
+  whtDate?: string; // (เคส wht) วันที่หักภาษี ณ ที่จ่าย ตามเอกสารจริง
   refund: number; // ยอดโอนคืนทั้งสิ้น
   // บัญชีรับเงินคืน
   bank?: string;
@@ -50,10 +54,11 @@ export interface RefundFormInput {
   otherDocLabel?: string;
 }
 
-// สร้างข้อความ "รายละเอียดเอกสารแนบอื่นๆ" (ข้อ 4) จากช่อง extra ที่มีไฟล์แนบ
-export function buildAttachNote(slotsWithFiles: Set<string>, otherDocLabel?: string): string {
+// สร้างข้อความ "รายละเอียดเอกสารแนบอื่นๆ" (ข้อสุดท้าย) จากช่อง extra ที่มีไฟล์แนบ
+// เคส wht: 50ทวิ เป็นเอกสารหลัก (ข้อ 1) แล้ว จึงไม่เอาไปใส่ note
+export function buildAttachNote(slotsWithFiles: Set<string>, otherDocLabel?: string, docType: DocType = "general"): string {
   const parts: string[] = [];
-  if (slotsWithFiles.has("wht")) parts.push("หนังสือรับรองการหักภาษี ณ ที่จ่าย (50 ทวิ)");
+  if (docType !== "wht" && slotsWithFiles.has("wht")) parts.push("หนังสือรับรองการหักภาษี ณ ที่จ่าย (50 ทวิ)");
   if (slotsWithFiles.has("quotation")) parts.push("ใบเสนอราคา");
   if (slotsWithFiles.has("other")) parts.push((otherDocLabel || "").trim() || "เอกสารประกอบเพิ่มเติม");
   return parts.join(", ");

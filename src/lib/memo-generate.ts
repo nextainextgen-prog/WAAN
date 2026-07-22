@@ -188,8 +188,10 @@ export function buildRefundDataFromForm(
 ): RefundMemoData {
   const round2 = (n: number) => Math.round((n || 0) * 100) / 100;
   const refund = round2(form.refund);
+  const isWht = form.docType === "wht";
   return {
     brand: form.brand,
+    docType: form.docType || "general",
     docNo: opts.docNo,
     date: opts.date,
     subject: "ขอคืนเงินลูกค้า",
@@ -207,13 +209,15 @@ export function buildRefundDataFromForm(
     months: form.months || 0,
     netPrice: round2(form.netPrice || 0),
     remainingCredit: form.remainingCredit != null ? round2(form.remainingCredit) : undefined,
+    whtAmount: form.whtAmount != null ? round2(form.whtAmount) : undefined,
+    whtDate: form.whtDate || "",
     refund,
     refundText: bahtText(refund),
     bank: form.bank || "",
     accountNo: form.accountNo || "",
     accountName: form.accountName || "",
-    // เอกสารแนบ: ติ๊กทั้ง 4 ช่องเสมอ (ตามที่ตกลง) + note เอกสารเพิ่มเติม
-    attachChecks: [true, true, true, true],
+    // เอกสารแนบ: ติ๊กทุกช่องเสมอ (general = 4 · wht = 5) + note เอกสารเพิ่มเติม
+    attachChecks: isWht ? [true, true, true, true, true] : [true, true, true, true],
     attachNote: opts.attachNote,
     attachments: opts.attachments,
     // ผู้จัดทำยังไม่เซ็น (รอกดปุ่ม "เซ็นเลย")
