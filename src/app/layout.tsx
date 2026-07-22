@@ -27,7 +27,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="th" suppressHydrationWarning className={`${notoThai.variable} ${poppins.variable} h-full`}>
+    <html lang="th" translate="no" suppressHydrationWarning className={`notranslate ${notoThai.variable} ${poppins.variable} h-full`}>
       <body className="min-h-full">{children}</body>
     </html>
   );
