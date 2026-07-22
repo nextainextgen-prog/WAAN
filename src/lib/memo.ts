@@ -314,8 +314,9 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   .attach-head{border-bottom:2px solid ${C.navy};padding-bottom:7px;margin:8px 0 10px}
   .attach-head .tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.14em;color:${C.blue};text-transform:uppercase}
   .attach-head h2{font-weight:700;font-size:16px;color:${C.navy};margin-top:2px}
-  .attach-img{display:flex;align-items:flex-start;justify-content:center;height:236mm}
-  .attach-img img{max-width:100%;max-height:236mm;object-fit:contain;border:1px solid #d9e2ee;border-radius:4px;box-shadow:0 2px 10px rgba(22,52,94,.08)}
+  /* ไม่ fix height (กันรูปถูก page-break ดันตกหน้า) · จำกัดสูงรูปให้พอดีหน้า A4 หลังหัก header+หัวข้อ */
+  .attach-img{display:flex;align-items:flex-start;justify-content:center}
+  .attach-img img{max-width:100%;max-height:205mm;object-fit:contain;border:1px solid #d9e2ee;border-radius:4px;box-shadow:0 2px 10px rgba(22,52,94,.08)}
 
   .pg{position:absolute;right:16mm;bottom:8mm;font-size:9pt;color:#333}
   </style></head><body>

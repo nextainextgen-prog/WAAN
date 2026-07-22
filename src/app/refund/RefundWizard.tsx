@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Building2, Wallet, Landmark, Paperclip, SendHorizontal,
   FileText, UploadCloud, X, CheckCircle2, AlertTriangle, Loader2, Info,
+  FileStack, RotateCcw, Percent, Check, ClipboardPaste,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea, Field } from "@/components/ui/Input";
@@ -37,9 +38,9 @@ const EMPTY: FieldsState = {
   otherDocLabel: "",
 };
 
-const DOC_TYPES: { v: DocType; t: string; d: string }[] = [
-  { v: "general", t: "คืนเงินทั่วไป", d: "ยกเลิก / ใช้งานไม่ได้" },
-  { v: "wht", t: "คืนเงินหัก ณ ที่จ่าย", d: "ขอหักภาษี ณ ที่จ่ายย้อนหลัง" },
+const DOC_TYPES: { v: DocType; t: string; d: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { v: "general", t: "คืนเงินทั่วไป", d: "ยกเลิก / ใช้งานไม่ได้", icon: RotateCcw },
+  { v: "wht", t: "คืนเงินหัก ณ ที่จ่าย", d: "ขอหักภาษี ณ ที่จ่ายย้อนหลัง", icon: Percent },
 ];
 
 function num(s: string): number {
@@ -47,7 +48,18 @@ function num(s: string): number {
   return isNaN(n) ? 0 : n;
 }
 
-type Result = { ok: true; posted: boolean; postError: string | null; filename: string; id: string } | { ok: false; error: string };
+// จัดรูปวันที่ให้ใส่ "/" อัตโนมัติ วว/ดด/ปปปป (ไม่ใส่ / ตอนกำลังลบ เพื่อให้ลบได้)
+function autoDate(v: string, deleting: boolean): string {
+  const d = v.replace(/\D/g, "").slice(0, 8); // DDMMYYYY
+  let out = d.slice(0, 2);
+  if (d.length > 2) out += "/" + d.slice(2, 4);
+  else if (d.length === 2 && !deleting) out += "/";
+  if (d.length > 4) out += "/" + d.slice(4, 8);
+  else if (d.length === 4 && !deleting) out += "/";
+  return out;
+}
+
+type Result = { ok: true } | { ok: false; error: string };
 
 export function RefundWizard() {
   const [f, setF] = useState<FieldsState>(EMPTY);
@@ -60,6 +72,12 @@ export function RefundWizard() {
   const sectionRefs = useRef<(HTMLElement | null)[]>([]);
 
   const set = <K extends keyof FieldsState>(k: K, v: FieldsState[K]) => setF((p) => ({ ...p, [k]: v }));
+
+  // ช่องวันที่: ใส่ "/" อัตโนมัติ
+  const setDate = (k: "topupDate" | "purchaseDate" | "whtDate") => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = e.target.value;
+    set(k, autoDate(next, next.length < f[k].length));
+  };
 
   // ความจำระบบ: พอกรอกยูสเซอร์เสร็จ ถ้าเคยมีข้อมูลเดิม ดึงกลับมาให้ทันที (แล้วให้แอดมินตรวจ)
   async function lookupUser() {
@@ -155,8 +173,8 @@ export function RefundWizard() {
     try {
       const res = await fetch("/api/memo/create", { method: "POST", body: fd });
       const data = await res.json();
-      if (!res.ok || !data.ok) setResult({ ok: false, error: data.error || "ออกเอกสารไม่สำเร็จ" });
-      else setResult({ ok: true, posted: data.posted, postError: data.postError, filename: data.filename, id: data.id });
+      if (!res.ok || !data.ok) setResult({ ok: false, error: data.error || "ส่งไม่สำเร็จ" });
+      else setResult({ ok: true });
     } catch {
       setResult({ ok: false, error: "เชื่อมต่อไม่สำเร็จ ลองใหม่อีกครั้ง" });
     } finally {
@@ -214,21 +232,40 @@ export function RefundWizard() {
 
           {/* เลือกชนิดเอกสาร */}
           <div className="mt-4 rounded-2xl border border-border bg-surface p-3 shadow-sm">
-            <p className="px-2 py-1.5 text-xs font-medium text-muted-foreground">ชนิดเอกสาร</p>
-            <div className="mt-1 space-y-2">
+            <p className="mb-2 flex items-center gap-1.5 px-2 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <FileStack className="h-3.5 w-3.5" aria-hidden />
+              ชนิดเอกสาร
+            </p>
+            <div className="space-y-2">
               {DOC_TYPES.map((dt) => {
                 const on = f.docType === dt.v;
+                const Icon = dt.icon;
                 return (
                   <button
                     key={dt.v}
                     onClick={() => set("docType", dt.v)}
                     className={cn(
-                      "block w-full rounded-xl border px-3 py-2.5 text-left transition-colors",
-                      on ? "border-primary bg-primary-soft ring-2 ring-primary/20" : "border-border-strong hover:bg-surface-2",
+                      "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all duration-150",
+                      on
+                        ? "border-primary bg-primary-soft shadow-sm ring-2 ring-primary/15"
+                        : "border-border-strong hover:border-primary/40 hover:bg-surface-2",
                     )}
                   >
-                    <span className={cn("block text-sm font-medium", on ? "text-primary" : "text-foreground")}>{dt.t}</span>
-                    <span className="block text-xs text-muted-foreground">{dt.d}</span>
+                    <span
+                      className={cn(
+                        "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
+                        on ? "bg-primary text-primary-foreground shadow-sm" : "bg-surface-2 text-muted-foreground",
+                      )}
+                    >
+                      <Icon className="h-[18px] w-[18px]" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={cn("block text-sm font-semibold leading-tight", on ? "text-primary" : "text-foreground")}>
+                        {dt.t}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs text-muted-foreground">{dt.d}</span>
+                    </span>
+                    {on && <Check className="h-4 w-4 shrink-0 text-primary" aria-hidden />}
                   </button>
                 );
               })}
@@ -319,19 +356,34 @@ export function RefundWizard() {
           <Section idx={1} refs={sectionRefs} icon={Wallet} title="รายละเอียดเงิน" sub="ยอดเงิน แพ็กเกจ และยอดที่ต้องโอนคืน" required>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="วันที่เติมเครดิต">
-                <Input value={f.topupDate} onChange={(e) => set("topupDate", e.target.value)} placeholder="วว/ดด/ปปปป" />
+                <Input value={f.topupDate} onChange={setDate("topupDate")} inputMode="numeric" placeholder="วว/ดด/ปปปป" />
               </Field>
               <Field label="จำนวนเงินที่เติมเข้ามา (บาท)">
                 <Input value={f.amount} onChange={(e) => set("amount", e.target.value)} inputMode="decimal" />
               </Field>
               <Field label="วันที่ซื้อบริการ">
-                <Input value={f.purchaseDate} onChange={(e) => set("purchaseDate", e.target.value)} placeholder="วว/ดด/ปปปป" />
+                <Input value={f.purchaseDate} onChange={setDate("purchaseDate")} inputMode="numeric" placeholder="วว/ดด/ปปปป" />
               </Field>
               <Field label="แพ็กเกจ">
                 <Input value={f.packageName} onChange={(e) => set("packageName", e.target.value)} />
               </Field>
               <Field label="จำนวนเดือน">
-                <Input value={f.months} onChange={(e) => set("months", e.target.value)} inputMode="numeric" />
+                <div className="flex gap-2">
+                  {["1", "3", "6", "12"].map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => set("months", f.months === m ? "" : m)}
+                      className={cn(
+                        "h-11 flex-1 rounded-[11px] border text-sm font-medium transition-colors",
+                        f.months === m
+                          ? "border-primary bg-primary-soft text-primary ring-2 ring-primary/20"
+                          : "border-border-strong hover:bg-surface-2",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
               </Field>
               <Field label="ราคาค่าบริการ (บาท)">
                 <Input value={f.netPrice} onChange={(e) => set("netPrice", e.target.value)} inputMode="decimal" />
@@ -345,7 +397,7 @@ export function RefundWizard() {
                     <Input value={f.whtAmount} onChange={(e) => set("whtAmount", e.target.value)} inputMode="decimal" />
                   </Field>
                   <Field label="วันที่หักภาษี ณ ที่จ่าย (ตามเอกสารจริง)">
-                    <Input value={f.whtDate} onChange={(e) => set("whtDate", e.target.value)} placeholder="วว/ดด/ปปปป" />
+                    <Input value={f.whtDate} onChange={setDate("whtDate")} inputMode="numeric" placeholder="วว/ดด/ปปปป" />
                   </Field>
                 </>
               )}
@@ -392,7 +444,7 @@ export function RefundWizard() {
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              ช่อง “เอกสารแนบ” ในเอกสารจะติ๊กครบทั้ง 4 ข้อ · ไฟล์แต่ละช่องจะกลายเป็นหน้าเอกสารแนบท้ายเอกสารตามลำดับ · ลากวาง หรือก็อปวาง (⌘/Ctrl+V) รูปลงช่องได้
+              ช่อง “เอกสารแนบ” ในเอกสารจะติ๊กครบทุกข้อ · ไฟล์แต่ละช่องจะกลายเป็นหน้าเอกสารแนบท้ายเอกสารตามลำดับ · แต่ละช่องแนบได้หลายไฟล์ — เลือกไฟล์ / ลากมาวาง / กดปุ่ม “วางรูปที่ก็อปไว้”
             </p>
           </Section>
 
@@ -412,13 +464,10 @@ export function RefundWizard() {
                 <div className="flex items-start gap-3 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm">
                   <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-accent" aria-hidden />
                   <div>
-                    <p className="font-medium text-accent-foreground/90">ออกร่างเอกสารสำเร็จ</p>
+                    <p className="font-medium text-accent-foreground/90">ส่งเรียบร้อยแล้ว</p>
                     <p className="text-muted-foreground">
-                      {result.posted
-                        ? "ส่งเข้ากลุ่ม Telegram แล้ว รอตรวจและกด “เซ็นเลย” ในกลุ่มได้เลย"
-                        : `สร้างเอกสารแล้ว แต่ยังไม่ได้ส่งเข้ากลุ่ม: ${result.postError || "—"}`}
+                      ระบบกำลังออกเอกสารเข้ากลุ่มให้อยู่เบื้องหลัง — รอสักครู่แล้วตรวจในกลุ่ม Telegram กด “เซ็นเลย” ได้เลย
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">{result.filename}</p>
                   </div>
                 </div>
               ) : (
@@ -431,7 +480,7 @@ export function RefundWizard() {
 
             <Button size="lg" onClick={submit} disabled={submitting} className="w-full sm:w-auto">
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
-              {submitting ? "กำลังออกเอกสาร..." : "ส่งออกเอกสาร"}
+              {submitting ? "กำลังส่ง..." : "ส่งออกเอกสาร"}
             </Button>
           </Section>
         </div>
@@ -453,6 +502,20 @@ function UploadDropzone({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
+  // อ่านรูปจากคลิปบอร์ดตรง ๆ (กดปุ่มเดียว ไม่ต้องโฟกัสช่องก่อน)
+  const pasteFromClipboard = async () => {
+    try {
+      const items = await navigator.clipboard.read();
+      const out: File[] = [];
+      for (const it of items) {
+        const t = it.types.find((x) => x.startsWith("image/"));
+        if (t) out.push(new File([await it.getType(t)], "paste.png", { type: t }));
+      }
+      if (out.length) onAdd(out);
+    } catch {
+      /* เบราว์เซอร์ไม่ให้สิทธิ์คลิปบอร์ด หรือไม่มีรูป — ใช้ลากวาง/เลือกไฟล์แทนได้ */
+    }
+  };
   return (
     <div>
       <div
@@ -482,8 +545,15 @@ function UploadDropzone({
         <UploadCloud className="mx-auto h-6 w-6 text-muted-foreground group-hover:text-primary" aria-hidden />
         <span className="mt-1.5 block text-sm font-medium">{slot.label}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">{slot.hint}</span>
-        <span className="mt-1 block text-[11px] text-muted-foreground/70">คลิกเลือก · ลากวาง · ก็อปวาง (⌘/Ctrl+V)</span>
+        <span className="mt-1.5 block text-[11px] text-muted-foreground/70">คลิกเพื่อเลือกไฟล์ · หรือลากรูปมาวางที่นี่</span>
       </div>
+      <button
+        type="button"
+        onClick={pasteFromClipboard}
+        className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-border-strong bg-surface py-2 text-xs font-medium text-primary transition-colors hover:border-primary hover:bg-primary-soft"
+      >
+        <ClipboardPaste className="h-3.5 w-3.5" aria-hidden /> วางรูปที่ก็อปไว้
+      </button>
       {files.length > 0 && (
         <ul className="mt-2 space-y-1">
           {files.map((file, i) => (

@@ -48,28 +48,45 @@ export async function POST(req: Request) {
   if (!form.user?.trim()) return NextResponse.json({ error: "กรุณากรอกยูสเซอร์" }, { status: 400 });
   if (!form.refund || form.refund <= 0) return NextResponse.json({ error: "กรุณากรอกยอดโอนคืน" }, { status: 400 });
 
-  // เตรียมโฟลเดอร์ชั่วคราวรับไฟล์อัพโหลด
+  // เก็บไฟล์อัพโหลดเข้าหน่วยความจำเร็ว ๆ (ไล่ตามลำดับช่อง)
+  const uploads: { slotKey: string; name: string; buf: Buffer }[] = [];
+  const slotsWithFiles = new Set<string>();
+  for (const slot of UPLOAD_SLOTS) {
+    const files = fd.getAll(`f:${slot.key}`).filter((v): v is File => v instanceof File && v.size > 0);
+    if (!files.length) continue;
+    slotsWithFiles.add(slot.key);
+    for (const file of files) {
+      uploads.push({ slotKey: slot.key, name: file.name || `${slot.key}.bin`, buf: Buffer.from(await file.arrayBuffer()) });
+    }
+  }
+
+  // งานหนัก (แปลงไฟล์ → ออก PDF → ล็อก → โพสต์ TG) ทำเบื้องหลัง — ตอบ client ทันที ไม่ต้องรอ
+  void processMemo(form, uploads, slotsWithFiles).catch((e) =>
+    console.error("[memo/create] background error:", e instanceof Error ? e.message : e),
+  );
+
+  return NextResponse.json({ ok: true, queued: true });
+}
+
+// ประมวลผลเบื้องหลัง: สร้างเอกสาร + โพสต์เข้ากลุ่ม (รันบน Node server ที่อยู่ตลอด ไม่ใช่ serverless)
+async function processMemo(
+  form: RefundFormInput,
+  uploads: { slotKey: string; name: string; buf: Buffer }[],
+  slotsWithFiles: Set<string>,
+): Promise<void> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "waan-memo-form-"));
   const outDir = path.join(process.cwd(), ".generated", "memo-attach");
   const attachments: MemoAttachment[] = [];
-  const slotsWithFiles = new Set<string>();
-
   try {
-    // ไล่ตามลำดับช่อง เพื่อให้หน้าเอกสารแนบเรียงตามประเภท
-    for (const slot of UPLOAD_SLOTS) {
-      const files = fd.getAll(`f:${slot.key}`).filter((v): v is File => v instanceof File && v.size > 0);
-      if (!files.length) continue;
-      slotsWithFiles.add(slot.key);
-      for (const file of files) {
-        const safe = (file.name || `${slot.key}.bin`).replace(/[^\w.\-ก-๙ ()]/g, "_");
-        const dest = path.join(tmp, `${slot.key}-${attachments.length}-${safe}`);
-        fs.writeFileSync(dest, Buffer.from(await file.arrayBuffer()));
-        try {
-          const prepped = await prepareAttachment(dest, outDir, SLOT_BY_KEY[slot.key]?.label);
-          attachments.push(...prepped);
-        } catch {
-          /* ข้ามไฟล์ที่อ่านไม่ได้ */
-        }
+    let i = 0;
+    for (const u of uploads) {
+      const safe = u.name.replace(/[^\w.\-ก-๙ ()]/g, "_");
+      const dest = path.join(tmp, `${u.slotKey}-${i++}-${safe}`);
+      fs.writeFileSync(dest, u.buf);
+      try {
+        attachments.push(...(await prepareAttachment(dest, outDir, SLOT_BY_KEY[u.slotKey]?.label)));
+      } catch {
+        /* ข้ามไฟล์ที่อ่านไม่ได้ */
       }
     }
 
@@ -81,45 +98,25 @@ export async function POST(req: Request) {
 
     // โพสต์เข้ากลุ่ม Telegram (flow เดิม: ปุ่ม "เซ็นเลย" → callback route จัดการ)
     const chatId = (await getRefundMemoChatId()) || (await getAllowedChatId());
-    let posted = false;
-    let postError: string | null = null;
-    if (!getBotToken()) {
-      postError = "ยังไม่ได้ตั้งค่า TELEGRAM_BOT_TOKEN";
-    } else if (!chatId) {
-      postError = "ยังไม่ได้ตั้งค่ากลุ่มปลายทาง (refund_memo_chat_id)";
-    } else {
-      const locked = (await readMemoPdf(id)) || pdf;
-      const caption =
-        `📥 ออกร่างเอกสารคืนเงินให้แล้วนะคะ (ยังไม่เซ็น)\n\n` +
-        `🏢 บริษัท: ${data.brand === "easyslip" ? "อีซี่สลิป" : "ธันเดอร์ โซลูชั่น"}\n` +
-        `👤 ลูกค้า: ${spoiler(data.serviceName || "-")}\n` +
-        `📊 ยอดคืนรวม: ${spoiler(`${data.refund.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท`)}\n` +
-        `🖼️ แนบครบ ${esc(data.attachments.length)} หน้า\n\n` +
-        `⏳ รบกวนดำเนินการภายใน 24 ชม. ก่อนประวัติแชทจะถูกลบค่ะ\n` +
-        `🔒 ไฟล์นี้ล็อกรหัสไว้นะคะ (รหัสเปิด)\n` +
-        `<pre>xxxx-xxx</pre>\n\n` +
-        `✅ ถ้าโอเคกด "เซ็นเลย" เดี๋ยวเติมลายเซ็นให้ค่ะ`;
-      const res = await tgSendDocument(chatId, locked, memoFilename(data, false), caption, {
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${id}` }]] },
-      }).catch((e) => ({ ok: false, description: e instanceof Error ? e.message : String(e) }));
-      posted = !!(res as { ok?: boolean }).ok;
-      if (!posted) postError = (res as { description?: string }).description || "ส่งเข้ากลุ่มไม่สำเร็จ";
+    if (!getBotToken() || !chatId) {
+      console.error("[memo/create] posted ไม่ได้ — ยังไม่ได้ตั้งค่า bot token / กลุ่มปลายทาง");
+      return;
     }
-
-    return NextResponse.json({
-      ok: true,
-      id,
-      filename: memoFilename(data, false),
-      brand: data.brand,
-      refund: data.refund,
-      refundText: data.refundText,
-      attachCount: data.attachments.length,
-      posted,
-      postError,
+    const locked = (await readMemoPdf(id)) || pdf;
+    const caption =
+      `📥 ออกร่างเอกสารคืนเงินให้แล้วนะคะ (ยังไม่เซ็น)\n\n` +
+      `🏢 บริษัท: ${data.brand === "easyslip" ? "อีซี่สลิป" : "ธันเดอร์ โซลูชั่น"}\n` +
+      `👤 ลูกค้า: ${spoiler(data.serviceName || "-")}\n` +
+      `📊 ยอดคืนรวม: ${spoiler(`${data.refund.toLocaleString("th-TH", { minimumFractionDigits: 2 })} บาท`)}\n` +
+      `🖼️ แนบครบ ${esc(data.attachments.length)} หน้า\n\n` +
+      `⏳ รบกวนดำเนินการภายใน 24 ชม. ก่อนประวัติแชทจะถูกลบค่ะ\n` +
+      `🔒 ไฟล์นี้ล็อกรหัสไว้นะคะ (รหัสเปิด)\n` +
+      `<pre>xxxx-xxx</pre>\n\n` +
+      `✅ ถ้าโอเคกด "เซ็นเลย" เดี๋ยวเติมลายเซ็นให้ค่ะ`;
+    await tgSendDocument(chatId, locked, memoFilename(data, false), caption, {
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${id}` }]] },
     });
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   } finally {
     try {
       fs.rmSync(tmp, { recursive: true, force: true });

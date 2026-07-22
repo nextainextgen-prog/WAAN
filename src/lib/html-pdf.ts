@@ -11,6 +11,19 @@ export async function renderHtmlToPdf(
     await page.setContent(html, { waitUntil: "networkidle" });
     // รอฟอนต์โหลดครบ
     await page.evaluate(() => (document as unknown as { fonts: { ready: Promise<void> } }).fonts.ready);
+    // รอรูปทุกภาพถอดรหัสเสร็จก่อนสั่ง pdf (data URI ใหญ่ ๆ อาจยังไม่เสร็จ → ภาพหลุด/ว่าง)
+    await page.evaluate(async () => {
+      await Promise.all(
+        Array.from(document.images).map((img) =>
+          img.complete && img.naturalWidth > 0
+            ? Promise.resolve()
+            : new Promise<void>((res) => {
+                img.addEventListener("load", () => res(), { once: true });
+                img.addEventListener("error", () => res(), { once: true });
+              }),
+        ),
+      );
+    });
     const m = opts.margin ?? "0";
     const sized = opts.width && opts.height;
     const pdf = await page.pdf({
