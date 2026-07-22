@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getCurrentUser } from "@/lib/auth";
 import { prepareAttachment } from "@/lib/pdf-to-images";
 import { createRefundMemoFromForm } from "@/lib/memo-generate";
 import { saveMemoDraft, memoFilename, readMemoPdf } from "@/lib/memo-store";
@@ -28,9 +27,7 @@ function spoiler(v: unknown): string {
 }
 
 export async function POST(req: Request) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
+  // หน้า /refund เปิดสาธารณะ (ไม่ต้อง login) — เอกสารที่ออกยังต้องให้เจ้าของตรวจ+กด "เซ็นเลย" ในกลุ่มก่อนเสมอ
   let fd: FormData;
   try {
     fd = await req.formData();
