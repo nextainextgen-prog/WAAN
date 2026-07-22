@@ -1,43 +1,81 @@
 import fs from "node:fs";
 import path from "node:path";
+import { bahtText } from "./baht-text";
 
-// ===== ข้อมูลเอกสารคืนเงินหัก ณ ที่จ่าย (รูปแบบตรงต้นฉบับ) =====
+export { bahtText };
+
+// ===== เอกสารบันทึกภายใน "ขอคืนเงินลูกค้า" (ยึดแบบฟอร์มใหม่ Thunder / EasySlip) =====
 export interface MemoAttachment {
   label: string;
   imagePath: string;
 }
 
+export type Brand = "thunder" | "easyslip";
+
 export interface RefundMemoData {
-  docNo: string;
-  date: string; // วันที่ออกเอกสาร (พ.ศ.)
-  subject: string; // เรื่อง เช่น "คืนเงินลูกค้าหัก ณ ที่จ่าย"
-  topupDate: string; // วันที่โอน/เติมเครดิต (พ.ศ. เต็ม)
-  topupTime: string; // เวลาตัดเครดิต เช่น "13.16"
-  user: string; // ชื่อผู้ใช้งาน (User)
-  serviceName: string; // ชื่อลูกค้า/บริษัท (ใช้ตั้งชื่อไฟล์)
-  serviceType: string; // ประเภทบริการในวงเล็บ เช่น "API", "บอทเช็กสลิป", "BOT/API"
-  packageName: string; // แพ็กเกจ
-  months: number;
-  netPrice: number; // ราคาค่าบริการที่ต้องชำระจริง (สุทธิ)
-  amount: number; // จำนวนเงินที่ลูกค้าชำระเข้ามาแล้ว
-  whtRate: number; // อัตราหัก ณ ที่จ่าย (ร้อยละ)
-  whtAmount: number; // ยอดส่วนต่างหัก ณ ที่จ่ายที่ต้องคืน
-  discount: number; // ยอดส่วนลดที่ต้องคืน (0 ถ้าไม่มี)
-  overpay: number; // ยอดชำระเกินที่ต้องคืน (0 ถ้าไม่มี)
-  refund: number; // ยอดรวมที่คืน = whtAmount + discount + overpay
-  bank: string;
-  accountNo: string;
-  accountName: string;
+  brand?: Brand; // ค่าเริ่มต้น thunder — เลือกตามที่แอดมินระบุบนหัวเรื่อง (Thunder/EasySlip)
+  docNo: string; // เลขที่ (รูปแบบ ปีเดือนลำดับ เช่น 20260701)
+  date: string; // วันที่ออกเอกสาร (ปัจจุบัน)
+
+  // ---- ย่อหน้าเปิดเรื่อง (ช่องว่างในความเรียง) ----
+  serviceLabel?: string; // ชื่อบริการ/ลูกค้า ที่เปิดเรื่อง (ลูกค้าบริการ ___ / ไม่ใช้งานบริการ ___ ต่อ)
+  reason?: string; // เนื่องจาก ___
+
+  // ---- ตารางรายละเอียด 1-8 ----
+  user: string; // 1. ยูสเซอร์
+  userId?: string; // 1. ไอดียูสเซอร์
+  companyName?: string; // 2. ลูกค้าบริษัท : บริษัท/ห้างหุ้นส่วน ___ จำกัด
+  topupDate: string; // 3. เติมเงินเข้ามาวันที่
+  amount: number; // 3. จำนวนเงินที่เติมเครดิตเข้ามา
+  purchaseDate?: string; // 4. วันที่ (ซื้อบริการ)
+  packageName: string; // 4. แพ็คเกจ
+  months: number; // 4. จำนวนเดือน
+  netPrice: number; // 5. จำนวนเงินที่ซื้อบริการ
+  remainingCredit?: number; // 6. เครดิตในระบบก่อนขอคืนคงเหลือ
+  refund: number; // 7. จำนวนเงินที่ต้องโอนคืนลูกค้าทั้งสิ้น
+  refundText?: string; // 7. จำนวนเงินแบบตัวอักษร (เติมอัตโนมัติจาก refund)
+  bank: string; // 8. บัญชีธนาคาร
+  accountNo: string; // 8. เลขที่บัญชี
+  accountName: string; // 8. ชื่อบัญชี
+
+  // ---- เอกสารแนบ ----
+  attachChecks?: [boolean, boolean, boolean, boolean]; // ติ๊ก 4 ข้อ (ค่าเริ่มต้น = ติ๊กทุกช่อง)
+  attachNote?: string; // ข้อ 4 รายละเอียดเอกสารแนบอื่นๆ (วานวิเคราะห์จากไฟล์/ภาพที่แนบ)
   attachments: MemoAttachment[];
-  signed?: boolean; // ดราฟแรก = false (ยังไม่ใส่ลายเซ็น) · กด "เซ็นเลย" = true
+
+  // ---- ผู้ลงนาม ----
+  signed?: boolean; // ใส่ลายเซ็นผู้จัดทำ (กด "เซ็นเลย")
+
+  // ---- legacy (ใช้ใน caption/validate/ตั้งชื่อไฟล์) ----
+  serviceName: string; // ชื่อลูกค้า/บริษัท (ตั้งชื่อไฟล์)
+  serviceType?: string;
+  subject?: string;
+  topupTime?: string;
+  whtRate?: number;
+  whtAmount?: number;
+  discount?: number;
+  overpay?: number;
 }
 
-const COMPANY = {
-  name: "บริษัท ธันเดอร์ โซลูชั่น จำกัด",
-  address: "เลขที่ 629 หมู่ 6 ตำบลบ้านเป็ด อำเภอเมืองขอนแก่น จังหวัดขอนแก่น 40000",
-  taxId: "เลขประจำตัวผู้เสียภาษี 0465566000017",
-  tel: "โทร. 02-114-8423",
+const BRANDS: Record<Brand, { logo: string; nameTh: string; nameEn: string; address: string }> = {
+  thunder: {
+    logo: "public/brand/memo-thunder-logo.png",
+    nameTh: "บริษัท ธันเดอร์ โซลูชั่น จำกัด",
+    nameEn: "THUNDER SOLUTION CO., LTD.",
+    address: "เลขที่ 629 หมู่ที่ 6 ตำบลบ้านเป็ด อำเภอเมืองขอนแก่น จังหวัดขอนแก่น 40000",
+  },
+  easyslip: {
+    logo: "public/brand/memo-easyslip-logo.png",
+    nameTh: "บริษัท อีซี่สลิป จำกัด",
+    nameEn: "Easy Slip CO., LTD.",
+    address: "เลขที่ 629 หมู่ที่ 6 ตำบลบ้านเป็ด อำเภอเมืองขอนแก่น จังหวัดขอนแก่น 40000",
+  },
 };
+
+// ผู้ลงนามทั้ง 3 ระดับ (ล็อกชื่อ) — เว้นช่องว่างเหนือ "ลงชื่อ" ไว้เซ็นจริง
+const MAKER = { name: "นาย จิรภัทร์ ภูครองหิน", position: "หัวหน้าฝ่ายบริการลูกค้า" };
+const REVIEWER = { name: "นางสาวศิริลักษณ์ ชอบธรรม", position: "ผู้จัดการฝ่ายบริการลูกค้า" };
+const APPROVER = { name: "นาย สมพร เสริฐศรี", position: "ประธานเจ้าหน้าที่ฝ่ายปฏิบัติการ" };
 
 function baht(n: number): string {
   return (n || 0).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -61,8 +99,8 @@ function fontFace(): string {
   @font-face{font-family:'Sarabun';font-weight:600;src:url('${semi}') format('truetype')}
   @font-face{font-family:'Sarabun';font-weight:700;src:url('${bold}') format('truetype')}`;
 }
-function logoUri(): string {
-  return dataUri(assetPath("public/brand/thunder-logo.png"), "image/png");
+function brandLogoUri(brand: Brand): string {
+  return dataUri(assetPath(BRANDS[brand].logo), "image/png");
 }
 function signatureUri(): string {
   return dataUri(assetPath("public/signature.png"), "image/png");
@@ -77,47 +115,106 @@ function escapeHtml(s: string): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 
-const C = { navy: "#16345E", blue: "#1C7FC4", ink: "#1c1c1c", line: "#000", gray: "#8a97a6" };
+const C = { navy: "#16345E", blue: "#1C7FC4", red: "#C0392B", ink: "#1c1c1c", line: "#000", gray: "#5a6472" };
+
+// ช่องกรอก: มีค่า = ข้อความขีดเส้นใต้จุด · ไม่มีค่า = เส้นจุดว่าง
+function fv(value: string | number | undefined | null, minWidth = "90px"): string {
+  const v = value == null ? "" : String(value).trim();
+  return v
+    ? `<span class="fv">${escapeHtml(v)}</span>`
+    : `<span class="fv blank" style="min-width:${minWidth}"></span>`;
+}
+// ช่องเงิน: >0 จึงเติม, ไม่งั้นเว้นว่าง
+function fbaht(n: number | undefined, minWidth = "90px"): string {
+  return n && n > 0 ? fv(baht(n), minWidth) : fv("", minWidth);
+}
+function chk(on: boolean): string {
+  return `<span class="chk${on ? " on" : ""}"></span>`;
+}
 
 export function buildRefundMemoHtml(d: RefundMemoData): string {
-  const logo = logoUri();
+  const brand = d.brand || "thunder";
+  const B = BRANDS[brand];
+  const logo = brandLogoUri(brand);
   const sig = signatureUri();
-  const dot = "(...................................)";
-  const totalPages = 1 + d.attachments.length;
+  const totalPages = 2 + d.attachments.length;
+  const checks = d.attachChecks || [true, true, true, true];
+  const refundText = d.refundText || bahtText(d.refund);
 
-  // ===== ข้อความล็อกตามต้นฉบับบริษัท (Google Doc) — เติมเฉพาะช่องว่างจากข้อมูลจริง =====
-  // ยอดส่วนเกิน/ส่วนลด พิมพ์ "แยกบรรทัด" กับหัก ณ ที่จ่าย แต่รวมเป็นยอดคืนเดียว
-  const hasOverpay = d.overpay > 0;
-  const hasDiscount = d.discount > 0;
-  const hasExtra = hasOverpay || hasDiscount;
-  const roundClause = d.topupDate ? ` (รอบเติมเครดิต วันที่ ${escapeHtml(d.topupDate)})` : "";
-  const introDiff = [hasOverpay ? "ส่วนเกิน" : "", hasDiscount ? "ส่วนลด" : ""].filter(Boolean).join("และ");
-  const introClause = introDiff ? ` และ${introDiff}` : "";
-  const extraLine =
-    (hasOverpay ? `\n            <li>ยอดส่วนเกินที่ต้องคืนลูกค้า ${baht(d.overpay)} บาท</li>` : "") +
-    (hasDiscount ? `\n            <li>ยอดส่วนลดที่ต้องคืนลูกค้า ${baht(d.discount)} บาท</li>` : "");
-  const refundWord = hasExtra ? "คืนเงินส่วนต่างรวมจำนวน" : "คืนเงินส่วนต่างจำนวน";
-  const memoBody = `<p>ตามที่ลูกค้าผู้ใช้งาน ${escapeHtml(d.user)} (บริการ ${escapeHtml(d.serviceType || "BOT/API")}) ได้ดำเนินการชำระเงินเพื่อต่ออายุแพ็กเกจ${roundClause} โดยมีรายละเอียดดังนี้</p>
-          <ul>
-            <li>เติมเงินเพื่อชำระค่าแพ็กเกจ ${escapeHtml(d.packageName)} จำนวน ${d.months} เดือน</li>
-            <li>ราคาค่าบริการที่ต้องชำระจริง ${baht(d.netPrice)} บาท</li>
-            <li>ลูกค้าดำเนินการชำระเงินเข้ามาแล้ว จำนวน ${baht(d.amount)} บาท</li>
-          </ul>
-          <p>ภายหลังการทำรายการ ลูกค้ามีส่วนต่างจากการหัก ณ ที่จ่าย${introClause} ซึ่งเมื่อคำนวณยอดชำระจริงและยอดเงินที่ลูกค้าชำระเข้ามาแล้ว มีรายละเอียดดังนี้</p>
-          <ul>
-            <li>ยอดค่าบริการสุทธิที่ต้องชำระจริง ${baht(d.netPrice)} บาท</li>
-            <li>ยอดเงินที่ลูกค้าชำระเข้ามา ${baht(d.amount)} บาท</li>
-            <li>ยอดเงินส่วนต่างหัก ณ ที่จ่ายที่ต้องคืนลูกค้า ${baht(d.whtAmount)} บาท</li>${extraLine}
-          </ul>
-          <p>ดังนั้น เพื่อให้ยอดรายรับสอดคล้องกับค่าบริการตามแพ็กเกจ และถูกต้องตามระบบบัญชี จึงขออนุมัติดำเนินการ${refundWord} ${baht(d.refund)} บาท โดยโอนเข้าบัญชีธนาคารของลูกค้าตามรายละเอียดดังนี้</p>`;
+  const header = (page: number) => `
+    <div class="head">
+      ${logo ? `<img class="logo" src="${logo}" alt="${escapeHtml(B.nameEn)}"/>` : `<div class="logo-tx">${escapeHtml(B.nameEn)}</div>`}
+      <div class="head-tx">
+        <div class="co-th">${escapeHtml(B.nameTh)}</div>
+        <div class="co-en">${escapeHtml(B.nameEn)}</div>
+        <div class="conf"><span class="conf-en">CONFIDENTIAL INFORMATION</span> เอกสารควบคุมใช้เฉพาะภายในบริษัทฯ ห้ามเผยแพร่</div>
+      </div>
+    </div>`;
 
+  const foot = (page: number) => `<div class="pg">หน้า <b>${page}</b> จาก <b>${totalPages}</b></div>`;
+
+  // ---- ย่อหน้าเปิดเรื่อง ----
+  const intro = `<p class="intro">&emsp;&emsp;ลูกค้าบริการ${fv(d.serviceLabel, "180px")} ได้มีการชำระเงิน ค่าบริการเข้ามาเต็มจำนวน เมื่อลูกค้าชำระค่าบริการเข้ามาเสร็จสิ้นแล้ว จึงมีความประสงค์ที่จะไม่ใช้งานบริการ${fv(d.serviceLabel, "150px")}ต่อ เนื่องจาก${fv(d.reason, "180px")} จึงทำการขอคืนเงินค่าบริการที่ได้มีการชำระเข้ามาไว้ โดยส่งเอกสารการขอเงินคืนมายัง ${escapeHtml(B.nameTh)} ที่อยู่ : ${escapeHtml(B.address)} พร้อมรายละเอียด ขอคืนเงิน ดังนี้</p>`;
+
+  const list = `
+    <div class="row"><span class="no">1.</span> ยูสเซอร์: ${fv(d.user, "200px")}&emsp;ไอดียูสเซอร์: ${fv(d.userId, "150px")}</div>
+    <div class="row"><span class="no">2.</span> ลูกค้าบริษัท : บริษัท/ห้างหุ้นส่วน ${fv(d.companyName, "300px")} จำกัด</div>
+    <div class="row"><span class="no">3.</span> เติมเงินเข้ามาวันที่ : ${fv(d.topupDate, "150px")}&emsp;จำนวนเงินที่เติมเครดิตเข้ามา : ${fbaht(d.amount, "120px")} บาท</div>
+    <div class="row"><span class="no">4.</span> รายละเอียดบริการที่ลูกค้าซื้อ : วันที่ ${fv(d.purchaseDate, "120px")} แพ็คเกจ ${fv(d.packageName, "160px")} จำนวน ${fv(d.months ? String(d.months) : "", "40px")} เดือน</div>
+    <div class="row"><span class="no">5.</span> จำนวนเงินที่ซื้อบริการ : ${fbaht(d.netPrice, "150px")} บาท</div>
+    <div class="row"><span class="no">6.</span> เครดิตในระบบก่อนขอคืนคงเหลือจำนวน : ${fbaht(d.remainingCredit, "150px")} บาท</div>
+    <div class="row"><span class="no">7.</span> จำนวนเงินที่ต้องโอนคืนลูกค้าทั้งสิ้น จำนวน : ${fbaht(d.refund, "120px")} บาท ( ${fv(refundText, "220px")} )</div>
+    <div class="row"><span class="no">8.</span> ช่องทางโอนกลับ : บัญชีธนาคาร ${fv(d.bank, "160px")} เลขที่บัญชี ${fv(d.accountNo, "180px")}</div>
+    <div class="row indent">ชื่อบัญชี ${fv(d.accountName, "300px")}</div>`;
+
+  // ---- บล็อกลงนาม ----
+  const makerBlock = `
+    <div class="sig">
+      <div class="sig-title">ผู้จัดทำ</div>
+      <div class="sig-line">ลงชื่อ <span class="sig-slot">${d.signed && sig ? `<img class="sig-img" src="${sig}" alt="ลายเซ็น"/>` : ""}<span class="dots"></span></span></div>
+      <div class="sig-paren">( ${fv(MAKER.name, "220px")} )</div>
+      <div class="sig-line">ตำแหน่ง ${fv(MAKER.position, "230px")}</div>
+      <div class="sig-line">วันที่ ${fv(d.date, "180px")}</div>
+    </div>`;
+
+  const reviewerBlock = `
+    <div class="sig">
+      <div class="sig-title">ผู้ตรวจสอบ</div>
+      <div class="sig-line sign-gap">ลงชื่อ <span class="sig-slot"><span class="dots"></span></span></div>
+      <div class="sig-paren">( ${fv(REVIEWER.name, "220px")} )</div>
+      <div class="sig-line">ตำแหน่ง ${fv(REVIEWER.position, "230px")}</div>
+      <div class="sig-line">วันที่ ${fv(d.date, "180px")}</div>
+    </div>`;
+
+  const approverBlock = `
+    <div class="sig">
+      <div class="sig-title">ผู้อนุมัติ</div>
+      <div class="approve-opts">${chk(false)} อนุมัติ&emsp;${chk(false)} ไม่อนุมัติ&emsp;${chk(false)} อื่น ๆ ${fv("", "160px")}</div>
+      <div class="sig-line sign-gap">ลงชื่อ <span class="sig-slot"><span class="dots"></span></span></div>
+      <div class="sig-paren">( ${fv(APPROVER.name, "220px")} )</div>
+      <div class="sig-line">ตำแหน่ง ${fv(APPROVER.position, "230px")}</div>
+      <div class="sig-line">วันที่ ${fv(d.date, "180px")}</div>
+    </div>`;
+
+  const attachSection = `
+    <div class="attach-list">
+      <div class="al-title">เอกสารแนบ :</div>
+      <div class="al-item">${chk(checks[0])} 1. สำเนาสมุดบัญชีธนาคาร บริษัท ที่ต้องการให้โอนเงินคืน</div>
+      <div class="al-item">${chk(checks[1])} 2. หลักฐานการชำระหรือสลิปที่ลูกค้ามีการโอนชำระค่าบริการเข้ามา</div>
+      <div class="al-item">${chk(checks[2])} 3. ภาพประกอบหรือหลักฐาน ที่แสดงว่าลูกค้ามีการขอคืนเงินค่าบริการ</div>
+      <div class="al-item">${chk(checks[3])} 4. รายละเอียดเอกสารแนบอื่นๆ</div>
+      <div class="al-note">${d.attachNote ? escapeHtml(d.attachNote) : "<span class='dotline'></span><span class='dotline short'></span>"}</div>
+    </div>`;
+
+  // ---- หน้าเอกสารแนบ (คงเดิม) ----
   const attachmentPages = d.attachments
     .map(
       (a, i) => `
-    <section class="page attach">
+    <section class="page attach-page">
+      ${header(i + 3)}
       <div class="attach-head"><div class="tag">เอกสารแนบ</div><h2>${escapeHtml(a.label)}</h2></div>
       <div class="attach-img"><img src="${dataUri(a.imagePath, guessMime(a.imagePath))}" alt="${escapeHtml(a.label)}"/></div>
-      ${companyFoot(d.docNo, i + 2, totalPages)}
+      ${foot(i + 3)}
     </section>`,
     )
     .join("");
@@ -126,100 +223,115 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
   ${fontFace()}
   @page{size:A4;margin:0}
   *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:'Sarabun',sans-serif;color:${C.ink};font-size:10pt;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-  .page{width:210mm;height:297mm;padding:14mm 15mm 10mm;position:relative;page-break-after:always;background:#fff}
+  body{font-family:'Sarabun',sans-serif;color:${C.ink};font-size:10pt;line-height:1.55;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .page{width:210mm;min-height:297mm;padding:12mm 16mm 14mm;position:relative;page-break-after:always;background:#fff}
   .page:last-child{page-break-after:auto}
-  .logo{height:40px;margin-bottom:6px}
-  .memo-h{text-align:center;font-weight:700;font-size:13pt;margin:2px 0 8px;letter-spacing:.03em}
-  /* frame */
-  .frame{border:1.2px solid ${C.line}}
-  .hrow{display:flex;border-bottom:1.2px solid ${C.line}}
-  .hcell{padding:6px 12px;font-size:10pt}
-  .hcell.l{flex:0 0 63%;border-right:1.2px solid ${C.line}}
-  .hcell.r{flex:1}
-  .brow{display:flex;min-height:216mm}
-  .bleft{flex:0 0 63%;border-right:1.2px solid ${C.line};padding:14px 16px;display:flex;flex-direction:column}
-  .bright{flex:1;padding:16px 12px;text-align:center}
-  .bleft p{margin-bottom:6px;text-align:left;text-indent:1.4em;line-height:1.5}
-  .bleft ul{margin:2px 0 12px;padding-left:2.4em;list-style:disc}
-  .bleft li{margin-bottom:4px;line-height:1.5;text-align:left}
-  .bank{margin:8px 0 4px;line-height:1.8}
-  .center{text-align:center}
-  .sigblock{text-align:center;margin-top:14px}
-  .sigblock .sigimg{height:40px;margin-bottom:-8px;position:relative;z-index:2}
-  .sigblock .dots{margin-top:6px}
-  .sigblock .nm{margin-top:2px}
-  .approver .dots{margin-bottom:2px}
-  /* company footer */
-  .cfoot{position:absolute;left:15mm;right:15mm;bottom:8mm;font-size:8pt;color:#3a3a3a;line-height:1.4}
-  .cfoot .pg{position:absolute;right:0;bottom:0;color:#666}
-  /* attachment */
-  .attach{padding:14mm 14mm 10mm}
-  .attach-head{border-bottom:2px solid ${C.navy};padding-bottom:7px;margin-bottom:10px}
+
+  /* header */
+  .head{display:flex;align-items:flex-start;gap:12px;padding-bottom:6px}
+  .head .logo{height:46px;flex:0 0 auto}
+  .head .logo-tx{font-weight:700;color:${C.navy};font-size:15pt}
+  .head-tx{flex:1;text-align:center;padding-right:58px}
+  .co-th{color:${C.navy};font-weight:700;font-size:13pt;line-height:1.2}
+  .co-en{color:${C.gray};font-size:8.5pt;letter-spacing:.02em}
+  .conf{font-size:8.5pt;margin-top:2px}
+  .conf-en{color:${C.red};font-weight:600}
+  .memo-title{text-align:center;font-size:11pt;margin:2px 0 8px}
+
+  /* date/docno */
+  .dateno{text-align:right;margin:2px 0 4px;line-height:1.9}
+  .dateno .lbl{display:inline-block}
+
+  /* subject */
+  .subj{margin:2px 0}
+  .subj b{font-weight:700}
+  .subj .u{border-bottom:1px dotted #333;padding:0 3px}
+
+  /* purpose table */
+  table.purpose{width:100%;border-collapse:collapse;margin:8px 0 6px;font-size:10pt}
+  table.purpose td{border:1.1px solid ${C.line};padding:5px 9px}
+
+  .intro{text-indent:0;margin:8px 0 4px;text-align:justify;line-height:1.7}
+  .row{margin:3px 0;line-height:1.7}
+  .row .no{display:inline-block;min-width:16px}
+  .row.indent{padding-left:18px}
+
+  /* fill-in */
+  .fv{border-bottom:1px dotted #333;padding:0 5px;white-space:nowrap}
+  .fv.blank{display:inline-block}
+  .chk{display:inline-block;width:12px;height:12px;border:1.2px solid ${C.line};position:relative;vertical-align:-1px;margin-right:5px}
+  .chk.on::after{content:"";position:absolute;left:3px;top:0;width:4px;height:8px;border:solid ${C.line};border-width:0 1.7px 1.7px 0;transform:rotate(45deg)}
+
+  /* page2 */
+  .rule{border:0;border-top:1px solid #9aa4b0;margin:12px 0}
+  .attach-list{margin-bottom:4px}
+  .al-title{font-weight:700;margin-bottom:8px}
+  .al-item{margin:6px 0;line-height:1.6}
+  .al-note{margin-top:6px;min-height:34px}
+  .dotline{display:block;border-bottom:1px dotted #333;height:16px}
+  .dotline.short{width:36%}
+
+  .sig{margin-top:2px}
+  .sig-title{font-weight:700;margin-bottom:6px}
+  .sig-line{margin:5px 0;line-height:1.6}
+  .sig-line.sign-gap{margin-top:30px}
+  .sig-paren{margin:3px 0 3px 42px}
+  .sig-slot{position:relative;display:inline-block}
+  .sig-slot .dots{display:inline-block;width:280px;border-bottom:1px dotted #333;vertical-align:middle}
+  .sig-slot .sig-img{position:absolute;left:24px;bottom:-2px;height:38px}
+  .approve-opts{margin:4px 0 8px}
+
+  /* attachment pages (คงเดิม) */
+  .attach-page{padding:12mm 14mm 14mm}
+  .attach-head{border-bottom:2px solid ${C.navy};padding-bottom:7px;margin:8px 0 10px}
   .attach-head .tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.14em;color:${C.blue};text-transform:uppercase}
-  .attach-head h2{font-weight:700;font-size:17px;color:${C.navy};margin-top:2px}
-  .attach-img{display:flex;align-items:flex-start;justify-content:center;height:250mm}
-  .attach-img img{max-width:100%;max-height:250mm;object-fit:contain;border:1px solid #d9e2ee;border-radius:4px;box-shadow:0 2px 10px rgba(22,52,94,.08)}
+  .attach-head h2{font-weight:700;font-size:16px;color:${C.navy};margin-top:2px}
+  .attach-img{display:flex;align-items:flex-start;justify-content:center;height:236mm}
+  .attach-img img{max-width:100%;max-height:236mm;object-fit:contain;border:1px solid #d9e2ee;border-radius:4px;box-shadow:0 2px 10px rgba(22,52,94,.08)}
+
+  .pg{position:absolute;right:16mm;bottom:8mm;font-size:9pt;color:#333}
   </style></head><body>
 
   <section class="page">
-    ${logo ? `<img class="logo" src="${logo}" alt="Thunder Solution"/>` : `<div style="font-weight:700;color:${C.navy};font-size:18px">THUNDER SOLUTION</div>`}
-    <div class="memo-h">บันทึก</div>
-    <div class="frame">
-      <div class="hrow">
-        <div class="hcell l">เรื่อง ${escapeHtml(d.subject)}</div>
-        <div class="hcell r">วันที่ ${escapeHtml(d.date)}</div>
-      </div>
-      <div class="hrow">
-        <div class="hcell l">เรียน ผู้จัดการทั่วไปและฝ่ายบัญชี</div>
-        <div class="hcell r">จาก ฝ่ายงานบริการลูกค้า</div>
-      </div>
-      <div class="brow">
-        <div class="bleft">
-          ${memoBody}
-          <div class="bank">
-            บัญชีธนาคาร : ${escapeHtml(d.bank)}<br>
-            เลขบัญชีธนาคาร : ${escapeHtml(d.accountNo)}<br>
-            ชื่อบัญชี : ${escapeHtml(d.accountName)}
-          </div>
-          <div class="sigblock" style="margin-top:26px">
-            ${d.signed && sig ? `<img class="sigimg" src="${sig}" alt="ลายเซ็น"/>` : ""}
-            <div class="dots">${dot}</div>
-            <div class="nm">นาย จิรภัทร์ ภูครองหิน</div>
-            <div>ตำแหน่ง หัวหน้าฝ่ายบริการลูกค้า</div>
-            <div>วันที่ ${escapeHtml(d.date)}</div>
-          </div>
-          <div class="sigblock" style="margin-top:20px">
-            <div class="dots">${dot}</div>
-            <div class="nm">นางสาวศิริลักษณ์ ชอบธรรม</div>
-            <div>ผู้จัดการฝ่ายบริการลูกค้า</div>
-            <div>วันที่ ${escapeHtml(d.date)}</div>
-          </div>
-        </div>
-        <div class="bright">
-          <div class="sigblock approver" style="margin-top:40px">
-            <div class="dots">${dot}</div>
-            <div>ผู้ตรวจสอบ / อนุมัติ</div>
-            <div class="nm" style="margin-top:10px">นาย สมพร เสริฐศรี</div>
-            <div>ประธานเจ้าหน้าที่ฝ่ายปฏิบัติการ</div>
-            <div>วันที่ ${escapeHtml(d.date)}</div>
-          </div>
-        </div>
-      </div>
+    ${header(1)}
+    <div class="memo-title">บันทึกภายใน (Internal Memo)</div>
+    <div class="dateno">
+      <div>วันที่ ${fv(d.date, "220px")}</div>
+      <div>เลขที่ ${fv(d.docNo, "220px")}</div>
     </div>
-    ${companyFoot(d.docNo, 1, totalPages)}
+    <div class="subj"><b>เรื่อง</b> <span class="u">ขอคืนเงินลูกค้า (กรณีที่ลูกค้าลูกค้าใช้งานไม่ได้และต้องการขอคืนเงิน หรือ กรณีลูกค้ายกเลิกการใช้งาน )</span></div>
+    <div class="subj"><b>เรียน</b> <span class="u">ผู้จัดการทั่วไป พร้อมทั้ง ฝ่ายบัญชีและการเงิน</span></div>
+    <table class="purpose">
+      <tr>
+        <td>${chk(false)} เพื่อทราบ</td>
+        <td>${chk(false)} เพื่อพิจารณาอนุมัติ</td>
+        <td>${chk(true)} เพื่อดำเนินการ</td>
+        <td>${chk(false)} อื่นๆ ${fv("", "80px")}</td>
+      </tr>
+      <tr>
+        <td colspan="2">แผนกที่ส่งเอกสาร : บริการลูกค้า</td>
+        <td colspan="2">แผนกที่รับเอกสาร : บัญชี /การเงิน</td>
+      </tr>
+    </table>
+    ${intro}
+    ${list}
+    ${foot(1)}
+  </section>
+
+  <section class="page">
+    ${header(2)}
+    <hr class="rule"/>
+    ${attachSection}
+    <hr class="rule"/>
+    ${makerBlock}
+    <hr class="rule"/>
+    ${reviewerBlock}
+    <hr class="rule"/>
+    ${approverBlock}
+    <hr class="rule"/>
+    ${foot(2)}
   </section>
 
   ${attachmentPages}
   </body></html>`;
-}
-
-function companyFoot(docNo: string, page: number, total: number): string {
-  return `<div class="cfoot">
-    ${escapeHtml(COMPANY.name)}<br>
-    ${escapeHtml(COMPANY.address)}<br>
-    ${escapeHtml(COMPANY.taxId)}<br>
-    ${escapeHtml(COMPANY.tel)}
-    <span class="pg">หน้า ${page}/${total}</span>
-  </div>`;
 }

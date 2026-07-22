@@ -1,6 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
 import { askClaude } from "./claude";
-import { buildRefundMemoHtml, type RefundMemoData, type MemoAttachment } from "./memo";
+import { buildRefundMemoHtml, bahtText, type RefundMemoData, type MemoAttachment } from "./memo";
 import { renderHtmlToPdf } from "./html-pdf";
+import type { RefundFormInput } from "./refund-slots";
 
 // ดึงข้อมูลจาก "ข้อความแอดมิน" เท่านั้น → เติมช่องว่างเอกสารคืนเงิน (เอกสาร/รูปแนบเป็นแค่ประกอบ ห้ามอ่านมาเป็นข้อมูล)
 const EXTRACT_SYSTEM = `คุณคือผู้ช่วยฝ่ายบริการลูกค้าของบริษัท ธันเดอร์ โซลูชั่น จำกัด
@@ -88,10 +91,25 @@ export function validateMemo(d: Extracted, refund: number): MemoValidation {
   return { ok: w.length === 0, warnings: w };
 }
 
-let seq = 0;
-function genDocNo(): string {
-  seq += 1;
-  return `TS-CS-RF-${String(Date.now()).slice(-6)}${seq}`;
+// เลขที่เอกสาร: ปีเดือนลำดับ (เช่น 20260701) — ลำดับรันต่อเดือน เก็บไฟล์ให้รอด restart
+const SEQ_FILE = path.join(process.cwd(), ".generated", "memo-seq.json");
+export function genDocNo(now: Date = new Date()): string {
+  const key = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+  let store: Record<string, number> = {};
+  try {
+    store = JSON.parse(fs.readFileSync(SEQ_FILE, "utf8"));
+  } catch {
+    /* ไฟล์ยังไม่มี */
+  }
+  const next = (store[key] || 0) + 1;
+  store[key] = next;
+  try {
+    fs.mkdirSync(path.dirname(SEQ_FILE), { recursive: true });
+    fs.writeFileSync(SEQ_FILE, JSON.stringify(store));
+  } catch {
+    /* เขียนไม่ได้ก็ปล่อย (เลขยังใช้ได้ในรอบนี้) */
+  }
+  return `${key}${String(next).padStart(2, "0")}`;
 }
 
 export interface GeneratedMemo {
@@ -121,30 +139,104 @@ export async function generateRefundMemo(input: {
   const validation = validateMemo(ex, refund);
 
   const data: RefundMemoData = {
+    brand: "thunder", // TODO: เลือกตามหัวเรื่องแอดมิน (Thunder/EasySlip) เมื่อทำ Template
     docNo: input.docNo || genDocNo(),
     date: input.date,
-    subject: "คืนเงินส่วนต่างหัก ณ ที่จ่าย",
-    topupDate: ex.topupDate || "",
-    topupTime: "",
+    subject: "ขอคืนเงินลูกค้า",
+    // ---- ตาราง 1-8 ----
     user: ex.user,
-    serviceName: ex.serviceName || ex.accountName || "",
-    serviceType: ex.serviceType || "BOT/API",
+    userId: "",
+    companyName: ex.serviceName || ex.accountName || "",
+    topupDate: ex.topupDate || "",
+    amount: ex.amount,
+    purchaseDate: ex.topupDate || "",
     packageName: ex.packageName,
     months: ex.months,
     netPrice,
-    amount: ex.amount,
+    remainingCredit: undefined,
+    refund,
+    refundText: bahtText(refund),
+    bank: ex.bank,
+    accountNo: ex.accountNo,
+    accountName: ex.accountName,
+    // ---- ย่อหน้าเปิดเรื่อง ----
+    serviceLabel: ex.serviceType || "",
+    reason: "",
+    // ---- เอกสารแนบ: ติ๊กทุกช่อง ----
+    attachChecks: [true, true, true, true],
+    attachNote: "",
+    attachments: input.attachments,
+    // ---- legacy ----
+    serviceName: ex.serviceName || ex.accountName || "",
+    serviceType: ex.serviceType || "BOT/API",
+    topupTime: "",
     whtRate: ex.whtRate || 3,
     whtAmount: ex.whtAmount,
     discount: ex.discount || 0,
     overpay: ex.overpay || 0,
-    refund,
-    bank: ex.bank,
-    accountNo: ex.accountNo,
-    accountName: ex.accountName,
-    attachments: input.attachments,
   };
 
   const html = buildRefundMemoHtml(data);
   const pdf = await renderHtmlToPdf(html);
   return { data, validation, pdf };
+}
+
+// ===== ท่อใหม่: ออกเอกสารจาก "เว็บฟอร์ม" (โครงสร้างชัด ไม่ผ่าน AI) =====
+export function buildRefundDataFromForm(
+  form: RefundFormInput,
+  opts: { date: string; docNo: string; attachments: MemoAttachment[]; attachNote: string },
+): RefundMemoData {
+  const round2 = (n: number) => Math.round((n || 0) * 100) / 100;
+  const refund = round2(form.refund);
+  return {
+    brand: form.brand,
+    docNo: opts.docNo,
+    date: opts.date,
+    subject: "ขอคืนเงินลูกค้า",
+    // ย่อหน้าเปิดเรื่อง
+    serviceLabel: form.serviceLabel || "",
+    reason: form.reason || "",
+    // ตาราง 1-8
+    user: form.user || "",
+    userId: form.userId || "",
+    companyName: form.companyName || "",
+    topupDate: form.topupDate || "",
+    amount: round2(form.amount || 0),
+    purchaseDate: form.purchaseDate || "",
+    packageName: form.packageName || "",
+    months: form.months || 0,
+    netPrice: round2(form.netPrice || 0),
+    remainingCredit: form.remainingCredit != null ? round2(form.remainingCredit) : undefined,
+    refund,
+    refundText: bahtText(refund),
+    bank: form.bank || "",
+    accountNo: form.accountNo || "",
+    accountName: form.accountName || "",
+    // เอกสารแนบ: ติ๊กทั้ง 4 ช่องเสมอ (ตามที่ตกลง) + note เอกสารเพิ่มเติม
+    attachChecks: [true, true, true, true],
+    attachNote: opts.attachNote,
+    attachments: opts.attachments,
+    // ผู้จัดทำยังไม่เซ็น (รอกดปุ่ม "เซ็นเลย")
+    signed: false,
+    // legacy (ตั้งชื่อไฟล์/แคปชัน)
+    serviceName: form.companyName || form.accountName || form.user || "",
+    serviceType: form.serviceLabel || "",
+  };
+}
+
+export async function createRefundMemoFromForm(input: {
+  form: RefundFormInput;
+  attachments: MemoAttachment[];
+  attachNote: string;
+  date: string;
+  docNo?: string;
+}): Promise<{ data: RefundMemoData; pdf: Buffer }> {
+  const data = buildRefundDataFromForm(input.form, {
+    date: input.date,
+    docNo: input.docNo || genDocNo(),
+    attachments: input.attachments,
+    attachNote: input.attachNote,
+  });
+  const pdf = await renderHtmlToPdf(buildRefundMemoHtml(data));
+  return { data, pdf };
 }

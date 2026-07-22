@@ -12,6 +12,12 @@ export async function getAllowedChatId(): Promise<string | null> {
   return row?.value || process.env.TELEGRAM_ALLOWED_CHAT_ID?.trim() || null;
 }
 
+// กลุ่มปลายทางของ "เอกสารคืนเงิน" (เว็บฟอร์ม /refund) — ตั้งใน DB setting ได้ runtime, fallback env
+export async function getRefundMemoChatId(): Promise<string | null> {
+  const row = await db.setting.findUnique({ where: { key: "refund_memo_chat_id" } });
+  return row?.value || process.env.REFUND_MEMO_CHAT_ID?.trim() || null;
+}
+
 // ผู้จัดการที่ต้องเซ็นต่อหลังเจ้าของเซ็น (แท็กในข้อความ) — บันทึกไว้ ใช้ได้ทุกกลุ่ม
 export async function getManagerSigner(): Promise<{ id: string; name: string } | null> {
   const row = await db.setting.findUnique({ where: { key: "manager_signer" } });
@@ -88,33 +94,45 @@ export async function tgSendChatAction(chatId: string | number, action = "typing
   }).catch(() => {});
 }
 
+// extra: parse_mode / reply_markup ฯลฯ — ค่า object จะถูก stringify ให้ (Telegram รับเป็น JSON string ใน multipart)
 export async function tgSendDocument(
   chatId: string | number,
   buffer: Buffer,
   filename: string,
   caption?: string,
+  extra?: Record<string, unknown>,
 ) {
   const token = getBotToken();
   if (!token) throw new Error("ยังไม่ได้ตั้งค่า TELEGRAM_BOT_TOKEN");
   const form = new FormData();
   form.append("chat_id", String(chatId));
   if (caption) form.append("caption", caption);
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v === undefined || v === null) continue;
+    form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+  }
   form.append("document", new Blob([new Uint8Array(buffer)]), filename);
   const res = await fetch(API(token, "sendDocument"), { method: "POST", body: form });
   return res.json();
 }
 
+// extra: parse_mode / reply_markup ฯลฯ — ค่า object จะถูก stringify ให้ (Telegram รับเป็น JSON string ใน multipart)
 export async function tgSendPhoto(
   chatId: string | number,
   buffer: Buffer,
   caption?: string,
   filename = "screenshot.png",
+  extra?: Record<string, unknown>,
 ) {
   const token = getBotToken();
   if (!token) throw new Error("ยังไม่ได้ตั้งค่า TELEGRAM_BOT_TOKEN");
   const form = new FormData();
   form.append("chat_id", String(chatId));
   if (caption) form.append("caption", caption);
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v === undefined || v === null) continue;
+    form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+  }
   form.append("photo", new Blob([new Uint8Array(buffer)]), filename);
   const res = await fetch(API(token, "sendPhoto"), { method: "POST", body: form });
   return res.json();

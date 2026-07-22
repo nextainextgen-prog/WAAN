@@ -69,9 +69,10 @@ export function guessAttachmentLabel(filename: string): string {
 export async function prepareAttachment(
   filePath: string,
   outDir: string,
+  labelOverride?: string,
 ): Promise<{ label: string; imagePath: string }[]> {
   const ext = path.extname(filePath).toLowerCase();
-  const label = guessAttachmentLabel(path.basename(filePath));
+  const label = labelOverride || guessAttachmentLabel(path.basename(filePath));
   if (ext === ".pdf") {
     const pngs = await pdfFileToPngs(filePath, outDir, { maxPages: 3 });
     return pngs.map((p, i) => ({ label: pngs.length > 1 ? `${label} (หน้า ${i + 1})` : label, imagePath: p }));

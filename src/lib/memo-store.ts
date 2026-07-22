@@ -89,16 +89,17 @@ export async function signMemo(id: string): Promise<{ ok: boolean; data?: Refund
   return { ok: true, data };
 }
 
-// ตั้งชื่อไฟล์ให้สั้น อ่านง่าย ไม่โดน Telegram ตัด: เลขเอกสาร + ชื่อลูกค้า + สถานะ
-// เช่น "TS-CS-RF-9461995 คืนเงินภาษี เดอะ พีเอ็กซ์ กรุ๊ป (ร่าง).pdf"
-export function memoFilename(data: RefundMemoData, signed: boolean): string {
-  const who = (data.serviceName || data.accountName || "ลูกค้า")
-    .replace(/[^\p{L}\p{N}ก-๙\s._-]/gu, "")
+// ตั้งชื่อไฟล์: ยูสเซอร์ + วันที่ + เวลา (HH.MM.SS)
+// เช่น "dev.x@gmail.com 22-07-2569 15.34.20.pdf"
+export function memoFilename(data: RefundMemoData, _signed: boolean): string {
+  const who = (data.user || data.serviceName || data.accountName || "ลูกค้า")
+    .replace(/[^\p{L}\p{N}ก-๙\s._@-]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 24) || "ลูกค้า";
-  const docNo = (data.docNo || "").replace(/[^\w-]/g, "");
-  const prefix = docNo ? `${docNo} ` : "";
-  const status = signed ? "(ลงนามแล้ว)" : "(ร่าง)";
-  return `${prefix}คืนเงินภาษี ${who} ${status}.pdf`;
+    .slice(0, 40) || "ลูกค้า";
+  const now = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const datePart = `${p2(now.getDate())}-${p2(now.getMonth() + 1)}-${now.getFullYear() + 543}`;
+  const timePart = `${p2(now.getHours())}.${p2(now.getMinutes())}.${p2(now.getSeconds())}`;
+  return `${who} ${datePart} ${timePart}.pdf`;
 }
