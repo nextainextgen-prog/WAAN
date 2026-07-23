@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { createCanvas } from "@napi-rs/canvas";
 
 // แปลง PDF (ไฟล์) → PNG รายหน้า (สำหรับแนบในเอกสาร)
@@ -77,5 +78,9 @@ export async function prepareAttachment(
     const pngs = await pdfFileToPngs(filePath, outDir, { maxPages: 3 });
     return pngs.map((p, i) => ({ label: pngs.length > 1 ? `${label} (หน้า ${i + 1})` : label, imagePath: p }));
   }
-  return [{ label, imagePath: filePath }];
+  // รูป → คัดลอกไป outDir (ถาวร) ไม่งั้นไฟล์ชั่วคราวถูกลบ แล้ว re-render (เซ็น/แก้) หารูปไม่เจอ → ภาพหลุด
+  await fs.mkdir(outDir, { recursive: true });
+  const dest = path.join(outDir, `${randomUUID().slice(0, 8)}-${path.basename(filePath)}`);
+  await fs.copyFile(filePath, dest);
+  return [{ label, imagePath: dest }];
 }
