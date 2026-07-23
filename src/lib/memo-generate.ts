@@ -4,6 +4,7 @@ import { askClaude } from "./claude";
 import { buildRefundMemoHtml, bahtText, type RefundMemoData, type MemoAttachment } from "./memo";
 import { renderHtmlToPdf } from "./html-pdf";
 import type { RefundFormInput } from "./refund-slots";
+import { computeWht } from "./refund-packages";
 
 // ดึงข้อมูลจาก "ข้อความแอดมิน" เท่านั้น → เติมช่องว่างเอกสารคืนเงิน (เอกสาร/รูปแนบเป็นแค่ประกอบ ห้ามอ่านมาเป็นข้อมูล)
 const EXTRACT_SYSTEM = `คุณคือผู้ช่วยฝ่ายบริการลูกค้าของบริษัท ธันเดอร์ โซลูชั่น จำกัด
@@ -243,4 +244,54 @@ export async function createRefundMemoFromForm(input: {
   });
   const pdf = await renderHtmlToPdf(buildRefundMemoHtml(data));
   return { data, pdf };
+}
+
+// ===== แก้ไข memo จากฟอร์มผ่านคำสั่งภาษาคน (AI patch เฉพาะฟิลด์ที่สั่งแก้) =====
+const REVISE_FORM_SYSTEM = `คุณคือผู้ช่วยแก้ "เอกสารคืนเงินลูกค้า" ของบริษัท
+จะได้ (1) ข้อมูลฟอร์มปัจจุบัน เป็น JSON (2) คำสั่งแก้ไขจากแอดมิน (ภาษาคน)
+ให้ตอบเป็น JSON ที่มี "เฉพาะฟิลด์ที่ต้องแก้/เพิ่ม" เท่านั้น (ฟิลด์ที่ไม่เปลี่ยน ห้ามใส่)
+
+คีย์ฟิลด์ (แมปชื่อไทย → คีย์):
+- user = ยูสเซอร์/อีเมล · userId = ไอดียูสเซอร์ · companyName = ลูกค้าบริษัท/ชื่อบริษัท · serviceLabel = ประเภทบริการ ("BOT" หรือ "API") · reason = เหตุผลขอคืน
+- topupDate = วันที่เติมเครดิต · amount = จำนวนเงินที่เติมเข้ามา · purchaseDate = วันที่ซื้อบริการ · packageName = แพ็กเกจ · months = จำนวนเดือน
+- netPrice = จำนวนเงินที่ซื้อบริการ/ราคาค่าบริการ · remainingCredit = เครดิตคงเหลือก่อนขอคืน
+- whtAmount = ยอดหักภาษี ณ ที่จ่าย · whtDate = วันที่หักภาษี ณ ที่จ่าย · refund = จำนวนเงินที่ต้องโอนคืนทั้งสิ้น/ยอดโอนคืน
+- bank = ธนาคาร · accountNo = เลขที่บัญชี · accountName = ชื่อบัญชี · brand = "thunder"/"easyslip" · docType = "general"/"wht"
+
+กติกา:
+- ตัวเลขตอบเป็น number ล้วน (ตัด comma/บาท ออก เช่น "5,499.00 บาท" → 5499)
+- วันที่ตอบเป็น string ตามที่แอดมินให้ (เช่น "05/07/2026")
+- ถ้าคำสั่งไม่ชัด/ไม่เกี่ยวกับฟิลด์ไหนเลย ตอบ {} (JSON ว่าง)
+- ตอบ JSON ล้วน ไม่มีข้อความอื่น ไม่ครอบด้วย code block`;
+
+export async function reviseRefundMemoFromForm(input: {
+  form: RefundFormInput;
+  instruction: string;
+  data: RefundMemoData; // memo เดิม (เอา attachments/attachNote/date/docNo มาใช้ซ้ำ)
+}): Promise<{ data: RefundMemoData; pdf: Buffer; form: RefundFormInput }> {
+  const raw = await askClaude(
+    `ข้อมูลฟอร์มปัจจุบัน:\n${JSON.stringify(input.form)}\n\nคำสั่งแก้ไขจากแอดมิน:\n${input.instruction}`,
+    { system: REVISE_FORM_SYSTEM, timeoutMs: 120_000 },
+  );
+  let patch: Partial<RefundFormInput> = {};
+  try {
+    patch = parseJson(raw) as Partial<RefundFormInput>;
+  } catch {
+    patch = {};
+  }
+  const merged: RefundFormInput = { ...input.form, ...patch };
+  // คำนวณค่าที่ผูกกันใหม่ (เคสหัก ณ ที่จ่าย) ถ้าคำสั่งไม่ได้ระบุตรง ๆ
+  if (merged.docType === "wht" && !("whtAmount" in patch)) {
+    merged.whtAmount = computeWht(merged.netPrice || 0);
+    if (!("refund" in patch)) merged.refund = merged.whtAmount;
+  }
+
+  const data = buildRefundDataFromForm(merged, {
+    date: input.data.date,
+    docNo: input.data.docNo, // เลขเอกสารเดิม
+    attachments: input.data.attachments || [],
+    attachNote: input.data.attachNote || "",
+  });
+  const pdf = await renderHtmlToPdf(buildRefundMemoHtml(data));
+  return { data, pdf, form: merged };
 }

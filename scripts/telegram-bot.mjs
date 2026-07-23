@@ -51,6 +51,14 @@ function pickReaction(text, { hasFiles = false, isAff = false, isMemo = false } 
 }
 
 const MEMO_INTENT = /คืนเงิน|หัก\s*ณ\s*ที่จ่าย|ออกเอกสาร|ส่วนต่าง|ส่วนเกิน/;
+// สั่งเก็บไฟล์/ลิงก์เข้าคลังความรู้ (Obsidian) — "เก็บไฟล์นี้", "เพิ่มไฟล์นี้เก็บหน่อย", "เก็บลิงก์นี้เข้าคลัง"
+const KNOWLEDGE_INTENT =
+  /(เก็บ|บันทึก|เพิ่ม|เซฟ|save|จำ|ขยาย).{0,10}(ไฟล์|เอกสาร|ลิงก์|link|url|อันนี้|เข้าคลัง|คลังความรู้|ลงสมอง|ลง\s*obsidian|ลงคลัง|เข้าความรู้)|เก็บเข้าคลัง|เข้าคลังความรู้|เก็บความรู้/i;
+// กริยา "เก็บ/บันทึก" แบบหลวม — ใช้ก็ต่อเมื่อ "มีไฟล์แนบ" (พูดอะไรก็ได้ที่สื่อว่าให้เก็บไฟล์ ไม่ต้องเป๊ะคำ)
+const SAVE_VERB = /(เก็บ|บันทึก|จำ|เซฟ|save|เพิ่ม|ขยาย|จดไว้|เอาไว้|ไว้ใช้|เก็บไว้|เก็บให้|เอาเข้า|ยัดเข้า|ไว้ก่อน|เก็บไป)/i;
+// ขอไฟล์/รูปจากคลังกลับมา — "ขอรูป X จากคลัง", "เอาไฟล์ที่เก็บไว้", "มีรูป Y ในคลังไหม"
+const KNOWLEDGE_FETCH_INTENT =
+  /(ขอ|เอา|ส่ง|หา|เปิด|ดึง|มี|อยากได้|ไหน).{0,12}(รูป|ภาพ|ไฟล์|เอกสาร|โลโก้|logo).{0,24}(คลัง|เก็บไว้|บันทึกไว้|obsidian|ที่เก็บ|ที่บันทึก|ในคลัง)|(รูป|ภาพ|ไฟล์|เอกสาร).{0,12}(ในคลัง|ที่เก็บไว้|ที่บันทึกไว้)|จากคลัง(ความรู้)?/i;
 // เอกสาร Affiliate ของแอดมิน (ตรวจอัตโนมัติ): มี PDF แนบ + ข้อความสรุปแพตเทิร์นเดิม
 const AFF_INTENT = /ยูสเซอร์|ยูเซอร์|user\s*name|username/i;
 const AFF_INTENT2 = /จำนวนเงินที่ถอน|จำนวนเงินที่ถูกหัก|เลขผู้เสียภาษี|เลขประจำตัวผู้เสียภาษี/;
@@ -71,12 +79,19 @@ async function refreshDedicated() {
   } catch { /* ใช้ค่าเดิม */ }
 }
 const memoPending = {};     // chatId -> timestamp (สั่งออกเอกสารแล้วแต่ยังรอไฟล์/เนื้อหา forward ตามมา)
+const knowledgePending = {}; // chatId -> timestamp (สั่งเก็บไฟล์เข้าคลังแล้วแต่ยังรอไฟล์ตามมา)
 const affPending = {};      // chatId -> timestamp (สั่งตรวจเอกสาร AFF แล้วแต่ยังรอไฟล์ forward ตามมา)
 const affDrafts = {};       // summaryMsgId -> {chatId,notiMsgId,threadId,summary,tag,pdfB64,filename,notiText,until} (ร่างที่รอกดอนุมัติ)
 const editingAff = {};      // chatId -> {notiText,notiMsgId,threadId,until} (กด "แก้ไข" แล้วรอคำสั่งแก้)
 const editingMemo = {};     // chatId -> {id, until} (กด "แก้ไข" แล้ว รอคำสั่งแก้เอกสารตัวนี้)
+const lastAffNoti = {};     // chatId -> {notiText,notiMsgId,threadId,until} — noti ล่าสุดที่ทำเอกสารไป (ให้พิมพ์แก้ซ้ำได้ ไม่ต้องกดปุ่ม)
 const BUFFER_TTL = 180000;  // 3 นาที
 const EDIT_TTL = 300000;    // 5 นาที (รอคำสั่งแก้เอกสารหลังกดปุ่ม "แก้ไข")
+const AFF_NOTI_TTL = 3 * 3600000; // 3 ชม. — แก้เอกสาร AFF ตัวเดิมได้เรื่อยๆ โดยพิมพ์คำสั่งแก้ (ไม่ต้องกด "แก้ไข" ซ้ำ)
+
+// ข้อความที่ "ดูเป็นคำสั่งแก้เอกสาร AFF" (มีที่อยู่/ชื่อ/ยอด/ธนาคาร) — กันข้อความคุยเล่น ("รอแปปครับ") ไม่ให้ trigger
+const AFF_EDIT_HINT = /ที่อยู่|แขวง|เขต|ตำบล|อำเภอ|จังหวัด|บ้านเลขที่|เลขที่|หมู่|ซอย|ซ\.|ถนน|ถ\.|กรุงเทพ|ชื่อ|นาย|นาง|น\.ส\.|ยอด|จำนวนเงิน|ธนาคาร|เลขบัญชี|บัญชี|ภาษี|วันที่|แก้/;
+function looksLikeAffEdit(t) { return AFF_EDIT_HINT.test(String(t || "")); }
 
 function extractFile(msg) {
   if (msg.document) return { file_id: msg.document.file_id, file_name: msg.document.file_name || `file_${msg.document.file_id}.bin` };
@@ -186,7 +201,16 @@ async function sendMemoDraft(chatId, data) {
   form.append("parse_mode", "HTML");
   form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${data.id}` }, { text: "แก้ไข", callback_data: `memo:revise:${data.id}` }]] }));
   form.append("document", new Blob([new Uint8Array(pdf)]), data.filename || "คืนเงินภาษี (ร่าง).pdf");
-  await fetch(API("sendDocument"), { method: "POST", body: form });
+  const sent = await fetch(API("sendDocument"), { method: "POST", body: form }).then((r) => r.json()).catch(() => null);
+  // จด message → memo ไว้ให้ reply แก้ไขซ้ำได้ (เอกสารที่แก้แล้ว resend)
+  const mid = sent?.result?.message_id;
+  if (mid && data.id) {
+    await fetch(APP_URL + "/api/memo/by-message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ id: data.id, chatId: String(chatId), messageId: mid }),
+    }).catch(() => {});
+  }
 }
 
 // กด "แก้ไข" แล้วพิมพ์บอกว่าอยากแก้อะไร → ออกร่างใหม่ (id เดิม)
@@ -362,6 +386,56 @@ function buildDeckSends(data) {
   ];
 }
 
+// เก็บไฟล์/ลิงก์เข้าคลังความรู้ (Obsidian) — วานอ่าน+ขยาย+จัดโครงสร้างเอง แล้วเก็บให้ค้นเจอทีหลัง
+async function doKnowledgeSave(chatId, text, files, from, isGroup, msgId, threadId) {
+  if (memoInFlight.has(String(chatId))) return;
+  memoInFlight.add(String(chatId));
+  try {
+    const status = await startStatus(chatId, [
+      "📥 รับเรื่องเก็บเข้าคลังความรู้แล้วค่ะ 🚀",
+      "📎 กำลังอ่านเนื้อหาไฟล์/ลิงก์...",
+      "🧠 กำลังสรุปและจัดโครงสร้างเป็นโน้ต...",
+      "🗂️ กำลังบันทึกลงคลังความรู้ (Obsidian)...",
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-know-"));
+    const saved = [];
+    for (const f of files || []) {
+      try { const s = await downloadFile(f.file_id, dir, f.file_name); if (s) saved.push(s); } catch { /* skip */ }
+    }
+    let data;
+    try {
+      const r = await fetch(APP_URL + "/api/telegram/knowledge", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ text: text || "", files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
+      });
+      data = await r.json();
+    } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
+    status.stop();
+    if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {});
+    await sendResultSends(chatId, data.sends || [{ kind: "text", text: "เก็บเข้าคลังให้แล้วค่ะ" }], threadId || "");
+    await reactMsg(chatId, msgId, "✅");
+  } finally {
+    memoInFlight.delete(String(chatId));
+  }
+}
+
+// ขอไฟล์/รูปจากคลังความรู้กลับมา — ค้นในคลังแล้วส่งไฟล์จริงเข้าแชท
+async function doKnowledgeFetch(chatId, query, from, isGroup, msgId, threadId) {
+  await tg("sendChatAction", { chat_id: chatId, action: "upload_photo" }).catch(() => {});
+  let data;
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/knowledge", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ mode: "find", query, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
+    });
+    data = await r.json();
+  } catch { await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ" }); return; }
+  if (data.error === "unauthorized") return;
+  await sendResultSends(chatId, data.sends || [{ kind: "text", text: "ไม่เจอไฟล์ในคลังค่ะ" }], threadId || "");
+  await reactMsg(chatId, msgId, "✅");
+}
+
 // แก้/ต่อยอดเด็คเดิม (reply เด็คแล้วสั่งแก้ หรือแนบไฟล์เพิ่มข้อมูล)
 async function doSlideRevise(chatId, deckId, instruction, addFiles, from, isGroup, msgId, mentions) {
   if (memoInFlight.has(String(chatId))) return;
@@ -455,6 +529,25 @@ async function sendResultSends(chatId, sends, defaultThread) {
       form.append("photo", new Blob([new Uint8Array(buf)]), s.filename || "screenshot.png");
       res = await fetch(API("sendPhoto"), { method: "POST", body: form }).then((x) => x.json()).catch(() => null);
     }
+    // Telegram ปฏิเสธ → เดิมเงียบสนิท (เคยทำให้ปุ่มผูกกลุ่มหายไปเฉยๆ เพราะห้อง Lead ถูกปิด = TOPIC_CLOSED)
+    if (!res?.ok) {
+      const why = res?.description || "unknown";
+      console.error(`ส่งไม่สำเร็จ (chat ${tc}${thr ? ` thread ${thr}` : ""}): ${why}`);
+      // ส่งข้ามแชทไม่ได้ (ห้องปิด/ถูกเตะ/thread หาย) → ถอยมาส่งในแชทต้นทางแทน ดีกว่าเงียบหาย
+      if (s.chatId && String(s.chatId) !== String(chatId)) {
+        const fallbackText = s.kind === "text" ? `${s.text}\n\n(ส่งเข้าห้องเดิมไม่ได้: ${why})` : s.caption;
+        const r2 = await tg("sendMessage", {
+          chat_id: chatId,
+          text: fallbackText || "(ส่งข้อความไม่สำเร็จ)",
+          ...sendOpts(defaultThread, {
+            ...(s.parseMode ? { parse_mode: s.parseMode } : {}),
+            ...(s.buttons ? { reply_markup: keyboardFromButtons(s.buttons) } : {}),
+          }),
+        }).catch(() => null);
+        if (r2?.result?.message_id) ids.push(r2.result.message_id);
+      }
+      continue;
+    }
     if (res?.result?.message_id) ids.push(res.result.message_id);
   }
   return ids;
@@ -474,10 +567,10 @@ function deckIdForReply(chatId, replyMsgId, replyText) {
   return null;
 }
 
-async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles, threadId, chatTitle) {
+async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles, threadId, chatTitle, addressed) {
   const res = await fetch(APP_URL + "/api/telegram/ingest", {
     method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", chatTitle: chatTitle || "", replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [] }),
+    body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", chatTitle: chatTitle || "", replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [], addressed: !!addressed }),
   });
   return res.json();
 }
@@ -525,7 +618,7 @@ function extractMentions(msgs) {
   return out;
 }
 
-async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions, imagePaths, threadId, chatTitle) {
+async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText, mentions, imagePaths, threadId, chatTitle, addressed = true) {
   const isSlide = looksLikeSlide(text);
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
@@ -535,7 +628,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
     ]);
     let data;
-    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle); }
+    try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle, addressed); }
     catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
@@ -558,7 +651,7 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   }, 7000);
 
   let data;
-  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle); }
+  try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle, addressed); }
   catch {
     clearInterval(typingTimer); clearTimeout(softTimer);
     const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
@@ -686,6 +779,7 @@ function buildMention(from) {
 const privateDeclined = new Set(); // จำแชทส่วนตัวที่ไม่ใช่เจ้าของ — แจ้งปฏิเสธครั้งเดียวพอ
 
 async function processBatch(chatId, msgs) {
+  let addressedNow = true; // แชทส่วนตัว = คุยกับวานตรง ๆ อยู่แล้ว · ในกลุ่มจะคำนวณใหม่ด้านล่าง
   const chatType = msgs[0]?.chat?.type || "private";
   const isGroup = chatType === "group" || chatType === "supergroup";
   const threadId = msgs[0]?.message_thread_id ? String(msgs[0].message_thread_id) : "";
@@ -758,6 +852,21 @@ async function processBatch(chatId, msgs) {
     } catch { /* จำไม่ได้ก็ยังตรวจได้จากวันที่ในเอกสาร */ }
     // ใหม่: ถ้ากลุ่มนี้ทำหน้าที่ aff → วานจัดทำใบสำคัญรับเงินเอง + ตรวจเอง แล้วรอเจ้าของกดอนุมัติ
     await doAffMake(chatId, text, from, isGroup, triggerMsgId, threadId).catch((e) => console.error("affMake err:", e.message));
+    // จำ noti นี้ไว้ → แอดมินพิมพ์คำสั่งแก้ทีหลังได้เลย ไม่ต้องกดปุ่ม "แก้ไข" (แก้ปัญหา flow ล็อค/ขอไฟล์)
+    lastAffNoti[chatId] = { notiText: text, notiMsgId: triggerMsgId, threadId: threadId ? String(threadId) : "", until: Date.now() + AFF_NOTI_TTL };
+    return;
+  }
+
+  // noti "ขอคืนเครดิตบริการ" จากบอทระบบ ([#REQUEST_REFUND_SERVICE]) → จำ ไอดีบริการ/ชื่อร้าน ไว้ตรวจเพิ่ม
+  // เป็นแค่ "ตัวเร่ง" — ระบบหลักเฝ้าหน้า /admin/refund เองอยู่แล้ว (Telegram อาจไม่ส่งข้อความบอทตัวอื่นให้เรา)
+  if (/#REQUEST_REFUND_SERVICE/.test(text) || (/ขอคืนเครดิตบริการ/.test(text) && /ได้ยื่นคำร้องขอคืนเครดิต/.test(text))) {
+    await reactMsg(chatId, triggerMsgId, "👀");
+    try {
+      await fetch(APP_URL + "/api/telegram/refund-notify", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), text }),
+      });
+    } catch { /* จำไม่ได้ก็ยังตรวจได้จากหน้าหลังบ้าน */ }
     return;
   }
 
@@ -792,7 +901,10 @@ async function processBatch(chatId, msgs) {
     const setupCmd = /^\s*(ตั้งห้องนี้เป็น|ห้องนี้คือ|บทบาท|set\s*role|ผูกกลุ่ม|bind|แนะนำตัว|เชื่อมกลุ่ม|เริ่มงาน|บอร์ด|board|สรุปงาน|เพิ่มงาน|\+task|ลงงาน|อัปเดต\s*T\d|ปิดงาน\s*T\d|ตรวจเสร็จให้แท็ก|usage|monitor|สรุปการใช้งาน|การใช้งาน)/i.test(text);
     // กลุ่ม dedicated (เช่น ขยายวันหมดอายุ Thunder) = ประมวลผลทุกข้อความ ไม่ต้องขึ้นต้น "วาน"
     const isDedicated = dedicatedGroups.has(String(chatId));
-    const triggered = repliedToBot || mentioned || calledByName || namePrefix || setupCmd || isDedicated;
+    // เรียกวานตรง ๆ (แท็ก/ชื่อ/reply) ≠ กลุ่ม dedicated ที่รับทุกข้อความอยู่แล้ว
+    // กลุ่มหน้าที่เดียวบางกลุ่ม (เช่น สถานะใบกำกับ) ต้องแยกให้ออก จะได้เงียบตอนทีมคุยกันเอง
+    addressedNow = repliedToBot || mentioned || calledByName || namePrefix || setupCmd;
+    const triggered = addressedNow || isDedicated;
     const armed = armedUntil[chatId] && now < armedUntil[chatId];
     const memoWaiting = memoPending[chatId] && now < memoPending[chatId];
     const haveFiles = (recentFiles[chatId] || []).length > 0;
@@ -823,12 +935,30 @@ async function processBatch(chatId, msgs) {
   const haveFilesNow = (recentFiles[chatId] || []).length > 0;
   await reactMsg(chatId, triggerMsgId, pickReaction(text, { hasFiles: haveFilesNow, isMemo: MEMO_INTENT.test(text) }));
 
-  // โหมดแก้ใบสำคัญรับเงิน AFF: กด "แก้ไข" แล้วพิมพ์คำสั่งแก้ → สร้างเอกสารใหม่ตามที่แก้ (ไม่หลุดไปแชททั่วไป)
+  // reply ไฟล์ "เอกสารคืนเงิน" (จากเว็บ/บอท) แล้วพิมพ์คำสั่ง → แก้ไขเอกสารตัวนั้นเลย (patch ฟิลด์ผ่าน AI)
+  if (replyMsg?.message_id && text) {
+    try {
+      const r = await fetch(APP_URL + `/api/memo/by-message?chatId=${encodeURIComponent(String(chatId))}&msgId=${replyMsg.message_id}`, {
+        headers: { "x-internal-token": INTERNAL },
+      });
+      const j = await r.json().catch(() => ({}));
+      if (j.id) {
+        await reactMsg(chatId, triggerMsgId, "👀");
+        await doRevise(chatId, j.id, text, from, isGroup, triggerMsgId);
+        return;
+      }
+    } catch { /* ไม่ใช่ memo หรือ backend ไม่พร้อม → ปล่อยให้ flow อื่นทำต่อ */ }
+  }
+
+  // โหมดแก้ใบสำคัญรับเงิน AFF: กด "แก้ไข" แล้วพิมพ์ หรือ พิมพ์คำสั่งแก้ในกลุ่มที่เพิ่งทำเอกสาร (ไม่ต้องกดปุ่มซ้ำ)
+  // รับเฉพาะข้อความที่ "ดูเป็นคำสั่งแก้" (มีที่อยู่/ชื่อ/ยอด) — ข้อความคุยเล่น ("รอแปปครับ") ไม่กิน คง state ไว้
   const editingAffNow = editingAff[chatId] && now < editingAff[chatId].until;
-  if (editingAffNow && text) {
-    const ctx = editingAff[chatId];
+  const lastAffNow = lastAffNoti[chatId] && now < lastAffNoti[chatId].until;
+  if ((editingAffNow || lastAffNow) && text && looksLikeAffEdit(text)) {
+    const ctx = (editingAffNow ? editingAff[chatId] : null) || lastAffNoti[chatId];
     delete editingAff[chatId];
     delete armedUntil[chatId];
+    // ไม่ลบ lastAffNoti — แก้ซ้ำได้หลายครั้งใน 3 ชม.
     await reactMsg(chatId, triggerMsgId, "👀");
     await doAffMake(chatId, ctx.notiText, from, isGroup, ctx.notiMsgId, ctx.threadId, text);
     return;
@@ -860,6 +990,41 @@ async function processBatch(chatId, msgs) {
     return;
   }
 
+  // ขอไฟล์/รูปจากคลังความรู้กลับมา (คำสั่งข้อความล้วน ไม่ต้องมีไฟล์แนบ) — เช็คก่อนโหมดเก็บ
+  if (text && all.length === 0 && KNOWLEDGE_FETCH_INTENT.test(text) && !MEMO_INTENT.test(text) && !isSlideish) {
+    await reactMsg(chatId, triggerMsgId, "👀");
+    await doKnowledgeFetch(chatId, text, from, isGroup, triggerMsgId, threadId);
+    return;
+  }
+
+  // สั่งเก็บไฟล์/ลิงก์เข้าคลังความรู้ (Obsidian) — "เก็บไฟล์นี้", "เพิ่มไฟล์นี้เก็บหน่อย" หรือพูดหลวม ๆ ที่สื่อว่าเก็บ (ตราบใดที่มีไฟล์)
+  const knowledgeWaiting = knowledgePending[chatId] && now < knowledgePending[chatId];
+  const knowledgeIntent = !!(
+    text &&
+    (KNOWLEDGE_INTENT.test(text) || (SAVE_VERB.test(text) && all.length > 0)) &&
+    !MEMO_INTENT.test(text) &&
+    !isSlideish &&
+    !affReqIntent
+  );
+  const hasUrlNow = /https?:\/\//i.test(text) || /https?:\/\//i.test(replyText || "");
+  if (knowledgeIntent || (knowledgeWaiting && all.length > 0)) {
+    // มีไฟล์แนบ หรือมีลิงก์ในข้อความ/ที่ reply → เก็บได้เลย
+    if (all.length > 0 || hasUrlNow) {
+      const saveText = [text, replyText].filter(Boolean).join("\n"); // รวม reply เผื่อลิงก์อยู่ในข้อความที่ reply
+      recentFiles[chatId] = [];
+      recentTexts[chatId] = [];
+      delete knowledgePending[chatId];
+      await doKnowledgeSave(chatId, saveText, all, from, isGroup, triggerMsgId, threadId);
+      return;
+    }
+    // ยังไม่มีไฟล์/ลิงก์ → เปิดหูรอไฟล์ถัดไป
+    knowledgePending[chatId] = now + BUFFER_TTL;
+    armedUntil[chatId] = now + BUFFER_TTL;
+    await reactMsg(chatId, triggerMsgId, "👀");
+    await tg("sendMessage", { chat_id: chatId, text: "รับเรื่องเก็บเข้าคลังความรู้ค่ะ ส่งไฟล์ (PDF/Word/รูป/ข้อความ) หรือวางลิงก์มาได้เลยนะคะ" });
+    return;
+  }
+
   // สั่งทำสไลด์ + มีไฟล์แนบ (เช่น reply PDF) → อ่านเนื้อหาไฟล์นั้นมาทำสไลด์ ไม่ใช่ดึงข้อมูลระบบ
   if (isSlideish && all.length > 0) {
     recentFiles[chatId] = [];
@@ -874,7 +1039,7 @@ async function processBatch(chatId, msgs) {
     if (all.length === 0) {
       memoPending[chatId] = now + BUFFER_TTL;
       armedUntil[chatId] = now + BUFFER_TTL;
-      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, null, threadId, chatTitle);
+      await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, null, threadId, chatTitle, addressedNow);
       return;
     }
     // มีไฟล์แล้ว → รวมข้อความที่ buffer ไว้ทั้งหมด (คำสั่ง + เนื้อหาที่ forward มา) เป็น rawText
@@ -894,7 +1059,7 @@ async function processBatch(chatId, msgs) {
   }
   if (text) {
     const imgPaths = await downloadRecentImages(chatId); // ถ้ามีรูปที่ส่งมา → ให้ AI อ่าน/วิเคราะห์
-    await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, imgPaths, threadId, chatTitle);
+    await chatIngest(chatId, text, from, isGroup, replyTo, triggerMsgId, replyText, mentions, imgPaths, threadId, chatTitle, addressedNow);
     return;
   }
 }
@@ -988,6 +1153,29 @@ async function handleCallback(cb) {
     const fromName = [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || cb.from?.username || "";
     await tg("answerCallbackQuery", { callback_query_id: cb.id, text: /cancel/.test(cb.data) ? "ยกเลิกแล้ว" : "กำลังปรับให้ค่ะ รอสักครู่..." }).catch(() => {});
     await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    let out;
+    try {
+      const res = await fetch(APP_URL + "/api/telegram/callback", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ chatId: String(chatId), fromId: String(cb.from?.id || ""), fromName, data: cb.data || "" }),
+      });
+      out = await res.json();
+    } catch { out = { sends: [{ kind: "text", text: "ระบบหลังบ้านไม่พร้อมค่ะ" }] }; }
+    await sendResultSends(chatId, out.sends || [], thr);
+    return;
+  }
+  // กดปุ่มคำขอคืนเครดิต Thunder (tref:ok|no|detail:<refundId>)
+  const trefb = String(cb.data || "").match(/^tref:(ok|no|detail):/);
+  if (trefb) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    const fromName = [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || cb.from?.username || "";
+    const act = trefb[1];
+    const ack = act === "ok" ? "กำลังคืนให้ค่ะ รอสักครู่..." : act === "no" ? "รับทราบค่ะ" : "";
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: ack }).catch(() => {});
+    // "ดูรายละเอียด" ต้องเหลือปุ่มไว้ให้กดคืนต่อได้ — ปิดปุ่มเฉพาะตอนตัดสินใจแล้ว
+    if (act !== "detail") {
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    }
     let out;
     try {
       const res = await fetch(APP_URL + "/api/telegram/callback", {

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { prepareAttachment } from "@/lib/pdf-to-images";
 import { createRefundMemoFromForm } from "@/lib/memo-generate";
-import { saveMemoDraft, memoFilename, readMemoPdf } from "@/lib/memo-store";
+import { saveMemoDraft, memoFilename, readMemoPdf, recordMemoMessage } from "@/lib/memo-store";
 import { getBotToken, getAllowedChatId, getRefundMemoChatId, tgSendDocument } from "@/lib/telegram";
 import { UPLOAD_SLOTS, SLOT_BY_KEY, buildAttachNote, type RefundFormInput } from "@/lib/refund-slots";
 import { saveRefundContact } from "@/lib/refund-contacts";
@@ -93,7 +93,7 @@ async function processMemo(
     const attachNote = buildAttachNote(slotsWithFiles, form.otherDocLabel, form.docType);
     const date = thaiDate.format(new Date());
     const { data, pdf } = await createRefundMemoFromForm({ form, attachments, attachNote, date });
-    const id = await saveMemoDraft(data, pdf);
+    const id = await saveMemoDraft(data, pdf, undefined, form); // เก็บ form ไว้ให้แก้ไขผ่านแชท
     saveRefundContact(form); // ความจำระบบ: จำข้อมูลลูกค้าไว้ให้ครั้งหน้าดึงกลับ
 
     // โพสต์เข้ากลุ่ม Telegram (flow เดิม: ปุ่ม "เซ็นเลย" → callback route จัดการ)
@@ -113,10 +113,13 @@ async function processMemo(
       `🔒 ไฟล์นี้ล็อกรหัสไว้นะคะ (รหัสเปิด)\n` +
       `<pre>xxxx-xxx</pre>\n\n` +
       `✅ ถ้าโอเคกด "เซ็นเลย" เดี๋ยวเติมลายเซ็นให้ค่ะ`;
-    await tgSendDocument(chatId, locked, memoFilename(data, false), caption, {
+    const sent = await tgSendDocument(chatId, locked, memoFilename(data, false), caption, {
       parse_mode: "HTML",
       reply_markup: { inline_keyboard: [[{ text: "เซ็นเลย", callback_data: `memo:sign:${id}` }]] },
     });
+    // จด message → memo ไว้ให้จับ reply แก้ไข
+    const msgId = (sent as { result?: { message_id?: number } })?.result?.message_id;
+    if (msgId) await recordMemoMessage(id, chatId, msgId).catch(() => {});
   } finally {
     try {
       fs.rmSync(tmp, { recursive: true, force: true });

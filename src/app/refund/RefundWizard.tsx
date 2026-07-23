@@ -209,9 +209,32 @@ export function RefundWizard() {
 
   async function submit() {
     setResult(null);
-    if (!f.brand) return setResult({ ok: false, error: "กรุณาเลือกบริษัท (Thunder / EasySlip)" });
-    if (!f.user.trim()) return setResult({ ok: false, error: "กรุณากรอกยูสเซอร์" });
-    if (num(f.refund) <= 0) return setResult({ ok: false, error: "กรุณากรอกยอดโอนคืนทั้งสิ้น" });
+    // บังคับกรอกให้ครบ — เก็บช่องที่ยังไม่กรอกแล้วแจ้งรวดเดียว
+    const miss: string[] = [];
+    const need = (ok: unknown, label: string) => { if (!ok) miss.push(label); };
+    need(f.brand, "บริษัท");
+    need(f.user.trim(), "ยูสเซอร์ / อีเมล");
+    need(f.userId.trim(), "ไอดียูสเซอร์");
+    need(f.companyName.trim(), "ลูกค้าบริษัท");
+    need(f.serviceLabel, "ประเภทบริการ");
+    need(f.topupDate.trim(), "วันที่เติมเครดิต");
+    need(num(f.amount) > 0, "จำนวนเงินที่เติมเข้ามา");
+    need(f.purchaseDate.trim(), "วันที่ซื้อบริการ");
+    need(f.packageName.trim(), "แพ็กเกจ");
+    need(num(f.months) > 0, "จำนวนเดือน");
+    need(num(f.netPrice) > 0, "ราคาค่าบริการ");
+    need(f.bank.trim(), "ธนาคาร");
+    need(f.accountNo.trim(), "เลขที่บัญชี");
+    need(f.accountName.trim(), "ชื่อบัญชี");
+    need(num(f.refund) > 0, "ยอดโอนคืนทั้งสิ้น");
+    if (f.docType === "wht") {
+      need(num(f.whtAmount) > 0, "ยอดหักภาษี ณ ที่จ่าย");
+      need(f.whtDate.trim(), "วันที่หักภาษี ณ ที่จ่าย");
+    } else {
+      need(f.reason.trim(), "เหตุผลขอคืน");
+    }
+    if (miss.length) return setResult({ ok: false, error: `กรุณากรอกให้ครบ (ยังขาด ${miss.length} ช่อง): ${miss.join(" · ")}` });
+    if (!f.brand) return; // narrow type (ผ่าน validation ด้านบนแล้ว)
 
     const payload: RefundFormInput = {
       brand: f.brand,
@@ -582,7 +605,7 @@ export function RefundWizard() {
                 <div className="flex items-start gap-3 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm">
                   <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-accent" aria-hidden />
                   <div>
-                    <p className="font-medium text-accent-foreground/90">ส่งเรียบร้อยแล้ว</p>
+                    <p className="font-semibold text-accent">ส่งเรียบร้อยแล้ว</p>
                     <p className="text-muted-foreground">
                       ระบบกำลังออกเอกสารเข้ากลุ่มให้อยู่เบื้องหลัง — รอสักครู่แล้วตรวจในกลุ่ม Telegram กด “เซ็นเลย” ได้เลย
                     </p>
