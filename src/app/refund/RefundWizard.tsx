@@ -4,12 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Building2, Wallet, Landmark, Paperclip, SendHorizontal,
   FileText, UploadCloud, X, CheckCircle2, AlertTriangle, Loader2, Info,
-  FileStack, RotateCcw, Percent, Check, ClipboardPaste,
+  FileStack, RotateCcw, Percent, Check, ClipboardPaste, ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea, Field } from "@/components/ui/Input";
 import { bahtText } from "@/lib/baht-text";
 import { UPLOAD_SLOTS, type Brand, type DocType, type RefundFormInput } from "@/lib/refund-slots";
+import { getPackages, packagePrice, getMonthOptions } from "@/lib/refund-packages";
 import { cn } from "@/lib/cn";
 
 const STEPS = [
@@ -68,8 +69,11 @@ export function RefundWizard() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
   const [prefilled, setPrefilled] = useState(false);
+  const [userSug, setUserSug] = useState<string[]>([]);
+  const [showUserSug, setShowUserSug] = useState(false);
 
   const sectionRefs = useRef<(HTMLElement | null)[]>([]);
+  const sugTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const set = <K extends keyof FieldsState>(k: K, v: FieldsState[K]) => setF((p) => ({ ...p, [k]: v }));
 
@@ -80,8 +84,8 @@ export function RefundWizard() {
   };
 
   // ความจำระบบ: พอกรอกยูสเซอร์เสร็จ ถ้าเคยมีข้อมูลเดิม ดึงกลับมาให้ทันที (แล้วให้แอดมินตรวจ)
-  async function lookupUser() {
-    const u = f.user.trim();
+  async function lookupUser(userArg?: string) {
+    const u = (userArg ?? f.user).trim();
     if (!u) return;
     try {
       const res = await fetch(`/api/memo/lookup?user=${encodeURIComponent(u)}`);
@@ -108,6 +112,33 @@ export function RefundWizard() {
     }
   }
 
+  // พิมพ์ยูสเซอร์ → เด้งรายชื่อยูสเซอร์เดิมที่ตรงคำค้น (autocomplete)
+  const onUserInput = (v: string) => {
+    set("user", v);
+    if (sugTimer.current) clearTimeout(sugTimer.current);
+    if (!v.trim()) {
+      setUserSug([]);
+      setShowUserSug(false);
+      return;
+    }
+    sugTimer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/memo/lookup?q=${encodeURIComponent(v.trim())}`);
+        const d = await r.json();
+        setUserSug(d.users || []);
+        setShowUserSug((d.users || []).length > 0);
+      } catch {
+        /* ignore */
+      }
+    }, 180);
+  };
+  const pickUser = (u: string) => {
+    set("user", u);
+    setUserSug([]);
+    setShowUserSug(false);
+    lookupUser(u);
+  };
+
   // scroll-spy: ไฮไลต์ขั้นตอนตามตำแหน่งที่เลื่อนถึง (ไม่มีปุ่มถัดไป)
   useEffect(() => {
     const obs = new IntersectionObserver(
@@ -127,6 +158,27 @@ export function RefundWizard() {
 
   const refundText = useMemo(() => (num(f.refund) > 0 ? bahtText(num(f.refund)) : ""), [f.refund]);
   const totalFiles = useMemo(() => Object.values(files).reduce((a, b) => a + b.length, 0), [files]);
+  // แพ็กเกจตามแบรนด์+บริการ (มีดรอปดาว = Thunder BOT) · เลือกแล้วคำนวณราคาอัตโนมัติตามจำนวนเดือน
+  const pkgs = useMemo(() => getPackages(f.brand || "", f.serviceLabel), [f.brand, f.serviceLabel]);
+  const monthOpts = useMemo(() => getMonthOptions(f.serviceLabel), [f.serviceLabel]);
+
+  // เปลี่ยนประเภทบริการ (BOT/API) → รีเซ็ตแพ็กเกจ/เดือน/ราคา (เพราะรายการ+ตัวเลือกต่างกัน)
+  const selectService = (v: "BOT" | "API") => {
+    const nv = f.serviceLabel === v ? "" : v;
+    setF((p) => ({ ...p, serviceLabel: nv, packageName: "", months: "", netPrice: "" }));
+  };
+  const selectPackage = (name: string) => {
+    set("packageName", name);
+    const pkg = pkgs.find((x) => x.name === name);
+    const mo = num(f.months);
+    if (pkg && mo > 0) set("netPrice", String(packagePrice(pkg, mo)));
+  };
+  const selectMonths = (m: string) => {
+    const nm = f.months === m ? "" : m;
+    set("months", nm);
+    const pkg = pkgs.find((x) => x.name === f.packageName);
+    if (pkg && nm) set("netPrice", String(packagePrice(pkg, num(nm))));
+  };
 
   const addFiles = (key: string, list: FileList | File[] | null) => {
     if (!list?.length) return;
@@ -315,9 +367,33 @@ export function RefundWizard() {
             )}
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="ยูสเซอร์ / อีเมล" required hint="กรอกแล้วระบบจะดึงข้อมูลเดิมให้ (ถ้าเคยมี)">
-                <Input value={f.user} onChange={(e) => set("user", e.target.value)} onBlur={lookupUser} />
-              </Field>
+              <div className="relative">
+                <Field label="ยูสเซอร์ / อีเมล" required hint="พิมพ์แล้วเลือกจากรายชื่อเดิม ระบบจะดึงข้อมูลให้">
+                  <Input
+                    value={f.user}
+                    onChange={(e) => onUserInput(e.target.value)}
+                    onFocus={() => { if (userSug.length) setShowUserSug(true); }}
+                    onBlur={() => { setTimeout(() => setShowUserSug(false), 120); lookupUser(); }}
+                    autoComplete="off"
+                  />
+                </Field>
+                {showUserSug && userSug.length > 0 && (
+                  <ul className="absolute left-0 right-0 z-30 mt-1 max-h-56 overflow-auto rounded-xl border border-border bg-surface py-1 shadow-lg">
+                    {userSug.map((u, i) => (
+                      <li key={u}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => { e.preventDefault(); pickUser(u); }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-2"
+                        >
+                          <span className="shrink-0 text-xs text-muted-foreground">#{i + 1}</span>
+                          <span className="min-w-0 flex-1 truncate">{u}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
               <Field label="ไอดียูสเซอร์">
                 <Input value={f.userId} onChange={(e) => set("userId", e.target.value)} />
               </Field>
@@ -334,7 +410,7 @@ export function RefundWizard() {
                 ] as const).map((s) => (
                   <button
                     key={s.v}
-                    onClick={() => set("serviceLabel", f.serviceLabel === s.v ? "" : s.v)}
+                    onClick={() => selectService(s.v)}
                     className={cn(
                       "rounded-xl border px-4 py-3 text-center text-sm font-medium transition-colors",
                       f.serviceLabel === s.v ? "border-primary bg-primary-soft text-primary ring-2 ring-primary/20" : "border-border-strong hover:bg-surface-2",
@@ -364,15 +440,37 @@ export function RefundWizard() {
               <Field label="วันที่ซื้อบริการ">
                 <Input value={f.purchaseDate} onChange={setDate("purchaseDate")} inputMode="numeric" placeholder="วว/ดด/ปปปป" />
               </Field>
-              <Field label="แพ็กเกจ">
-                <Input value={f.packageName} onChange={(e) => set("packageName", e.target.value)} />
+              <Field label="แพ็กเกจ" hint={pkgs.length ? "เลือกแพ็กเกจ + จำนวนเดือน แล้วราคาจะคำนวณให้อัตโนมัติ (แก้ได้)" : undefined}>
+                {pkgs.length > 0 ? (
+                  <div className="relative">
+                    <select
+                      value={f.packageName}
+                      onChange={(e) => selectPackage(e.target.value)}
+                      className={cn(
+                        "h-11 w-full appearance-none rounded-[11px] border border-border-strong bg-surface px-3.5 pr-9 text-foreground",
+                        "focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20",
+                        f.packageName ? "" : "text-muted-foreground/70",
+                      )}
+                    >
+                      <option value="">เลือกแพ็กเกจ</option>
+                      {pkgs.map((p) => (
+                        <option key={p.name} value={p.name} className="text-foreground">
+                          {p.name} · {p.price.toLocaleString("th-TH")} บ./เดือน
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                  </div>
+                ) : (
+                  <Input value={f.packageName} onChange={(e) => set("packageName", e.target.value)} />
+                )}
               </Field>
               <Field label="จำนวนเดือน">
                 <div className="flex gap-2">
-                  {["1", "3", "6", "12"].map((m) => (
+                  {monthOpts.map((m) => (
                     <button
                       key={m}
-                      onClick={() => set("months", f.months === m ? "" : m)}
+                      onClick={() => selectMonths(m)}
                       className={cn(
                         "h-11 flex-1 rounded-[11px] border text-sm font-medium transition-colors",
                         f.months === m
