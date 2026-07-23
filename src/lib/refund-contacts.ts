@@ -36,6 +36,16 @@ export function getRefundContact(user: string): RefundContact | null {
   return readAll()[key] || null;
 }
 
+// ค้นรายชื่อยูสเซอร์เดิมที่ตรงกับคำค้น (ขึ้นต้นก่อน แล้วค่อยที่มีคำนั้น) — ไว้ทำ autocomplete
+export function searchRefundContactKeys(query: string, limit = 8): string[] {
+  const q = norm(query);
+  if (!q) return [];
+  const keys = Object.keys(readAll());
+  const starts = keys.filter((k) => k.startsWith(q));
+  const contains = keys.filter((k) => !k.startsWith(q) && k.includes(q));
+  return [...starts, ...contains].slice(0, limit);
+}
+
 export function saveRefundContact(form: RefundFormInput): void {
   const key = norm(form.user);
   if (!key) return;
