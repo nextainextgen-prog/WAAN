@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Input, Textarea, Field } from "@/components/ui/Input";
 import { bahtText } from "@/lib/baht-text";
 import { UPLOAD_SLOTS, type Brand, type DocType, type RefundFormInput } from "@/lib/refund-slots";
-import { getPackages, packagePrice, getMonthOptions } from "@/lib/refund-packages";
+import { getPackages, packagePrice, getMonthOptions, computeWht } from "@/lib/refund-packages";
 import { cn } from "@/lib/cn";
 
 const STEPS = [
@@ -162,6 +162,26 @@ export function RefundWizard() {
   const pkgs = useMemo(() => getPackages(f.brand || "", f.serviceLabel), [f.brand, f.serviceLabel]);
   const monthOpts = useMemo(() => getMonthOptions(f.serviceLabel), [f.serviceLabel]);
 
+  // ตั้งราคาค่าบริการ + (เคสหัก ณ ที่จ่าย) คำนวณ "ยอดหักภาษี 3%" (ฐานก่อน VAT) + "ยอดโอนคืน" ให้อัตโนมัติ
+  const setNetPrice = (v: string) => {
+    if (f.docType !== "wht") {
+      set("netPrice", v);
+      return;
+    }
+    const np = num(v);
+    const wht = np > 0 ? String(computeWht(np)) : "";
+    setF((p) => ({ ...p, netPrice: v, whtAmount: wht, refund: wht }));
+  };
+  // เปลี่ยนชนิดเอกสาร → ถ้าเป็น wht และมีราคาแล้ว คำนวณ WHT ให้เลย
+  const setDocTypeVal = (v: DocType) => {
+    if (v === "wht") {
+      const np = num(f.netPrice);
+      const wht = np > 0 ? String(computeWht(np)) : "";
+      setF((p) => (np > 0 ? { ...p, docType: v, whtAmount: wht, refund: wht } : { ...p, docType: v }));
+    } else {
+      set("docType", v);
+    }
+  };
   // เปลี่ยนประเภทบริการ (BOT/API) → รีเซ็ตแพ็กเกจ/เดือน/ราคา (เพราะรายการ+ตัวเลือกต่างกัน)
   const selectService = (v: "BOT" | "API") => {
     const nv = f.serviceLabel === v ? "" : v;
@@ -171,13 +191,13 @@ export function RefundWizard() {
     set("packageName", name);
     const pkg = pkgs.find((x) => x.name === name);
     const mo = num(f.months);
-    if (pkg && mo > 0) set("netPrice", String(packagePrice(pkg, mo)));
+    if (pkg && mo > 0) setNetPrice(String(packagePrice(pkg, mo)));
   };
   const selectMonths = (m: string) => {
     const nm = f.months === m ? "" : m;
     set("months", nm);
     const pkg = pkgs.find((x) => x.name === f.packageName);
-    if (pkg && nm) set("netPrice", String(packagePrice(pkg, num(nm))));
+    if (pkg && nm) setNetPrice(String(packagePrice(pkg, num(nm))));
   };
 
   const addFiles = (key: string, list: FileList | File[] | null) => {
@@ -295,7 +315,7 @@ export function RefundWizard() {
                 return (
                   <button
                     key={dt.v}
-                    onClick={() => set("docType", dt.v)}
+                    onClick={() => setDocTypeVal(dt.v)}
                     className={cn(
                       "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all duration-150",
                       on
@@ -484,14 +504,14 @@ export function RefundWizard() {
                 </div>
               </Field>
               <Field label="ราคาค่าบริการ (บาท)">
-                <Input value={f.netPrice} onChange={(e) => set("netPrice", e.target.value)} inputMode="decimal" />
+                <Input value={f.netPrice} onChange={(e) => setNetPrice(e.target.value)} inputMode="decimal" />
               </Field>
               <Field label="เครดิตคงเหลือก่อนขอคืน (บาท)">
                 <Input value={f.remainingCredit} onChange={(e) => set("remainingCredit", e.target.value)} inputMode="decimal" />
               </Field>
               {f.docType === "wht" && (
                 <>
-                  <Field label="ยอดหักภาษี ณ ที่จ่าย (บาท)">
+                  <Field label="ยอดหักภาษี ณ ที่จ่าย (บาท)" hint="คำนวณ 3% จากราคาค่าบริการ (ฐานก่อน VAT) ให้อัตโนมัติ · แก้ได้">
                     <Input value={f.whtAmount} onChange={(e) => set("whtAmount", e.target.value)} inputMode="decimal" />
                   </Field>
                   <Field label="วันที่หักภาษี ณ ที่จ่าย (ตามเอกสารจริง)">

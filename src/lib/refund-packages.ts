@@ -63,3 +63,12 @@ export function getPackages(brand: string, serviceLabel: string): Pkg[] {
 export function getMonthOptions(serviceLabel: string): string[] {
   return serviceLabel === "API" ? ["1", "12"] : ["1", "3", "6", "12"];
 }
+
+export const VAT_RATE = 0.07;
+export const WHT_RATE = 0.03;
+// หัก ณ ที่จ่าย 3% คิดจากฐานก่อน VAT (ราคาค่าบริการรวม VAT แล้ว → ถอด VAT ก่อน)
+// เช่น 552.42 ÷ 1.07 = 516.28 × 3% = 15.49
+export function computeWht(netPriceInclVat: number): number {
+  if (!netPriceInclVat || netPriceInclVat <= 0) return 0;
+  return Math.round((netPriceInclVat / (1 + VAT_RATE)) * WHT_RATE * 100) / 100;
+}
