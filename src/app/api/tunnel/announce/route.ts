@@ -16,6 +16,8 @@ export async function POST(req: Request) {
 
   // กลุ่มปลายทาง: DB setting tunnel_announce_chat_id → fallback telegram_chat_id
   const row = await db.setting.findUnique({ where: { key: "tunnel_announce_chat_id" } });
+  // ปิดการแจ้งเตือนลิงก์ (ตั้งค่าเป็น "off") — ไม่โพสต์เข้ากลุ่ม (quick tunnel เปลี่ยน URL บ่อยเลยสแปม)
+  if (row?.value === "off") return NextResponse.json({ ok: false, disabled: true });
   const chatId =
     row?.value || (await db.setting.findUnique({ where: { key: "telegram_chat_id" } }))?.value;
   if (!chatId) return NextResponse.json({ error: "no chat configured" }, { status: 400 });
