@@ -93,6 +93,7 @@ model Document {
 // ตารางงาน/ปฏิทิน — น้องวานจดสิ่งที่ต้องทำตามวัน แล้วแจ้งเตือนเมื่อถึงวัน
 model CalendarEvent {
   id          String    @id @default(cuid())
+  agent       String    @default("waan")       // waan | kiki — บอทไหนเป็นคนแจ้งเตือน (คนละโทเค็น/กลุ่ม)
   chatId      String                          // แชทที่ให้ลง (แจ้งเตือนกลับที่นี่)
   date        DateTime                         // วันของงาน (เที่ยงคืนของวันนั้น เวลาไทย)
   timeText    String?                          // เวลาถ้าระบุ เช่น "14:00"
@@ -145,4 +146,52 @@ model Lesson {
   active    Boolean  @default(true)
 
   @@index([active, createdAt])
+}
+
+// ===== kiki — เลขาส่วนตัวของเจ้าของ (ชีวิตส่วนตัว แยกจากงานบริษัทเด็ดขาด) =====
+
+// ความจำเกี่ยวกับตัวเจ้าของ (นิสัย/ความชอบ/ข้อห้าม/คนรอบตัว) — kiki อ่านก่อนตอบทุกครั้ง
+model OwnerFact {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  category  String   @default("ทั่วไป")  // ความชอบ | ไม่ชอบ | นิสัย | สุขภาพ | คนรอบตัว | ของสำคัญ | ทั่วไป
+  fact      String
+  source    String?                       // ข้อความต้นทางที่เจ้าของพิมพ์
+  active    Boolean  @default(true)
+
+  @@index([active, category])
+}
+
+// บัญชีรายรับรายจ่ายส่วนตัว — 1 แถว = 1 รายการ (จากสลิป/ข้อความในแชท kiki)
+model FinanceTxn {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  occurredAt DateTime @default(now())    // วันเวลาที่เกิดจริง (อ่านจากสลิปถ้ามี)
+  type       String                       // income | expense
+  amount     Float
+  category   String   @default("อื่นๆ")  // อาหาร | เดินทาง | ของใช้ | บันเทิง | บิล/สมาชิก | สุขภาพ | ให้คนอื่น | เงินเดือน | เงินเสริม | อื่นๆ
+  note       String?                      // จ่ายค่าอะไร/รับจากไหน (สั้น)
+  slipPath   String?                      // ไฟล์สลิปที่เก็บถาวร
+  source     String   @default("chat")    // chat | slip
+  msgId      String?                      // ข้อความ Telegram ที่มา (ไว้ลบ/แก้)
+
+  @@index([occurredAt])
+  @@index([type, occurredAt])
+}
+
+// งบต่อเดือน — category "รวม" = เพดานใช้จ่ายทั้งเดือน, อื่น ๆ = งบรายหมวด
+model FinanceBudget {
+  id        String   @id @default(cuid())
+  updatedAt DateTime @updatedAt
+  category  String   @unique
+  monthly   Float
+}
+
+// ประวัติแชทของ kiki (แยกจาก ChatMessage ของวาน — กันข้อมูลส่วนตัวรั่วเข้าบริบทงาน)
+model KikiChat {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  role      String                        // user | assistant
+  content   String
 }

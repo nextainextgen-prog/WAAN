@@ -12,6 +12,7 @@ export interface ClaudeOptions {
   system?: string; // system prompt / บริบท
   timeoutMs?: number;
   maxBuffer?: number;
+  guard?: string; // การ์ดกันหลุดของ persona อื่น (เช่น kiki) — ไม่ระบุ = การ์ดน้องวาน
 }
 
 // โฟลเดอร์ว่างสำหรับรัน claude (ไม่ให้โหลด CLAUDE.md / slash command / IDE ของโปรเจกต์)
@@ -35,7 +36,8 @@ export async function askClaude(prompt: string, opts: ClaudeOptions = {}): Promi
   const timeoutMs = opts.timeoutMs ?? 120_000;
 
   // รวม context + คำถามเป็น input เดียว ส่งทาง stdin (รองรับข้อความยาว/ภาษาไทย)
-  const sys = opts.system ? `${GUARD}\n\n${opts.system}` : GUARD;
+  const guard = opts.guard || GUARD;
+  const sys = opts.system ? `${guard}\n\n${opts.system}` : guard;
   const fullInput = `${sys}\n\n---\n\n${prompt}`;
 
   return new Promise((resolve, reject) => {

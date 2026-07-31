@@ -8,6 +8,7 @@
     "start": "next start",
     "seed": "node scripts/seed.mjs",
     "bot": "node scripts/telegram-bot.mjs",
+    "kiki": "node scripts/kiki-bot.mjs",
     "tunnel": "node scripts/tunnel-announce.mjs",
     "watch": "node scripts/watch-folder.mjs",
     "drive:auth": "node scripts/drive-auth.mjs",

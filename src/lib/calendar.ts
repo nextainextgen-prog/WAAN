@@ -155,11 +155,13 @@ export async function createEvent(input: {
   parsed: ParsedEvent;
   createdById?: string;
   creatorName?: string;
+  agent?: string; // waan (default) | kiki — บอทไหนรับหน้าที่แจ้งเตือน
 }): Promise<CalEvent> {
   const [y, m, d] = input.parsed.date.split("-").map(Number);
   const date = dayStart(new Date(y, m - 1, d));
   const rec = await db.calendarEvent.create({
     data: {
+      agent: input.agent || "waan",
       chatId: input.chatId,
       date,
       timeText: input.parsed.timeText || null,
@@ -173,12 +175,12 @@ export async function createEvent(input: {
   return { ...rec, gcalLink: g.link || null, meetLink: g.meet || null, gcalError: g.error || null };
 }
 
-// รายการที่ถึงกำหนดแล้ว (วันมาถึง) และยังไม่ได้แจ้ง
-export async function getDueEvents(): Promise<CalEvent[]> {
+// รายการที่ถึงกำหนดแล้ว (วันมาถึง) และยังไม่ได้แจ้ง — แยกตาม agent (วาน/kiki คนละโทเค็น ห้ามหยิบข้ามกัน)
+export async function getDueEvents(agent = "waan"): Promise<CalEvent[]> {
   const now = new Date();
   const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
   return db.calendarEvent.findMany({
-    where: { notified: false, done: false, date: { lte: endToday } },
+    where: { agent, notified: false, done: false, date: { lte: endToday } },
     orderBy: { date: "asc" },
   });
 }
