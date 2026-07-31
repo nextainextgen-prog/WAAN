@@ -9,7 +9,7 @@ import { eventCardHtml, agendaCardHtml, weekCardHtml, editCalendar, weatherFor, 
 import { WISH_RE, handleWish, DEBT_RE, handleDebt, RECUR_RE, handleRecurring, FITNESS_RE, handleFitnessLog, fitnessCoachContext, saveJournal } from "@/lib/kiki-life";
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
-import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm } from "@/lib/kiki-userbot";
+import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm, listDialogs, setAlias, getAliases, type PeerHit } from "@/lib/kiki-userbot";
 import { socialReady, grabFeeds, grabFeedPosts } from "@/lib/kiki-social";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
 import {
@@ -336,6 +336,53 @@ export async function POST(req: Request) {
         await setPendingDm(null);
         return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่ส่ง", replyTo: msgId }]);
       }
+    }
+
+    // ===== Telegram userbot: ลิสต์รายชื่อแชทในบัญชีเจ้าของ =====
+    if (/(เช็ก|เช็ค|ลิส|ขอ|ดู).{0,10}(ราย)?ชื่อแชท|รายชื่อแชท|มีแชท(อะไร|ไหน|ใคร)บ้าง|แชททั้งหมด|ลิสแชท/i.test(text)) {
+      if (!userbotReady()) return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram ครับ ⚠️ รัน: npm run kiki:tg-auth`, replyTo: msgId }]);
+      const kind = /ไม่เอากลุ่ม|เฉพาะคน|แค่คน|คนอย่างเดียว/.test(text) ? "user" : /เฉพาะกลุ่ม|เอาแต่กลุ่ม|แค่กลุ่ม/.test(text) ? "group" : "all";
+      try {
+        const rows = await listDialogs(kind, 40);
+        if (!rows.length) return reply([{ kind: "text", text: "ไม่เจอแชทเลยครับ 🎯", replyTo: msgId }]);
+        await setSetting("kiki_last_dialog_list", JSON.stringify(rows));
+        const aliases = await getAliases();
+        const lines = rows.map((r, i) => {
+          const al = aliases.find((a) => a.peerId === r.id);
+          return `${i + 1}. ${r.name}${r.username ? ` (@${r.username})` : ""}${r.isGroup ? " · กลุ่ม" : ""}${al ? ` — เรียกว่า "${al.alias}"` : ""}`;
+        });
+        return reply([
+          { kind: "text", text: `แชทล่าสุดในบัญชีพี่ (${rows.length}${kind === "user" ? " · เฉพาะคน" : kind === "group" ? " · เฉพาะกลุ่ม" : ""}):\n\n${lines.join("\n")}`, replyTo: msgId },
+          { kind: "text", text: `ตั้งชื่อเรียกเองได้เลยครับ เช่น "แชท 3 คืออั๋น แฟนผม" หรือ "แชท <ชื่อ> คือพี่ภูมิ" — ต่อไปสั่ง "ไปบอกอั๋นว่า..." ได้ทันที 🎯` },
+        ]);
+      } catch (e) {
+        return reply([{ kind: "text", text: `ดึงรายชื่อแชทไม่ได้ครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 100) : "error"})`, replyTo: msgId }]);
+      }
+    }
+
+    // ===== Telegram userbot: ตั้งชื่อเรียกแชทเอง ("แชท 3 คืออั๋น แฟนผม" / "แชท Aun คือแฟนผม ชื่ออั๋น") =====
+    const aliasM = text.match(/^แชท\s*(?:หมายเลข|เบอร์|ที่)?\s*(.{1,50}?)\s*(?:คือ|=)\s*(.{1,80})$/);
+    if (aliasM && userbotReady()) {
+      const ref = aliasM[1].trim();
+      const desc = aliasM[2].trim();
+      let peer: PeerHit | null = null;
+      if (/^\d{1,2}$/.test(ref)) {
+        try {
+          const list = JSON.parse((await getSetting("kiki_last_dialog_list")) || "[]") as PeerHit[];
+          peer = list[Number(ref) - 1] || null;
+        } catch { peer = null; }
+        if (!peer) return reply([{ kind: "text", text: `หมายเลข ${ref} ไม่อยู่ในลิสต์ล่าสุดครับ — พิมพ์ "ขอรายชื่อแชท" ก่อนแล้วค่อยอ้างเลขนะครับ`, replyTo: msgId }]);
+      } else {
+        const hits = await findPeer(ref).catch(() => []);
+        if (!hits.length) return reply([{ kind: "text", text: `หาแชท "${ref}" ไม่เจอครับ — ลอง "ขอรายชื่อแชท" แล้วอ้างหมายเลขแทน`, replyTo: msgId }]);
+        if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ใช้ "ขอรายชื่อแชท" แล้วอ้างหมายเลขชัวร์กว่าครับ`, replyTo: msgId }]);
+        peer = hits[0];
+      }
+      // ชื่อเรียก = คำแรกของคำอธิบาย (เก็บคำอธิบายเต็มไว้ใน note + ความจำ)
+      const alias = desc.replace(/^(ชื่อ|คือ)\s*/, "").split(/\s+/)[0].replace(/[,.]$/, "");
+      await setAlias({ alias, peerId: peer.id, peerName: peer.name, note: desc !== alias ? desc : undefined });
+      await rememberOwnerFact(`"${alias}" ใน Telegram = แชท "${peer.name}"${desc !== alias ? ` (${desc})` : ""}`, { category: "คนรอบตัว", source: text });
+      return reply([{ kind: "text", text: `จำแล้วครับ ✅ "${alias}" = แชท ${peer.name}${desc !== alias ? ` (${desc})` : ""}\n\nต่อไปสั่งได้เลย: "ไปบอก${alias}ว่า..." / "สรุปแชทกับ${alias}"`, replyTo: msgId }]);
     }
 
     // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====

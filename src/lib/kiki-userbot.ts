@@ -40,8 +40,16 @@ export interface PeerHit {
 
 // หาแชท/คนจากชื่อที่เจ้าของพูดถึง (เทียบชื่อใน dialogs ล่าสุด + @username)
 export async function findPeer(query: string): Promise<PeerHit[]> {
+  const q0 = query.trim().toLowerCase().replace(/^@/, "");
+  // ชื่อเรียกที่เจ้าของตั้งเอง มาก่อนชื่อจริงเสมอ ("อั๋น" = แฟน ไม่ต้องจำชื่อแชท)
+  const aliases = await getAliases();
+  const aHits = aliases.filter((a) => {
+    const al = a.alias.toLowerCase();
+    return al === q0 || al.includes(q0) || q0.includes(al);
+  });
+  if (aHits.length) return aHits.map((a) => ({ id: a.peerId, name: `${a.peerName}${a.note ? ` — ${a.note}` : ""}`, isGroup: false }));
   const c = await client();
-  const q = query.trim().toLowerCase().replace(/^@/, "");
+  const q = q0;
   const dialogs = await c.getDialogs({ limit: 150 });
   const hits: PeerHit[] = [];
   for (const d of dialogs) {
@@ -96,4 +104,47 @@ export async function getPendingDm(): Promise<PendingDm | null> {
   } catch {
     return null;
   }
+}
+
+// ===== ลิสต์รายชื่อแชท + ชื่อเรียกส่วนตัว (alias) =====
+
+// รายชื่อแชทล่าสุดในบัญชีเจ้าของ (user = เฉพาะคน ไม่เอากลุ่ม/บอท)
+export async function listDialogs(kind: "user" | "group" | "all" = "all", limit = 40): Promise<PeerHit[]> {
+  const c = await client();
+  const dialogs = await c.getDialogs({ limit: 200 });
+  const out: PeerHit[] = [];
+  for (const d of dialogs) {
+    const isGroup = Boolean(d.isGroup || d.isChannel);
+    if (kind === "user" && isGroup) continue;
+    if (kind === "group" && !isGroup) continue;
+    const ent = d.entity as { username?: string; bot?: boolean } | undefined;
+    if (kind === "user" && ent?.bot) continue; // ไม่นับบอท
+    const name = d.title || d.name || ent?.username || "";
+    if (!name) continue;
+    out.push({ id: String(d.id), name, username: ent?.username, isGroup });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// ชื่อเรียกที่เจ้าของตั้งเอง — "อั๋น" = แชทชื่อจริงอะไรก็ได้ (เก็บใน Setting)
+export interface TgAlias {
+  alias: string;
+  peerId: string;
+  peerName: string;
+  note?: string;
+}
+
+export async function getAliases(): Promise<TgAlias[]> {
+  try {
+    return JSON.parse((await getSetting("kiki_tg_aliases")) || "[]") as TgAlias[];
+  } catch {
+    return [];
+  }
+}
+
+export async function setAlias(a: TgAlias): Promise<void> {
+  const all = (await getAliases()).filter((x) => x.alias !== a.alias);
+  all.push(a);
+  await setSetting("kiki_tg_aliases", JSON.stringify(all));
 }
