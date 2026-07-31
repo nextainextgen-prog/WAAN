@@ -10,7 +10,7 @@ import { WISH_RE, handleWish, DEBT_RE, handleDebt, RECUR_RE, handleRecurring, FI
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
 import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm } from "@/lib/kiki-userbot";
-import { socialReady, grabFeeds } from "@/lib/kiki-social";
+import { socialReady, grabFeeds, grabFeedPosts } from "@/lib/kiki-social";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
 import {
   askKiki,
