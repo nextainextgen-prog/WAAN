@@ -12,11 +12,14 @@ export interface ParsedEvent {
   emoji?: string;
   attendees?: string[]; // อีเมลที่ต้องเชิญ/ยิงไป
   needsMeet?: boolean; // ขอห้องประชุมออนไลน์ (Google Meet) มาด้วย
+  location?: string; // สถานที่
+  withWho?: string; // ไปกับใคร
+  note?: string; // รายละเอียดเพิ่มเติม (จองล่วงหน้า/เตรียมของ ฯลฯ)
 }
 
 const EXTRACT_SYSTEM = `คุณคือผู้ช่วยจดตารางงาน อ่านข้อความผู้ใช้แล้วดึงเป็น "รายการปฏิทิน" ตอบ JSON เท่านั้น ไม่มีข้อความอื่น ไม่มี \`\`\`
 ข้อความหนึ่งอาจมีได้ "หลายงาน" (เช่น สั่งลง 2-3 งานพร้อมกัน) — ให้แยกเป็นหลาย event
-โครงสร้าง: {"events":[{"date":"YYYY-MM-DD","timeText":"HH:MM เวลาเริ่ม หรือว่าง","endTime":"HH:MM เวลาจบ หรือว่าง","title":"สิ่งที่ต้องทำ (สั้น กระชับ)","emoji":"อิโมจิที่ผู้ใช้พิมพ์มา ถ้าไม่มีให้ว่าง","needsMeet":true/false}]}
+โครงสร้าง: {"events":[{"date":"YYYY-MM-DD","timeText":"HH:MM เวลาเริ่ม หรือว่าง","endTime":"HH:MM เวลาจบ หรือว่าง","title":"สิ่งที่ต้องทำ (สั้น กระชับ)","emoji":"อิโมจิที่ผู้ใช้พิมพ์มา ถ้าไม่มีให้ว่าง","needsMeet":true/false,"location":"สถานที่ ถ้าระบุ ไม่งั้นว่าง","withWho":"ไปกับใคร ถ้าระบุ ไม่งั้นว่าง","note":"รายละเอียดอื่นที่ควรจำ (จองล่วงหน้า/เตรียมของ/เบอร์ติดต่อ) ถ้าไม่มีให้ว่าง"}]}
 กติกา:
 - แยกงานแต่ละรายการเป็น 1 event · ถ้าผู้ใช้กำหนดวัน/กำหนดส่งรวมให้ทุกงาน (เช่น "ครบกำหนดวันศุกร์ทั้ง 2 งาน") ให้ใส่ date เดียวกันในทุก event
 - needsMeet=true เมื่อผู้ใช้ขอห้องประชุมออนไลน์/ลิงก์ประชุม เช่น พูดถึง Meet, Google Meet, ประชุมออนไลน์, ลิงก์ประชุม, ห้องประชุม, VC, call, zoom · ถ้าเป็นงานทั่วไปที่ไม่ต้องประชุมออนไลน์ให้ false
@@ -24,7 +27,8 @@ const EXTRACT_SYSTEM = `คุณคือผู้ช่วยจดตาร�
 - ถ้าไม่ได้ระบุวันเลย ให้ใช้ "วันนี้"
 - ถ้าระบุช่วงเวลา เช่น "09:00-12:00" หรือ "บ่าย 2 ถึง 4 โมง" → timeText=เวลาเริ่ม, endTime=เวลาจบ
 - title ตัดคำสั่ง (เช่น "ลงปฏิทิน", "จดไว้", "เตือน", "ยิงไปที่เมล...") + อีเมล ออก เหลือแต่เนื้องาน
-- emoji เอาเฉพาะที่ผู้ใช้พิมพ์มาในข้อความ ถ้าไม่มีให้เว้นว่าง`;
+- emoji เอาเฉพาะที่ผู้ใช้พิมพ์มาในข้อความ ถ้าไม่มีให้เว้นว่าง
+- location/withWho/note: แยกเก็บจากข้อความให้ครบ — สถานที่ (ห้าง/ร้าน/สาขา/ชั้น), คนที่ไปด้วย, รายละเอียดที่ควรจำ · ไม่มีให้เว้นว่าง อย่าเดาเพิ่ม`;
 
 function parseEvents(text: string): ParsedEvent[] {
   let t = text.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
@@ -69,8 +73,13 @@ export interface CalEvent {
   chatId: string;
   date: Date;
   timeText: string | null;
+  endTime?: string | null;
   title: string;
+  location?: string | null;
+  withWho?: string | null;
+  note?: string | null;
   emoji: string | null;
+  gcalEventId?: string | null;
   creatorName: string | null;
   gcalLink?: string | null; // ลิงก์เปิดใน Google Calendar (ถ้าลงสำเร็จ)
   meetLink?: string | null; // ลิงก์ห้อง Google Meet (ถ้าขอมาและสร้างสำเร็จ)
@@ -80,11 +89,14 @@ export interface CalEvent {
 const TZ = "Asia/Bangkok";
 
 // สร้าง event จริงใน Google Calendar (ปฏิทินหลักของบัญชีที่เชื่อมไว้) → คืน htmlLink
-async function createGoogleEvent(parsed: ParsedEvent): Promise<{ link?: string; meet?: string; error?: string }> {
+async function createGoogleEvent(parsed: ParsedEvent): Promise<{ link?: string; meet?: string; id?: string; error?: string }> {
   try {
     const cal = getCalendar();
     const summary = `${parsed.emoji ? parsed.emoji + " " : ""}${parsed.title}`;
     const requestBody: Record<string, unknown> = { summary };
+    if (parsed.location) requestBody.location = parsed.location;
+    const descParts = [parsed.withWho ? `กับ: ${parsed.withWho}` : "", parsed.note || ""].filter(Boolean);
+    if (descParts.length) requestBody.description = descParts.join("\n");
     if (parsed.timeText && /^\d{1,2}:\d{2}$/.test(parsed.timeText)) {
       const start = `${parsed.date}T${parsed.timeText.padStart(5, "0")}:00`;
       // เวลาจบ: ใช้ endTime ถ้ามี ไม่งั้น +1 ชม.
@@ -122,7 +134,7 @@ async function createGoogleEvent(parsed: ParsedEvent): Promise<{ link?: string; 
       conferenceDataVersion: parsed.needsMeet ? 1 : 0,
       sendUpdates: parsed.attendees?.length ? "all" : "none",
     });
-    return { link: res.data.htmlLink || undefined, meet: res.data.hangoutLink || undefined };
+    return { link: res.data.htmlLink || undefined, meet: res.data.hangoutLink || undefined, id: res.data.id || undefined };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // scope ไม่พอ / ยังไม่ได้เชื่อม → ให้ผู้ใช้ re-auth
@@ -159,20 +171,61 @@ export async function createEvent(input: {
 }): Promise<CalEvent> {
   const [y, m, d] = input.parsed.date.split("-").map(Number);
   const date = dayStart(new Date(y, m - 1, d));
+  const g = await createGoogleEvent(input.parsed);
   const rec = await db.calendarEvent.create({
     data: {
       agent: input.agent || "waan",
       chatId: input.chatId,
       date,
       timeText: input.parsed.timeText || null,
+      endTime: input.parsed.endTime || null,
       title: input.parsed.title,
+      location: input.parsed.location || null,
+      withWho: input.parsed.withWho || null,
+      note: input.parsed.note || null,
       emoji: input.parsed.emoji || null,
+      gcalEventId: g.id || null,
       createdById: input.createdById || null,
       creatorName: input.creatorName || null,
     },
   });
-  const g = await createGoogleEvent(input.parsed);
   return { ...rec, gcalLink: g.link || null, meetLink: g.meet || null, gcalError: g.error || null };
+}
+
+// ลบ/เลื่อน event ใน Google Calendar ตามระบบ (เงียบถ้าพลาด — ระบบในเครื่องคือ source of truth)
+export async function deleteGoogleEvent(eventId: string): Promise<boolean> {
+  try {
+    await getCalendar().events.delete({ calendarId: "primary", eventId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function moveGoogleEvent(eventId: string, date: string, timeText?: string | null, endTime?: string | null): Promise<boolean> {
+  try {
+    const requestBody: Record<string, unknown> = {};
+    if (timeText && /^\d{1,2}:\d{2}$/.test(timeText)) {
+      const start = `${date}T${timeText.padStart(5, "0")}:00`;
+      let end: string;
+      if (endTime && /^\d{1,2}:\d{2}$/.test(endTime)) end = `${date}T${endTime.padStart(5, "0")}:00`;
+      else {
+        const [h, mi] = timeText.split(":").map(Number);
+        end = `${date}T${String((h + 1) % 24).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00`;
+      }
+      requestBody.start = { dateTime: start, timeZone: TZ };
+      requestBody.end = { dateTime: end, timeZone: TZ };
+    } else {
+      const [y, m, d] = date.split("-").map(Number);
+      const next = new Date(y, m - 1, d + 1);
+      requestBody.start = { date };
+      requestBody.end = { date: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}` };
+    }
+    await getCalendar().events.patch({ calendarId: "primary", eventId, requestBody });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // รายการที่ถึงกำหนดแล้ว (วันมาถึง) และยังไม่ได้แจ้ง — แยกตาม agent (วาน/kiki คนละโทเค็น ห้ามหยิบข้ามกัน)

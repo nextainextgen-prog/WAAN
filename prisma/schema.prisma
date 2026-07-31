@@ -97,15 +97,24 @@ model CalendarEvent {
   chatId      String                          // แชทที่ให้ลง (แจ้งเตือนกลับที่นี่)
   date        DateTime                         // วันของงาน (เที่ยงคืนของวันนั้น เวลาไทย)
   timeText    String?                          // เวลาถ้าระบุ เช่น "14:00"
+  endTime     String?                          // เวลาจบ เช่น "21:30"
   title       String                           // สิ่งที่ต้องทำ
+  location    String?                          // สถานที่
+  withWho     String?                          // ไปกับใคร
+  note        String?                          // รายละเอียดเพิ่มเติม
   emoji       String?                          // อิโมจิที่ผู้ใช้กำหนด
+  gcalEventId String?                          // id ใน Google Calendar (ไว้ลบ/เลื่อนตามกัน)
   createdById String?
   creatorName String?
-  notified    Boolean   @default(false)        // แจ้งเตือนถึงวันแล้วหรือยัง
+  notified    Boolean   @default(false)        // แจ้งเตือนถึงวัน (เช้าวันนัด) แล้วหรือยัง
+  remindedEve  Boolean  @default(false)        // เตือนเย็นก่อนวันนัดแล้ว (kiki ladder)
+  remindedHour Boolean  @default(false)        // เตือนก่อนถึงเวลา/08:00 นัดทั้งวัน แล้ว (kiki ladder)
+  followedUp   Boolean  @default(false)        // ทักถามหลังนัดจบแล้ว (kiki ladder)
   done        Boolean   @default(false)
   createdAt   DateTime  @default(now())
 
   @@index([notified, date])
+  @@index([agent, date])
 }
 
 // บันทึกสิ่งที่น้องวานทำ/เฝ้า (append-only) — ให้วานตอบย้อนหลังได้ว่าทำอะไรไป + รายงานสุขภาพตัวเอง

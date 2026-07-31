@@ -77,6 +77,7 @@ async function deliver(chatId, sends) {
           chat_id: target,
           text: chunks[i],
           ...(s.parseMode ? { parse_mode: s.parseMode } : {}),
+          ...(s.noPreview ? { link_preview_options: { is_disabled: true } } : {}),
           ...(i === 0 && s.replyTo ? { reply_to_message_id: s.replyTo, allow_sending_without_reply: true } : {}),
         }).catch((e) => console.error("send text err:", e?.message));
       }
