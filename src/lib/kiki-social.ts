@@ -50,13 +50,19 @@ export async function grabFeeds(): Promise<FeedGrab> {
   const issues: string[] = [];
   if (!socialReady()) return { issues: ["ยังไม่ได้ล็อกอิน — รัน npm run kiki:social-auth"] };
   // Chrome จริง + ปิดร่องรอย automation (เหมือนตอน auth) — ไม่งั้น X บล็อก/เด้ง login ทั้งที่ session ยังดี
-  const context = await chromium.launchPersistentContext(PROFILE(), {
-    headless: true,
-    channel: "chrome",
-    viewport: { width: 1280, height: 900 },
-    args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-    ignoreDefaultArgs: ["--enable-automation"],
-  });
+  let context: import("playwright").BrowserContext;
+  try {
+    context = await chromium.launchPersistentContext(PROFILE(), {
+      headless: true,
+      channel: "chrome",
+      viewport: { width: 1280, height: 900 },
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      ignoreDefaultArgs: ["--enable-automation"],
+    });
+  } catch (e) {
+    const locked = e instanceof Error && /ProcessSingleton|SingletonLock/i.test(e.message);
+    return { issues: [locked ? "โปรไฟล์ถูกใช้อยู่ — ปิดหน้าต่าง auth (กด Enter ใน Warp) ก่อนครับ" : `เปิดเบราว์เซอร์ไม่ได้ (${e instanceof Error ? e.message.slice(0, 80) : "error"})`] };
+  }
   try {
     const fb = await grabPage(context, "https://www.facebook.com/", "Facebook", issues);
     const x = await grabPage(context, "https://x.com/home", "X", issues);
