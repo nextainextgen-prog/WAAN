@@ -38,6 +38,7 @@ export const KIKI_PERSONA = `คุณคือ "Vex" เลขาส่วน�
 - ความจำ: เจ้าของบอกอะไรให้จำ = จำถาวร เอามาใช้ตอบทีหลังได้
 - ความรู้: อ่านลิงก์/ไฟล์ที่ส่งมา เก็บเป็นคลังความรู้ส่วนตัว ตอบย้อนหลังได้ว่าเคยเก็บอะไรไว้
 - ถามอะไรตอบได้ทุกเรื่อง ตอบจากข้อมูลจริงที่มี ถ้าไม่รู้บอกตรง ๆ ห้ามมโน
+- เสียง: เจ้าของอัดเสียงมา = ระบบถอดเสียงให้คุณอ่าน และ "คำตอบของคุณจะถูกแปลงเป็นไฟล์เสียงส่งกลับให้เขาอัตโนมัติ" — คุณตอบเป็นเสียงได้ ห้ามบอกว่าทำไม่ได้/ต้องต่อระบบเพิ่ม · ตอนรู้ว่าจะถูกอ่านออกเสียง เขียนคำตอบเป็นภาษาพูดที่อ่านลื่น ๆ
 
 ข้อห้ามเด็ดขาด:
 - ห้ามพูดถึงงานบริษัท Thunder/EasySlip/ทุนวิจัย/น้องวาน — นั่นคนละโลก คุณดูแลเฉพาะเรื่องส่วนตัว
@@ -545,6 +546,9 @@ export async function ttsOgg(text: string): Promise<Buffer | null> {
   try {
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) return null;
+    // ตัดอิโมจิ/มาร์กอัปก่อนอ่านออกเสียง (ไม่งั้น TTS อ่าน "เครื่องหมายเตือน" ออกมาด้วย)
+    text = text.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, " ").replace(/[*_`#>|]/g, " ").replace(/\s+/g, " ").trim();
+    if (!text) return null;
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${key}`,
       {
@@ -572,8 +576,9 @@ export async function ttsOgg(text: string): Promise<Buffer | null> {
     const ogg = path.join(dir, "v.ogg");
     await fs.writeFile(pcm, Buffer.from(b64, "base64"));
     await new Promise<void>((resolve, reject) => {
+      const ffmpegBin = existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg";
       execFile(
-        "ffmpeg",
+        ffmpegBin,
         ["-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", pcm, "-c:a", "libopus", "-b:a", "48k", ogg],
         { timeout: 30_000 },
         (err) => (err ? reject(err) : resolve()),

@@ -181,6 +181,14 @@ export async function POST(req: Request) {
   await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`);
   const reply = async (sends: Send[]) => {
     for (const s of sends) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text);
+    // เจ้าของพูดมาเป็นเสียง → คำตอบหลักถูกอ่านเป็นเสียงกลับเสมอ (ครอบทุก intent ไม่ใช่แค่คุยทั่วไป)
+    if (voiceNote) {
+      const mainText = sends.find((s) => s.kind === "text" && s.text)?.text;
+      if (mainText) {
+        const ogg = await ttsOgg(mainText.replace(/<[^>]+>/g, " "));
+        if (ogg) sends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
+      }
+    }
     return ok(sends);
   };
 
@@ -629,9 +637,10 @@ export async function POST(req: Request) {
 
     const answer = await askKiki(text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)", ctxParts.join("\n\n") || undefined);
     const outSends: Send[] = [{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }];
-    // เจ้าของพูดมาเป็นเสียง → ตอบเสียงกลับด้วย (ฟังตอนขับรถได้ทั้งลูป)
-    if (voiceNote || /อ่านให้ฟัง|ตอบเสียง|พูดให้ฟัง/.test(text)) {
-      const ogg = await ttsOgg(voiceNote && !/อ่านให้ฟัง/.test(text) ? answer : (/อ่านให้ฟัง|พูดให้ฟัง/.test(text) && replyText ? replyText : answer));
+    // สั่งด้วยข้อความว่า "อ่านให้ฟัง/ตอบเสียง" → อ่านข้อความที่ reply ถึง (หรือคำตอบ) เป็นเสียง
+    // (กรณีเจ้าของพูดมาเป็นเสียง reply() แนบเสียงให้อยู่แล้ว ไม่ต้องซ้ำ)
+    if (!voiceNote && /อ่านให้ฟัง|ตอบเสียง|พูดให้ฟัง/.test(text)) {
+      const ogg = await ttsOgg(/อ่านให้ฟัง|พูดให้ฟัง/.test(text) && replyText ? replyText : answer);
       if (ogg) outSends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
     }
     return reply(outSends);
