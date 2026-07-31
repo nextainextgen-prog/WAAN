@@ -183,16 +183,45 @@ export async function POST(req: Request) {
   await addKikiChatId(chatId);
 
   await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`);
-  const reply = async (sends: Send[]) => {
-    for (const s of sends) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text);
-    // เจ้าของพูดมาเป็นเสียง หรือเปิดโหมดตอบเสียงตลอด → คำตอบหลักถูกอ่านเป็นเสียงกลับเสมอ (ครอบทุก intent)
-    if (voiceNote || (await getSetting("kiki_voice_always")) === "1") {
-      const mainText = sends.find((s) => s.kind === "text" && s.text)?.text;
-      if (mainText) {
-        const ogg = await ttsOgg(mainText.replace(/<[^>]+>/g, " "));
-        if (ogg) sends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
+
+  // ซอยข้อความยาวเป็นหลายบับเบิล (เจ้าของสั่ง 31 ก.ค.): ย่อหน้าละข้อความ · <copy>...</copy> = กล่องแตะก็อปก้อนเดียว
+  const explodeTextSend = (s: Send): Send[] => {
+    if (s.kind !== "text" || !s.text || s.parseMode) return [s];
+    const out: Send[] = [];
+    const segs = s.text.split(/<copy>([\s\S]*?)<\/copy>/g);
+    segs.forEach((seg, i) => {
+      if (i % 2 === 1) {
+        const c = seg.trim();
+        if (c) out.push({ kind: "text", parseMode: "HTML", text: `<pre>${escHtml(c)}</pre>` });
+      } else {
+        for (const para of seg.split(/\n{2,}/)) {
+          const p = para.trim();
+          if (p) out.push({ kind: "text", text: p });
+        }
       }
+    });
+    if (!out.length) return [s];
+    if (out.length > 8) {
+      // กันสแปมแชท: เกิน 8 บับเบิล รวมส่วนท้ายเป็นก้อนเดียว
+      const tail = out.splice(7);
+      out.push({ kind: "text", text: tail.map((t) => t.text).join("\n\n"), parseMode: tail.some((t) => t.parseMode) ? "HTML" : undefined });
     }
+    return out.map((x, i) => (i === 0 ? { ...x, replyTo: s.replyTo } : x));
+  };
+
+  const reply = async (sendsIn: Send[]) => {
+    for (const s of sendsIn) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text.replace(/<\/?copy>/g, ""));
+    const fullText = sendsIn.filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
+    const voiceAlways = (await getSetting("kiki_voice_always")) === "1";
+    let voiceSend: Send | null = null;
+    if ((voiceNote || voiceAlways) && fullText) {
+      const ogg = await ttsOgg(fullText.replace(/<[^>]+>/g, " "));
+      if (ogg) voiceSend = { kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" };
+    }
+    let sends = sendsIn.flatMap(explodeTextSend);
+    // เจ้าของพูดมา = ตอบเสียง "อย่างเดียว" (ตัดข้อความออก คงการ์ด/ไฟล์ไว้) — ทำเสียงไม่ได้ค่อยส่งข้อความแทน
+    if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text");
+    if (voiceSend) sends.push(voiceSend);
     return ok(sends);
   };
 
@@ -422,7 +451,7 @@ export async function POST(req: Request) {
     // ===== เจ้าของสอน/ปรับนิสัย Vex (พัฒนาตัวเองผ่านแชท) =====
     // จับทั้งแบบขึ้นต้นชัดเจน (สอนว่า/ต่อไป/ตั้งแต่นี้) และแบบสั่งห้ามที่มีคำบอกความถาวร (อย่า...อีก/ตลอด/ทุกครั้ง)
     // — เคยพลาด: "ต่อไปไม่ต้องใส่อิโมจิในภาพนี้" ไม่เข้า pattern แล้ว AI ตอบมั่วว่าจำแล้วทั้งที่ไม่ได้จำ
-    const teachM = text.match(/^\s*(?:สอน(?:นาย|ไว้)?(?:ว่า)?|ต่อไป(?:นี้)?|ตั้งแต่(?:นี้|วันนี้)(?:ไป|เป็นต้นไป)?|นับจากนี้|จากนี้(?:ไป)?|หลังจากนี้|ปรับนิสัย|กฎใหม่)\s*[:：,]?\s*([\s\S]+)/);
+    const teachM = text.match(/^\s*(?:สอน(?:นาย|ไว้)?(?:ว่า)?|ต่อไป(?:นี้)?|ตั้งแต่(?:นี้|วันนี้)(?:ไป|เป็นต้นไป)?|นับจากนี้|จากนี้(?:ไป)?|หลังจากนี้|ครั้ง(?:หน้า|ต่อไป)|คราวหน้า|ปรับนิสัย|กฎใหม่)\s*[:：,]?\s*([\s\S]+)/);
     const banM = !teachM && /^\s*(?:อย่า|ห้าม|ไม่ต้อง|เลิก)/.test(text) && /ตลอด|ถาวร|ทุกครั้ง|อีกต่อไป|เด็ดขาด|อีกเลย|อีกแล้ว|ต่อไป/.test(text)
       ? text.trim()
       : null;
