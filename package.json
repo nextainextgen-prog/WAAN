@@ -10,6 +10,8 @@
     "bot": "node scripts/telegram-bot.mjs",
     "kiki": "node scripts/kiki-bot.mjs",
     "kiki:gmail-auth": "node scripts/kiki-gmail-auth.mjs",
+    "kiki:tg-auth": "node scripts/kiki-tg-auth.mjs",
+    "kiki:social-auth": "node scripts/kiki-social-auth.mjs",
     "tunnel": "node scripts/tunnel-announce.mjs",
     "watch": "node scripts/watch-folder.mjs",
     "drive:auth": "node scripts/drive-auth.mjs",
@@ -61,6 +63,7 @@
     "recharts": "^3.9.2",
     "sqlite-vec": "^0.1.9",
     "tailwind-merge": "^3.6.0",
+    "telegram": "^2.26.22",
     "xlsx": "^0.18.5",
     "xlsx-republish": "^0.20.3"
   },

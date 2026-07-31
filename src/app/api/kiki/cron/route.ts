@@ -7,6 +7,8 @@ import { financeSnapshot, snapshotFacts, financeCardHtml, fmtBaht } from "@/lib/
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
 import { dueRecurrings, debtNagFacts, weeklyReportFacts } from "@/lib/kiki-life";
 import { pollBankEmails } from "@/lib/kiki-gmail";
+import { socialReady, grabFeeds } from "@/lib/kiki-social";
+import { ttsOgg } from "@/lib/kiki";
 import { askClaude } from "@/lib/claude";
 import { KIKI_GUARD, KIKI_PERSONA } from "@/lib/kiki";
 import { db } from "@/lib/db";
@@ -18,7 +20,7 @@ export const maxDuration = 240;
 // ladder เตือนนัด: เย็นก่อนวันนัด 18:00 → เช้าวันนัด 07:00 (ใน brief) → ก่อนเวลา 1 ชม. (ทั้งวัน = 08:00) → ทักหลังนัดจบ
 interface CronSend {
   chatId: string;
-  kind: "text" | "photo" | "document";
+  kind: "text" | "photo" | "document" | "voice";
   text?: string;
   dataBase64?: string;
   caption?: string;
@@ -264,6 +266,28 @@ ${nags.join("\n")}`);
       await saveKikiChat("assistant", t);
     }
   } catch { /* พรุ่งนี้ค่อยถาม */ }
+
+  // ===== K) ข่าวเช้าจากฟีดเฟส/X (08:30 — ข้อความ + คลิปเสียงอ่านให้ฟัง) =====
+  try {
+    if (mainChat && socialReady() && (now.getHours() > 8 || (now.getHours() === 8 && now.getMinutes() >= 30)) && (await getSetting("kiki_last_social_brief")) !== today) {
+      await setSetting("kiki_last_social_brief", today);
+      const g = await grabFeeds();
+      if (g.fb || g.x) {
+        const t = await askKiki(
+          "[ข่าวเช้าจากฟีด] สรุปฟีดโซเชียลของเจ้าของเช้านี้: ข่าวเด่น เรื่องที่คนพูดถึง อัปเดตจากคนที่ติดตาม แยกหัวข้อสั้น ๆ อ่านง่าย ปิดท้ายชี้เรื่องน่าสนใจสุด (เขียนเป็นภาษาพูด จะถูกอ่านออกเสียงด้วย)",
+          [g.fb ? `=== ฟีด Facebook ===\n${g.fb}` : "", g.x ? `=== ฟีด X ===\n${g.x}` : ""].filter(Boolean).join("\n\n"),
+        ).catch(() => "");
+        if (t) {
+          sends.push({ chatId: mainChat, kind: "text", text: t });
+          const ogg = await ttsOgg(t).catch(() => null);
+          if (ogg) sends.push({ chatId: mainChat, kind: "voice", dataBase64: ogg.toString("base64"), filename: "news.ogg" });
+          await saveKikiChat("assistant", t);
+        }
+      } else if (g.issues.length) {
+        sends.push({ chatId: mainChat, kind: "text", text: `อ่านฟีดเช้านี้ไม่ได้ครับ ⚠️ ${g.issues.join(" · ")}` });
+      }
+    }
+  } catch { /* พรุ่งนี้ค่อยลอง */ }
 
   // ===== E) สรุปสิ้นเดือน (วันที่ 1 เวลา >= 08:00 สรุปเดือนที่แล้ว) =====
   try {

@@ -8,6 +8,9 @@ import { extractEvents, createEvent, getUpcoming, thaiDate } from "@/lib/calenda
 import { eventCardHtml, agendaCardHtml, weekCardHtml, editCalendar, weatherFor, evStart, type KikiEvent } from "@/lib/kiki-calendar";
 import { WISH_RE, handleWish, DEBT_RE, handleDebt, RECUR_RE, handleRecurring, FITNESS_RE, handleFitnessLog, fitnessCoachContext, saveJournal } from "@/lib/kiki-life";
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
+import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
+import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm } from "@/lib/kiki-userbot";
+import { socialReady, grabFeeds } from "@/lib/kiki-social";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
 import {
   askKiki,
@@ -32,6 +35,7 @@ import {
   VEX_RULE_CATEGORY,
   getSetting,
   ttsOgg,
+  webResearch,
 } from "@/lib/kiki";
 import {
   extractFinance,
@@ -277,6 +281,93 @@ export async function POST(req: Request) {
     if (/(ปิด|เลิก|หยุด|ไม่เอา).{0,10}(โหมดเสียง|ตอบเสียง|พูดตลอด)|ตอบข้อความพอ/.test(text)) {
       await setSetting("kiki_voice_always", "");
       return reply([{ kind: "text", text: "ปิดโหมดตอบเสียงตลอดแล้วครับ ✅ จะพูดเฉพาะตอนพี่พูดมา หรือสั่ง \"ตอบเสียง\"", replyTo: msgId }]);
+    }
+
+    // ===== Telegram userbot: ยืนยัน/ยกเลิกการส่งที่ค้างอยู่ =====
+    {
+      const pending = await getPendingDm();
+      if (pending && /^\s*(ยืนยัน|ส่งเลย|ส่งได้|โอเค\s*ส่ง|เอาเลย)/.test(text)) {
+        await setPendingDm(null);
+        try {
+          await sendAsOwner(pending.peerId, pending.message);
+          return reply([{ kind: "text", text: `ส่งหา ${pending.peerName} แล้วครับ 📤 (ในนามบัญชีพี่เอง)`, replyTo: msgId }]);
+        } catch (e) {
+          return reply([{ kind: "text", text: `ส่งไม่สำเร็จครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 120) : "error"})`, replyTo: msgId }]);
+        }
+      }
+      if (pending && /^\s*(ยกเลิก|ไม่ส่ง|ไม่เอา)/.test(text)) {
+        await setPendingDm(null);
+        return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่ส่ง", replyTo: msgId }]);
+      }
+    }
+
+    // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====
+    if (/(ไปบอก|ทักไป(หา)?|ส่งข้อความ(หา|ให้)|ฝากบอก)[^\n]{1,60}(ว่า|:)/.test(text)) {
+      if (!userbotReady()) {
+        return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram พี่ครับ ⚠️ รันในเทอร์มินัล: npm run kiki:tg-auth (ครั้งเดียว) แล้วผมส่งแทนพี่ได้เลย`, replyTo: msgId }]);
+      }
+      let dm: { target?: string; message?: string } | null = null;
+      try {
+        const raw = await askClaude(`ข้อความเจ้าของ: """${text}"""`, {
+          guard: KIKI_GUARD,
+          system: `แยกคำสั่งส่งข้อความ ตอบ JSON เท่านั้น: {"target":"ชื่อ/username คนหรือกลุ่มที่จะส่งหา","message":"ข้อความที่จะส่ง (เรียบเรียงจากที่เจ้าของสั่ง ให้เหมือนเจ้าของพิมพ์เอง ไม่ต้องแนะนำตัว)"}`,
+          timeoutMs: 60_000,
+        });
+        const m = raw.match(/\{[\s\S]*\}/);
+        dm = m ? (JSON.parse(m[0]) as { target?: string; message?: string }) : null;
+      } catch { dm = null; }
+      if (!dm?.target || !dm.message) return reply([{ kind: "text", text: `บอกใหม่อีกทีครับ ใครและข้อความว่าอะไร เช่น "ไปบอกแม่ว่า เดี๋ยวกลับดึก"`, replyTo: msgId }]);
+      const hits = await findPeer(dm.target).catch(() => []);
+      if (!hits.length) return reply([{ kind: "text", text: `หาแชท "${dm.target}" ในบัญชีพี่ไม่เจอครับ 🎯 ลองบอกชื่อตามที่โชว์ใน Telegram หรือ @username`, replyTo: msgId }]);
+      if (hits.length > 1) {
+        return reply([{ kind: "text", text: `เจอหลายแชทครับ หมายถึงอันไหน:\n${hits.map((h, i) => `${i + 1}. ${h.name}${h.username ? ` (@${h.username})` : ""}${h.isGroup ? " · กลุ่ม" : ""}`).join("\n")}\n\nสั่งใหม่โดยระบุชื่อเต็ม/username ครับ`, replyTo: msgId }]);
+      }
+      await setPendingDm({ peerId: hits[0].id, peerName: hits[0].name, message: dm.message });
+      return reply([{ kind: "text", text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"\n\nพิมพ์ "ยืนยัน" เพื่อส่ง หรือ "ยกเลิก" ⚠️`, replyTo: msgId }]);
+    }
+
+    // ===== Telegram userbot: สรุปแชท/กลุ่มไหนก็ได้ที่เจ้าของอยู่ =====
+    const chatSumM = text.match(/สรุปแชท(?:กับ|กลุ่ม)?\s*([^\n]{2,40}?)(?:ให้|หน่อย|ล่าสุด|วันนี้|$)/);
+    if (chatSumM && userbotReady() && !/ฟีด|เฟส|facebook/i.test(text)) {
+      const hits = await findPeer(chatSumM[1].trim()).catch(() => []);
+      if (hits.length === 1) {
+        const lines = await readChat(hits[0].id, 80).catch(() => []);
+        if (!lines.length) return reply([{ kind: "text", text: `อ่านแชท ${hits[0].name} ไม่ได้/ไม่มีข้อความครับ`, replyTo: msgId }]);
+        const answer = await askKiki(
+          `สรุปบทสนทนาในแชท "${hits[0].name}" ให้เจ้าของ: ประเด็นหลัก ใครพูดอะไรสำคัญ มีอะไรต้องทำ/ตอบไหม`,
+          `=== ข้อความล่าสุดในแชท (เก่า→ใหม่) ===\n${lines.join("\n").slice(0, 12_000)}`,
+        );
+        return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+      }
+      if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ระบุชื่อเต็มอีกทีครับ`, replyTo: msgId }]);
+    }
+
+    // ===== สั่งเครื่อง Mac (คำสั่งด่วน + agent ทำแทนที่เครื่อง/Warp/Chrome) =====
+    if (MAC_RE.test(text)) {
+      try {
+        const quick = await quickMac(text);
+        const r = quick || (await macAgent(text));
+        const sends: Send[] = [];
+        for (const ip of r.imagePaths || []) {
+          try { sends.push({ kind: "photo", dataBase64: fs.readFileSync(ip).toString("base64"), filename: path.basename(ip) }); } catch { /* ข้าม */ }
+        }
+        sends.push({ kind: "text", text: r.text.slice(0, 3900), replyTo: msgId });
+        return reply(sends);
+      } catch (e) {
+        return reply([{ kind: "text", text: `ทำที่เครื่องไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`, replyTo: msgId }]);
+      }
+    }
+
+    // ===== สรุปฟีด Facebook/X ตอนนี้ =====
+    if (/สรุปฟีด|ฟีด(วันนี้|มีอะไร)|(เฟส|facebook|ทวิต).{0,16}(มีอะไร|สรุป|ข่าว|อัปเดต)/i.test(text)) {
+      if (!socialReady()) return reply([{ kind: "text", text: `ยังไม่ได้ล็อกอินเฟส/X ให้ผมครับ ⚠️ รันในเทอร์มินัล: npm run kiki:social-auth (ครั้งเดียว)`, replyTo: msgId }]);
+      const g = await grabFeeds();
+      if (!g.fb && !g.x) return reply([{ kind: "text", text: `อ่านฟีดไม่ได้ครับ ⚠️ ${g.issues.join(" · ")}`, replyTo: msgId }]);
+      const answer = await askKiki(
+        "สรุปฟีดโซเชียลของเจ้าของตอนนี้: ข่าว/เรื่องเด่น/อัปเดตจากคนที่ติดตาม แยกเป็นหัวข้ออ่านง่าย อะไรน่าสนใจชี้เป้า",
+        [g.fb ? `=== เนื้อหาจากฟีด Facebook ===\n${g.fb}` : "", g.x ? `=== เนื้อหาจากฟีด X ===\n${g.x}` : "", g.issues.length ? `หมายเหตุ: ${g.issues.join(" · ")}` : ""].filter(Boolean).join("\n\n"),
+      );
+      return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
     }
 
     // ===== เปลี่ยนเสียงพูดของ Vex =====
@@ -598,6 +689,18 @@ export async function POST(req: Request) {
           return reply(sends);
         }
       } catch { /* แยกไม่ได้ → คุยปกติให้ถามต่อ */ }
+    }
+
+    // ===== หาข้อมูล/ค้นเว็บสด + วิเคราะห์ =====
+    if (/หาข้อมูล|ค้นหา|รีเสิร์ช|research|เสิร์ช|ช่วยหา(ให้)?|หาให้หน่อย|เทียบ.{0,16}(รุ่น|ราคา|สเปค)|ราคา.{0,12}(ตอนนี้|ล่าสุด|เท่าไหร่)|ข่าว.{0,10}(วันนี้|ล่าสุด|เกี่ยวกับ)|อัปเดตล่าสุด/i.test(text) && !imageFiles.length) {
+      try {
+        const research = await webResearch(text);
+        const answer = await askKiki(
+          text,
+          `=== ผลค้นเว็บสด (ข้อมูลจริงเรียลไทม์ ใช้ตอบ/วิเคราะห์ได้เลย ห้ามมโนเพิ่ม) ===\n${research.slice(0, 14_000)}\n\n[วิเคราะห์+สรุปตามที่เจ้าของขอ เว้นบรรทัดอ่านง่าย ตัวเลข/วันที่ครบ]`,
+        );
+        return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+      } catch { /* ค้นไม่ได้ → ตกไปคุยปกติ ตอบเท่าที่รู้ */ }
     }
 
     // ===== สรุปเป็น HTML (เจ้าของสั่ง "สรุป..." = เอกสาร HTML ละเอียดเสมอ) =====

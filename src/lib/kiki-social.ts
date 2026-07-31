@@ -1,0 +1,64 @@
+import fs from "node:fs";
+import path from "node:path";
+import { chromium } from "playwright";
+
+/**
+ * อ่านฟีด Facebook / X ของเจ้าของ (playwright + โปรไฟล์ล็อกอินถาวร)
+ * ตั้งค่า: npm run kiki:social-auth (ล็อกอินทั้งสองเว็บครั้งเดียว)
+ * เทคนิค: ดูด innerText ทั้งหน้า แล้วให้สมองสกัดโพสต์/ข่าวเอา — ทน DOM เปลี่ยนกว่า selector เจาะจง
+ */
+
+const PROFILE = () => process.env.KIKI_SOCIAL_PROFILE || path.join(process.cwd(), ".kiki-social-profile");
+
+export function socialReady(): boolean {
+  return fs.existsSync(PROFILE());
+}
+
+export interface FeedGrab {
+  fb?: string;
+  x?: string;
+  issues: string[];
+}
+
+async function grabPage(context: import("playwright").BrowserContext, url: string, name: string, issues: string[]): Promise<string | undefined> {
+  const page = await context.newPage();
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    await page.waitForTimeout(6000); // รอฟีดโหลด
+    // เลื่อน 2 รอบให้โพสต์เข้ามาเพิ่ม
+    for (let i = 0; i < 2; i++) {
+      await page.mouse.wheel(0, 2500);
+      await page.waitForTimeout(2500);
+    }
+    const text = (await page.evaluate(() => document.body.innerText)) || "";
+    const t = text.replace(/\n{3,}/g, "\n\n").slice(0, 9000);
+    // เจอหน้า login = session หลุด
+    if (/log ?in|เข้าสู่ระบบ|sign ?in to x|create account/i.test(t.slice(0, 600)) && t.length < 3000) {
+      issues.push(`${name}: session หลุด — รัน npm run kiki:social-auth ใหม่`);
+      return undefined;
+    }
+    return t;
+  } catch (e) {
+    issues.push(`${name}: เปิดไม่สำเร็จ (${e instanceof Error ? e.message.slice(0, 80) : "error"})`);
+    return undefined;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+export async function grabFeeds(): Promise<FeedGrab> {
+  const issues: string[] = [];
+  if (!socialReady()) return { issues: ["ยังไม่ได้ล็อกอิน — รัน npm run kiki:social-auth"] };
+  const context = await chromium.launchPersistentContext(PROFILE(), {
+    headless: true,
+    viewport: { width: 1280, height: 900 },
+    args: ["--no-sandbox"],
+  });
+  try {
+    const fb = await grabPage(context, "https://www.facebook.com/", "Facebook", issues);
+    const x = await grabPage(context, "https://x.com/home", "X", issues);
+    return { fb, x, issues };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}

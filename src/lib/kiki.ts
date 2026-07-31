@@ -700,3 +700,26 @@ export async function reindexPersonal(): Promise<number> {
   await walk(root);
   return n;
 }
+
+// ===== ค้นเว็บสด (Gemini + Google Search grounding) — หาข้อมูล/ข่าวเรียลไทม์ =====
+
+export async function webResearch(query: string): Promise<string> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new Error("ยังไม่ได้ตั้งค่า GEMINI_API_KEY");
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: `${query}
+
+ตอบเป็นภาษาไทย อ้างอิงข้อมูลจริงจากการค้นหา ระบุตัวเลข/วันที่/แหล่งที่มาให้ครบ ถ้าข้อมูลขัดแย้งกันให้บอก` }] }],
+      tools: [{ google_search: {} }],
+    }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+  if (j.error?.message) throw new Error(j.error.message);
+  const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+  if (!text) throw new Error("ค้นเว็บไม่ได้ผลลัพธ์");
+  return text;
+}
