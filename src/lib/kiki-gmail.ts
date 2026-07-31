@@ -1,58 +1,58 @@
-import fs from "node:fs";
-import path from "node:path";
-import { google } from "googleapis";
+import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
 import { askClaude } from "./claude";
 import { KIKI_GUARD, getSetting, setSetting } from "./kiki";
 import { recordTxns, fmtBaht, type TxnRecord } from "./kiki-finance";
 
 /**
  * เฝ้าเมลแจ้งเตือนธนาคาร (K PLUS) จาก Gmail ส่วนตัวของเจ้าของ (sodod666@gmail.com)
- * — คนละบัญชี/คนละ token กับ Google ของระบบงาน (drive/calendar)
- * เจอเงินเข้า-ออก → บันทึกเป็นหมวด "รอระบุ" → ถามเจ้าของว่าค่าอะไร → เจ้าของตอบ → อัปเดตหมวด
- * ตั้งค่าครั้งแรก: npm run kiki:gmail-auth (ล็อกอินด้วย Gmail ส่วนตัว)
+ * — ใช้ IMAP + App Password (ไม่ใช้ OAuth: โปรเจกต์ Google Cloud เดิมไม่มีสิทธิ์เข้า console)
+ * ตั้งค่า: .env → KIKI_GMAIL_USER + KIKI_GMAIL_APP_PASSWORD (สร้างที่ myaccount.google.com/apppasswords)
+ * เจอเงินเข้า-ออก → บันทึกหมวด "รอระบุ" → ถามเจ้าของว่าค่าอะไร → ตอบแล้วจัดหมวดให้
  */
 
 export const PENDING_CATEGORY = "รอระบุ";
-const TOKEN_PATH = () => process.env.KIKI_GMAIL_TOKEN_PATH || path.join(process.cwd(), ".kiki-gmail-token.json");
 
 export function kikiGmailReady(): boolean {
-  return fs.existsSync(TOKEN_PATH());
+  return Boolean(process.env.KIKI_GMAIL_APP_PASSWORD?.trim());
 }
 
-function getGmail() {
-  const credPath = process.env.DRIVE_CREDENTIALS_PATH || path.join(process.cwd(), "credentials.json");
-  if (!fs.existsSync(credPath) || !kikiGmailReady()) return null;
-  const raw = JSON.parse(fs.readFileSync(credPath, "utf8"));
-  const conf = raw.installed || raw.web;
-  const oauth2 = new google.auth.OAuth2(conf.client_id, conf.client_secret);
-  oauth2.setCredentials(JSON.parse(fs.readFileSync(TOKEN_PATH(), "utf8")));
-  // token refresh แล้วเก็บกลับไฟล์ (กันหมดอายุ)
-  oauth2.on("tokens", (t) => {
+// ดึงเมลธนาคารที่ใหม่กว่า watermark (uid ล่าสุดที่เคยเห็น) — ครั้งแรกตั้ง watermark = ตอนนี้ ไม่ย้อนเมลเก่า
+async function fetchNewBankMails(): Promise<{ subject: string; text: string; when: Date }[]> {
+  const user = process.env.KIKI_GMAIL_USER?.trim() || "sodod666@gmail.com";
+  const pass = (process.env.KIKI_GMAIL_APP_PASSWORD || "").replace(/\s+/g, "");
+  const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user, pass }, logger: false });
+  const out: { subject: string; text: string; when: Date }[] = [];
+  await client.connect();
+  try {
+    const lock = await client.getMailboxLock("INBOX");
     try {
-      const cur = JSON.parse(fs.readFileSync(TOKEN_PATH(), "utf8"));
-      fs.writeFileSync(TOKEN_PATH(), JSON.stringify({ ...cur, ...t }, null, 2));
-    } catch { /* ข้าม */ }
-  });
-  return google.gmail({ version: "v1", auth: oauth2 });
-}
-
-// แกะเนื้อเมล (text/plain ก่อน ไม่มีก็ strip html)
-function bodyOf(payload: { mimeType?: string | null; body?: { data?: string | null } | null; parts?: unknown[] | null } | undefined): string {
-  if (!payload) return "";
-  const decode = (d?: string | null) => (d ? Buffer.from(d.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8") : "");
-  type Part = { mimeType?: string | null; body?: { data?: string | null } | null; parts?: Part[] | null };
-  const walk = (p: Part, want: string): string => {
-    if (p.mimeType === want && p.body?.data) return decode(p.body.data);
-    for (const c of p.parts || []) {
-      const r = walk(c, want);
-      if (r) return r;
+      const mb = client.mailbox;
+      const uidNext = typeof mb === "object" && mb ? Number(mb.uidNext || 1) : 1;
+      const lastUid = Number((await getSetting("kiki_imap_last_uid")) || 0);
+      if (!lastUid) {
+        await setSetting("kiki_imap_last_uid", String(uidNext));
+        return [];
+      }
+      if (uidNext > lastUid) {
+        const uids = ((await client.search({ uid: `${lastUid}:*`, from: "kasikornbank.com" }, { uid: true })) || []) as number[];
+        for (const uid of uids.slice(0, 10)) {
+          if (uid < lastUid) continue;
+          const msg = (await client.fetchOne(String(uid), { source: true }, { uid: true })) as { source?: Buffer } | false | undefined;
+          if (!msg || !msg.source) continue;
+          const parsed = await simpleParser(msg.source);
+          const text = (parsed.text || String(parsed.html || "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").slice(0, 4000);
+          out.push({ subject: parsed.subject || "", text, when: parsed.date || new Date() });
+        }
+        await setSetting("kiki_imap_last_uid", String(uidNext));
+      }
+    } finally {
+      lock.release();
     }
-    return "";
-  };
-  const plain = walk(payload as Part, "text/plain");
-  if (plain) return plain;
-  const html = walk(payload as Part, "text/html") || decode(payload.body?.data);
-  return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
+  } finally {
+    await client.logout().catch(() => { client.close(); });
+  }
+  return out;
 }
 
 interface BankMailParse {
@@ -70,40 +70,25 @@ export interface BankTxnEvent {
 
 // ดึงเมลธนาคารใหม่ → บันทึกเป็น "รอระบุ" → คืนรายการให้ cron ไปถามเจ้าของ
 export async function pollBankEmails(): Promise<BankTxnEvent[]> {
-  const gmail = getGmail();
-  if (!gmail) return [];
+  if (!kikiGmailReady()) return [];
 
   // กันถี่เกิน: เช็คทุก >= 2 นาที
   const lastPoll = Number((await getSetting("kiki_gmail_last_poll")) || 0);
   if (Date.now() - lastPoll < 110_000) return [];
   await setSetting("kiki_gmail_last_poll", String(Date.now()));
 
-  // ครั้งแรก: ตั้งจุดเริ่มเป็นตอนนี้ (ไม่ย้อนอ่านเมลเก่า 2 พันฉบับ)
-  let lastMs = Number((await getSetting("kiki_gmail_last_ms")) || 0);
-  if (!lastMs) {
-    await setSetting("kiki_gmail_last_ms", String(Date.now()));
-    return [];
+  let mails: { subject: string; text: string; when: Date }[] = [];
+  try {
+    mails = await fetchNewBankMails();
+  } catch {
+    return []; // ต่อ IMAP ไม่ได้รอบนี้ — รอบหน้าลองใหม่
   }
 
-  const q = `from:(kasikornbank.com) after:${Math.floor(lastMs / 1000)}`;
-  const list = await gmail.users.messages.list({ userId: "me", q, maxResults: 10 }).catch(() => null);
-  const ids = list?.data.messages || [];
-  if (!ids.length) return [];
-
   const out: BankTxnEvent[] = [];
-  let maxMs = lastMs;
-  for (const m of ids.reverse()) {
+  for (const mail of mails) {
     try {
-      const full = await gmail.users.messages.get({ userId: "me", id: m.id!, format: "full" });
-      const internal = Number(full.data.internalDate || 0);
-      if (internal <= lastMs) continue;
-      maxMs = Math.max(maxMs, internal);
-      const headers = full.data.payload?.headers || [];
-      const subject = headers.find((h) => h.name?.toLowerCase() === "subject")?.value || "";
-      const body = bodyOf(full.data.payload || undefined).slice(0, 4000);
-
       const raw = await askClaude(
-        `เมลจากธนาคาร:\nหัวเรื่อง: ${subject}\nเนื้อหา: """${body}"""`,
+        `เมลจากธนาคาร:\nหัวเรื่อง: ${mail.subject}\nเนื้อหา: """${mail.text}"""`,
         {
           guard: KIKI_GUARD,
           system: `คุณคือระบบอ่านเมลแจ้งเตือนธนาคารไทย (K PLUS/กสิกร) ตอบ JSON เท่านั้น:
@@ -130,7 +115,6 @@ export async function pollBankEmails(): Promise<BankTxnEvent[]> {
       if (recs[0]) out.push({ txn: recs[0], counterparty: p.counterparty || "ไม่ทราบ" });
     } catch { /* เมลนี้อ่านไม่ได้ ข้าม */ }
   }
-  if (maxMs > lastMs) await setSetting("kiki_gmail_last_ms", String(maxMs));
   return out;
 }
 
