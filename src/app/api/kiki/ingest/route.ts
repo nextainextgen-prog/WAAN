@@ -6,6 +6,8 @@ import { renderHtmlToPng } from "@/lib/html-pdf";
 import { askClaude } from "@/lib/claude";
 import { extractEvents, createEvent, getUpcoming, thaiDate } from "@/lib/calendar";
 import { eventCardHtml, agendaCardHtml, weekCardHtml, editCalendar, weatherFor, evStart, type KikiEvent } from "@/lib/kiki-calendar";
+import { WISH_RE, handleWish, DEBT_RE, handleDebt, RECUR_RE, handleRecurring, FITNESS_RE, handleFitnessLog, fitnessCoachContext, saveJournal } from "@/lib/kiki-life";
+import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
 import {
   askKiki,
@@ -29,6 +31,7 @@ import {
   findPersonalImages,
   VEX_RULE_CATEGORY,
   getSetting,
+  ttsOgg,
 } from "@/lib/kiki";
 import {
   extractFinance,
@@ -50,7 +53,7 @@ export const maxDuration = 240;
 
 // รูปแบบเดียวกับ ingest ของวาน — บอทฝั่ง kiki-bot.mjs เอาไปส่ง Telegram ต่อ
 interface Send {
-  kind: "text" | "document" | "photo";
+  kind: "text" | "document" | "photo" | "voice";
   text?: string;
   filename?: string;
   caption?: string;
@@ -309,6 +312,62 @@ export async function POST(req: Request) {
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
+    // ===== ตอบคำถาม "ค่าอะไร" ของรายการจากเมลธนาคาร (หมวด รอระบุ) =====
+    if (
+      (replyText && /ค่าอะไร|รอระบุ/.test(replyText)) ||
+      (!imageFiles.length && /^(ค่า|เป็นค่า|มันคือ|อันนี้(คือ|เป็น)?|หมวด)/.test(text) && (await hasPendingTxn()))
+    ) {
+      const done = await classifyPendingTxn(text);
+      if (done) {
+        const { png } = await financeCardPng();
+        const sends: Send[] = [];
+        if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
+        sends.push({ kind: "text", text: `เข้าใจแล้วครับ ✅ ${done}`, replyTo: msgId });
+        return reply(sends);
+      }
+    }
+
+    // ===== Wishlist: อยากได้/ซื้อไหวไหม =====
+    if (WISH_RE.test(text)) {
+      const t = await handleWish(text);
+      return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== สมุดหนี้/เงินยืม =====
+    if (DEBT_RE.test(text) && !FINANCE_QUERY_RE.test(text)) {
+      const t = await handleDebt([replyText, text].filter(Boolean).join("\n"));
+      return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== เตือนซ้ำประจำ (ต้องมาก่อนปฏิทิน — "เตือนทุกวันที่ 25" ไม่ใช่นัดครั้งเดียว) =====
+    if (RECUR_RE.test(text)) {
+      const t = await handleRecurring(text, chatId);
+      return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== ฟิตเนส: จดบันทึก + Vex เป็นโค้ช (ใช้คลัง 7966) =====
+    if (FITNESS_RE.test(text)) {
+      const { logged, recentContext } = await handleFitnessLog(text);
+      const coach = await fitnessCoachContext();
+      const answer = await askKiki(
+        text,
+        [
+          "[โหมดโค้ชฟิตเนส] ตอบแบบโค้ชส่วนตัว: แนะนำท่า/เซ็ต/จำนวนครั้ง/พักได้จริงจัง อิงคลังโค้ชกับบันทึกจริงของเจ้าของ ถ้าเจ้าของเพิ่งรายงานผล ให้คอมเมนต์ผลด้วย",
+          logged.length ? `ระบบเพิ่งจดให้แล้ว: ${logged.join(" · ")} (ยืนยันในคำตอบด้วย)` : "",
+          coach,
+          recentContext,
+        ].filter(Boolean).join("\n\n"),
+      );
+      return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    }
+
+    // ===== จดไดอารี่ตรง ๆ =====
+    const diaryM = text.match(/^\s*(?:จดไดอารี่|บันทึกวันนี้|ไดอารี่)\s*[:：]?\s*([\s\S]+)/);
+    if (diaryM && diaryM[1].trim().length >= 5) {
+      await saveJournal(diaryM[1].trim());
+      return reply([{ kind: "text", text: "จดลงไดอารี่แล้วครับ ✅ สิ้นเดือนผมสรุปภาพรวมให้", replyTo: msgId }]);
+    }
+
     // ===== บันทึกรายรับรายจ่าย (สลิป/ข้อความ) =====
     const financeLikely = imageFiles.length
       ? (text ? FINANCE_VERB_RE.test(text) || text.length < 60 : true)
@@ -559,8 +618,23 @@ export async function POST(req: Request) {
       if (ups.length) ctxParts.push(`=== นัดที่จะถึง ===\n${ups.map((e) => `• ${thaiDate(e.date)}${e.timeText ? ` ${e.timeText}` : ""} — ${e.title}`).join("\n")}`);
     } catch { /* ข้าม */ }
 
+    // เมื่อคืน Vex ถามไถ่วันนี้ไว้ → ข้อความเล่ายาว ๆ = บันทึกลง journal ให้เลย
+    const today0 = new Date().toISOString().slice(0, 10);
+    const journalPending = (await getSetting("kiki_journal_pending")) === today0;
+    if (journalPending && text.length >= 20 && !imageFiles.length) {
+      await setSetting("kiki_journal_pending", "");
+      await saveJournal(text);
+      ctxParts.push("[เจ้าของเพิ่งเล่าว่าวันนี้เป็นยังไง ตอบที่ Vex ถามไว้ — ระบบบันทึกลงไดอารี่แล้ว ตอบรับแบบเพื่อนคุยกัน สั้น ๆ อบอุ่น/แซวได้ ไม่ต้องบอกขั้นตอนระบบ]");
+    }
+
     const answer = await askKiki(text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)", ctxParts.join("\n\n") || undefined);
-    return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    const outSends: Send[] = [{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }];
+    // เจ้าของพูดมาเป็นเสียง → ตอบเสียงกลับด้วย (ฟังตอนขับรถได้ทั้งลูป)
+    if (voiceNote || /อ่านให้ฟัง|ตอบเสียง|พูดให้ฟัง/.test(text)) {
+      const ogg = await ttsOgg(voiceNote && !/อ่านให้ฟัง/.test(text) ? answer : (/อ่านให้ฟัง|พูดให้ฟัง/.test(text) && replyText ? replyText : answer));
+      if (ogg) outSends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
+    }
+    return reply(outSends);
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     return ok([{ kind: "text", text: `สมองค้างแป๊บครับ ⚠️ (${detail.slice(0, 200)})\nลองพิมพ์ใหม่อีกทีนะครับ` }]);

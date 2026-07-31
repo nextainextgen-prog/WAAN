@@ -5,6 +5,10 @@ import { thaiDate } from "@/lib/calendar";
 import { getKikiChatIds, getSetting, setSetting, askKiki, saveKikiChat } from "@/lib/kiki";
 import { financeSnapshot, snapshotFacts, financeCardHtml, fmtBaht } from "@/lib/kiki-finance";
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
+import { dueRecurrings, debtNagFacts, weeklyReportFacts } from "@/lib/kiki-life";
+import { pollBankEmails } from "@/lib/kiki-gmail";
+import { askClaude } from "@/lib/claude";
+import { KIKI_GUARD, KIKI_PERSONA } from "@/lib/kiki";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -14,7 +18,7 @@ export const maxDuration = 240;
 // ladder เตือนนัด: เย็นก่อนวันนัด 18:00 → เช้าวันนัด 07:00 (ใน brief) → ก่อนเวลา 1 ชม. (ทั้งวัน = 08:00) → ทักหลังนัดจบ
 interface CronSend {
   chatId: string;
-  kind: "text" | "photo";
+  kind: "text" | "photo" | "document";
   text?: string;
   dataBase64?: string;
   caption?: string;
@@ -158,6 +162,100 @@ export async function POST(req: Request) {
       await saveKikiChat("assistant", t);
     }
   } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== F) เตือนซ้ำประจำ (ทุกวันที่ X / ทุกจันทร์ / ทุกวัน) =====
+  try {
+    for (const r of await dueRecurrings(now)) {
+      const t = await askKiki(`[เตือนประจำ] ถึงรอบเตือนเรื่อง: "${r.title}" — แต่งข้อความเตือน 1-2 บรรทัด กวนได้`).catch(() => `ถึงรอบแล้วครับ ⏰ ${r.title}`);
+      sends.push({ chatId: r.chatId, kind: "text", text: t });
+      await saveKikiChat("assistant", t);
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== G) เมลธนาคาร (K PLUS) → จดเป็น "รอระบุ" แล้วถามเจ้าของว่าค่าอะไร =====
+  try {
+    if (mainChat) {
+      for (const ev of await pollBankEmails()) {
+        const dir = ev.txn.type === "expense" ? "เงินออก" : "เงินเข้า";
+        const t = await askKiki(
+          `[เมลธนาคารเข้า] K PLUS แจ้ง${dir} ${fmtBaht(ev.txn.amount)} บาท ${ev.txn.type === "expense" ? "ไปที่" : "จาก"} "${ev.counterparty}" — ระบบจดไว้เป็นหมวด "รอระบุ" แล้ว ถามเจ้าของสั้น ๆ ว่าเป็นค่าอะไร ให้ตอบมาเดี๋ยวจัดหมวดให้`,
+        ).catch(() => `K PLUS แจ้ง${dir} ${fmtBaht(ev.txn.amount)} ฿ (${ev.counterparty}) — ค่าอะไรครับ บอกมาเดี๋ยวจดหมวดให้ 💸`);
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== H) เตือน pace เกินงบ (เที่ยงวัน วันละครั้ง ตั้งแต่วันที่ 5 ของเดือน) =====
+  try {
+    if (mainChat && now.getHours() >= 12 && now.getDate() >= 5 && (await getSetting("kiki_last_pace_warn")) !== today) {
+      const snap = await financeSnapshot();
+      if (snap.totalBudget !== null && snap.projectedExpense !== null && snap.projectedExpense > snap.totalBudget * 1.05) {
+        await setSetting("kiki_last_pace_warn", today);
+        const t = await askKiki(
+          `[เตือน pace ใช้เงิน] ตอนนี้ pace จะทำให้สิ้นเดือนจ่ายรวม ${fmtBaht(snap.projectedExpense)} บาท เกินงบ ${fmtBaht(snap.totalBudget)} ไป ${fmtBaht(snap.projectedExpense - snap.totalBudget)} บาท — เตือนแรง ๆ ให้เบรก (ด่าได้) 3-4 บรรทัด พร้อมแนะว่าหมวดไหนควรหยุด: ${snap.byCategory.slice(0, 3).map((c) => `${c.category} ${fmtBaht(c.amount)}฿`).join(", ")}`,
+        ).catch(() => `⚠️ pace นี้สิ้นเดือนจะเกินงบ ${fmtBaht(snap.projectedExpense! - snap.totalBudget!)} ฿ นะครับ เบรกด่วน`);
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      } else {
+        await setSetting("kiki_last_pace_warn", today); // เช็คแล้ววันนี้ ไม่ต้องเช็คซ้ำ
+      }
+    }
+  } catch { /* พรุ่งนี้ค่อยเช็ค */ }
+
+  // ===== I) อาทิตย์เย็น: รายงานสัปดาห์ HTML + ทวงหนี้ + Vex รีวิวตัวเอง =====
+  try {
+    if (mainChat && now.getDay() === 0 && now.getHours() >= 19) {
+      const wk = `${now.getFullYear()}-w${Math.ceil((now.getDate() + new Date(now.getFullYear(), now.getMonth(), 1).getDay()) / 7)}-${now.getMonth()}`;
+      if ((await getSetting("kiki_last_week_report")) !== wk) {
+        await setSetting("kiki_last_week_report", wk);
+        // 1) รายงานสัปดาห์ HTML ละเอียด
+        const facts = await weeklyReportFacts(now);
+        const raw = await askClaude(
+          `สร้าง "รายงานการเงินประจำสัปดาห์" เป็นไฟล์ HTML สมบูรณ์ (<!doctype html>...</html>) ภาษาไทย ธีมมืด (#161b22) สวยแบบแดชบอร์ด: ตัวเลขใหญ่ ตาราง แถบเทียบหมวดด้วย CSS เทียบสัปดาห์ก่อน + ช่อง "คำด่าประจำสัปดาห์" เขียนแบบ Vex (กวนตีน ตรงไปตรงมา) ข้อมูลจริงเท่านั้น:
+${facts}
+ตอบเป็น HTML ล้วน`,
+          { guard: KIKI_GUARD, system: KIKI_PERSONA, timeoutMs: 220_000 },
+        ).catch(() => "");
+        const m = raw.match(/<!doctype[\s\S]*<\/html>/i) || raw.match(/<html[\s\S]*<\/html>/i);
+        if (m) {
+          sends.push({ chatId: mainChat, kind: "document", dataBase64: Buffer.from(m[0], "utf8").toString("base64"), filename: `รายงานสัปดาห์-${today}.html`, caption: "รายงานประจำสัปดาห์ครับ เปิดอ่านได้เลย" } as CronSend & { filename: string });
+        }
+        // 2) ทวงหนี้
+        const nags = await debtNagFacts();
+        if (nags.length) {
+          const t = await askKiki(`[ทวงหนี้ประจำสัปดาห์] แต่งข้อความเตือนเจ้าของให้ไปทวง (กวนตีนเต็มที่ งานถนัด):
+${nags.map((x) => `- ${x}`).join("\n")}`).catch(() => `ทวงหนี้ประจำสัปดาห์:
+${nags.join("\n")}`);
+          sends.push({ chatId: mainChat, kind: "text", text: t });
+          await saveKikiChat("assistant", t);
+        }
+        // 3) Vex รีวิวตัวเอง → เสนอกฎใหม่
+        const chats = await db.kikiChat.findMany({ where: { createdAt: { gte: new Date(now.getTime() - 7 * 86400_000) } }, orderBy: { createdAt: "asc" }, take: 200 });
+        if (chats.length >= 10) {
+          const log = chats.map((c) => `${c.role === "user" ? "เจ้าของ" : "Vex"}: ${c.content.replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
+          const t = await askKiki(
+            `[รีวิวตัวเองรายสัปดาห์] อ่านบทสนทนา 7 วันล่าสุดของตัวเอง: หาว่าโดนเจ้าของด่า/แก้เรื่องอะไร ทำอะไรพลาด แล้วเสนอ "กฎใหม่ 2-3 ข้อ" ที่จะทำให้ไม่พลาดซ้ำ (สั้น ทำได้จริง) ปิดท้ายบอกเจ้าของว่าถ้าเห็นด้วยข้อไหน พิมพ์ "สอนว่า <กฎ>" มาได้เลยจะจำถาวร\n\nบทสนทนา:\n${log.slice(0, 12000)}`,
+          ).catch(() => "");
+          if (t) {
+            sends.push({ chatId: mainChat, kind: "text", text: t });
+            await saveKikiChat("assistant", t);
+          }
+        }
+      }
+    }
+  } catch { /* อาทิตย์หน้าลองใหม่ */ }
+
+  // ===== J) ค่ำ 21:30 ถามไถ่วันนี้ (journal + mood) =====
+  try {
+    if (mainChat && now.getHours() >= 21 && now.getMinutes() >= 30 && (await getSetting("kiki_last_journal_ask")) !== today) {
+      await setSetting("kiki_last_journal_ask", today);
+      await setSetting("kiki_journal_pending", today);
+      const t = await askKiki(`[ถามไถ่ก่อนนอน] ทักถามเจ้าของสั้น ๆ ว่าวันนี้เป็นยังไงบ้าง (เล่ามาได้เลย เดี๋ยวจดไดอารี่ให้) — โทนเพื่อนถาม ไม่เกิน 2 บรรทัด อย่าซ้ำกับที่เคยถาม`).catch(() => `วันนี้เป็นไงบ้างครับ เล่าให้ฟังหน่อย เดี๋ยวผมจดไดอารี่ให้ 🗓`);
+      sends.push({ chatId: mainChat, kind: "text", text: t });
+      await saveKikiChat("assistant", t);
+    }
+  } catch { /* พรุ่งนี้ค่อยถาม */ }
 
   // ===== E) สรุปสิ้นเดือน (วันที่ 1 เวลา >= 08:00 สรุปเดือนที่แล้ว) =====
   try {

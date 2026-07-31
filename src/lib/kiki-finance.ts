@@ -155,6 +155,7 @@ export interface FinanceSnapshot {
   totalBudget: number | null;
   daysLeft: number; // รวมวันนี้
   safePerDay: number | null; // (งบรวม - ใช้ไป) / วันที่เหลือ
+  projectedExpense: number | null; // ทำนายยอดจ่ายสิ้นเดือนจาก pace จริง (ต้องผ่านมา >= 3 วัน)
   daily14: { label: string; amount: number }[];
   txnCount: number;
 }
@@ -189,6 +190,9 @@ export async function financeSnapshot(now = new Date()): Promise<FinanceSnapshot
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const daysLeft = daysInMonth - now.getDate() + 1;
   const safePerDay = totalBudget !== null ? Math.max(0, (totalBudget - monthExpense) / daysLeft) : null;
+  // ทำนายสิ้นเดือนจาก pace จริง (ผ่านมาแล้วกี่วัน ใช้เฉลี่ยวันละเท่าไหร่ → ถ้าจังหวะนี้ต่อจะจบที่เท่าไหร่)
+  const daysPassed = now.getDate();
+  const projectedExpense = daysPassed >= 3 ? Math.round((monthExpense / daysPassed) * daysInMonth) : null;
 
   const daily14: { label: string; amount: number }[] = [];
   for (let i = 0; i < 14; i++) {
@@ -200,7 +204,7 @@ export async function financeSnapshot(now = new Date()): Promise<FinanceSnapshot
 
   return {
     now, todayExpense, monthExpense, monthIncome, prevMonthExpense,
-    byCategory, prevByCategory, budgets, totalBudget, daysLeft, safePerDay, daily14,
+    byCategory, prevByCategory, budgets, totalBudget, daysLeft, safePerDay, projectedExpense, daily14,
     txnCount: monthRows.length,
   };
 }
@@ -215,6 +219,12 @@ export function snapshotFacts(s: FinanceSnapshot): string[] {
     const pct = Math.round((s.monthExpense / s.totalBudget) * 100);
     facts.push(`งบทั้งเดือน ${fmtBaht(s.totalBudget)} บาท ใช้ไปแล้ว ${pct}% เหลือ ${fmtBaht(Math.max(0, s.totalBudget - s.monthExpense))} บาท`);
     if (s.safePerDay !== null) facts.push(`เหลืออีก ${s.daysLeft} วันถึงสิ้นเดือน ใช้ได้เฉลี่ยวันละ ${fmtBaht(Math.floor(s.safePerDay))} บาท`);
+  }
+  if (s.projectedExpense !== null && s.daysLeft > 2) {
+    facts.push(`ทำนายจาก pace ตอนนี้: สิ้นเดือนจะจ่ายรวมประมาณ ${fmtBaht(s.projectedExpense)} บาท`);
+    if (s.totalBudget !== null && s.projectedExpense > s.totalBudget) {
+      facts.push(`⚠️ pace นี้จะเกินงบประมาณ ${fmtBaht(s.projectedExpense - s.totalBudget)} บาท — ต้องเบรกแล้ว`);
+    }
   }
   if (s.prevMonthExpense > 0) {
     const diff = Math.round(((s.monthExpense - s.prevMonthExpense) / s.prevMonthExpense) * 100);

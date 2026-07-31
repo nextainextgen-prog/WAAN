@@ -188,6 +188,8 @@ export async function writePersonalNote(relativePath: string, content: string): 
   if (!target) return false;
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, content, "utf8");
+  // semantic index อัตโนมัติ (ไฟล์ .md เท่านั้น) — พังก็ไม่เป็นไร keyword search ยังอยู่
+  if (relativePath.endsWith(".md")) void indexPersonalNote(relativePath, content).catch(() => {});
   return true;
 }
 
@@ -261,12 +263,19 @@ async function walkMd(dir: string, max = 300): Promise<string[]> {
   return out;
 }
 
-// ดึงโน้ตส่วนตัวที่เกี่ยวกับคำถาม (เนื้อเต็มไฟล์) — ให้ kiki ตอบจากคลังที่เคยเก็บ
+// ดึงโน้ตส่วนตัวที่เกี่ยวกับคำถาม (เนื้อเต็มไฟล์) — semantic (bge-m3) นำ + keyword เสริม
 export async function retrievePersonalNotes(query: string, opts: { maxFiles?: number; totalChars?: number } = {}): Promise<string> {
   const vault = getVaultPath();
   if (!vault) return "";
+  // ชั้น semantic: เจอแม้พิมพ์คนละคำกับในโน้ต
+  const semRels = await searchPersonalVec(query, 4).catch(() => [] as string[]);
+  const semBlocks: string[] = [];
+  for (const rel of semRels) {
+    const c = await readPersonalNote(rel);
+    if (c) semBlocks.push(`### ${PERSONAL_FOLDER}/${rel}\n${c.trim().slice(0, 10_000)}`);
+  }
   const kws = keywords(query);
-  if (!kws.length) return "";
+  if (!kws.length) return semBlocks.join("\n\n");
   const files = await walkMd(path.resolve(vault, PERSONAL_FOLDER));
   if (!files.length) return "";
 
@@ -294,12 +303,14 @@ export async function retrievePersonalNotes(query: string, opts: { maxFiles?: nu
 
   const maxFiles = opts.maxFiles ?? 5;
   const totalChars = opts.totalChars ?? 50_000;
-  const blocks: string[] = [];
-  let used = 0;
+  const blocks: string[] = [...semBlocks];
+  let used = semBlocks.reduce((a, b) => a + b.length, 0);
   for (const s of scored.slice(0, maxFiles)) {
     if (used >= totalChars) break;
+    const rel = path.relative(vault, s.file);
+    if (blocks.some((b) => b.startsWith(`### ${rel}`))) continue; // semantic เจอไปแล้ว
     const body = s.content.trim().slice(0, Math.min(12_000, totalChars - used));
-    const block = `### ${path.relative(vault, s.file)}\n${body}`;
+    const block = `### ${rel}\n${body}`;
     blocks.push(block);
     used += block.length;
   }
@@ -319,6 +330,20 @@ function slugify(s: string): string {
 }
 
 export async function saveLinkToPersonal(url: string, userNote?: string): Promise<{ title: string; rel: string }> {
+  // YouTube: ให้ Gemini ดู/ฟังคลิปจริงแล้วสรุป (fetchUrlContent อ่านหน้าเว็บได้แต่เนื้อคลิปไม่ได้)
+  if (isYoutubeUrl(url)) {
+    const yt = await summarizeYoutube(url, userNote);
+    const today0 = new Date().toISOString().slice(0, 10);
+    const rel0 = `knowledge/${today0}-${slugify(yt.title)}.md`;
+    const md0 = [
+      "---", "type: knowledge", "tags: [ส่วนตัว, ความรู้, youtube]", `source: ${url}`, `saved: ${today0}`, "---", "",
+      `# ${yt.title}`, "", userNote ? `> เจ้าของสั่งเก็บ: ${userNote}\n` : "", yt.summary.trim(),
+      personalHubFooter([`[[${PERSONAL_FOLDER}/knowledge/_สารบัญ-ความรู้ส่วนตัว|สารบัญความรู้ส่วนตัว]]`]),
+    ].join("\n");
+    await writePersonalNote(rel0, md0);
+    await appendKnowledgeHub(rel0, yt.title);
+    return { title: yt.title, rel: rel0 };
+  }
   const content: LinkContent = await fetchUrlContent(url);
   const today = new Date().toISOString().slice(0, 10);
   // ให้สมองสรุป/จัดโครงสร้างก่อนเก็บ — ไม่ดัมป์ดิบ
@@ -347,17 +372,21 @@ export async function saveLinkToPersonal(url: string, userNote?: string): Promis
     personalHubFooter([`[[${PERSONAL_FOLDER}/knowledge/_สารบัญ-ความรู้ส่วนตัว|สารบัญความรู้ส่วนตัว]]`]),
   ].join("\n");
   await writePersonalNote(rel, md);
-  // เติมรายการเข้า hub ความรู้ (กันซ้ำแบบง่าย: เช็คว่ามีลิงก์ไฟล์นี้แล้วหรือยัง)
+  await appendKnowledgeHub(rel, content.title);
+  return { title: content.title, rel };
+}
+
+// เติมรายการเข้า hub ความรู้ (กันซ้ำแบบง่าย)
+async function appendKnowledgeHub(rel: string, title: string): Promise<void> {
   const hubRel = "knowledge/_สารบัญ-ความรู้ส่วนตัว.md";
   const hub = (await readPersonalNote(hubRel)) || "";
-  const link = `- [[${PERSONAL_FOLDER}/${rel.replace(/\.md$/, "")}|${content.title}]]`;
+  const link = `- [[${PERSONAL_FOLDER}/${rel.replace(/\.md$/, "")}|${title}]]`;
   if (hub && !hub.includes(link)) {
     const updated = hub.includes("_(ยังว่าง)_")
       ? hub.replace("_(ยังว่าง)_", link)
       : hub.replace(/## รายการ\n/, `## รายการ\n${link}\n`);
     await writePersonalNote(hubRel, updated === hub ? hub + `\n${link}` : updated);
   }
-  return { title: content.title, rel };
 }
 
 // ===== กฎที่เจ้าของสอน (Vex พัฒนาตัวเองผ่านแชท) =====
@@ -474,4 +503,164 @@ export async function askKiki(message: string, extraContext?: string): Promise<s
   const nowLine = `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
   const parts = [KIKI_PERSONA, rules, nowLine, facts, convo, extraContext || ""].filter(Boolean);
   return askClaude(message, { guard: KIKI_GUARD, system: parts.join("\n\n"), timeoutMs: 150_000 });
+}
+
+// ===== YouTube → ความรู้ (Gemini ดูคลิปจริง) =====
+
+export function isYoutubeUrl(u: string): boolean {
+  return /(?:youtube\.com\/(?:watch|shorts)|youtu\.be\/)/i.test(u);
+}
+
+export async function summarizeYoutube(url: string, userNote?: string): Promise<{ title: string; summary: string }> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new Error("ยังไม่ได้ตั้งค่า GEMINI_API_KEY");
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { file_data: { file_uri: url } },
+            {
+              text: `ดูคลิปนี้แล้วสรุปเป็นโน้ตความรู้ภาษาไทยแบบละเอียด: ประเด็นสำคัญทั้งหมด ขั้นตอน/วิธีทำ (ถ้ามี) ตัวเลข/ข้อเท็จจริงที่ควรจำ${userNote ? `\nโฟกัสตามที่เจ้าของสั่ง: ${userNote}` : ""}\nรูปแบบ: บรรทัดแรกสุด = ชื่อคลิป (ไม่ต้องมีคำนำหน้า) จากนั้นเว้นบรรทัดแล้วตามด้วยเนื้อหา markdown`,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+  if (j.error?.message) throw new Error(j.error.message);
+  const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+  if (!text) throw new Error("Gemini ไม่ตอบเนื้อหาคลิป");
+  const nl = text.indexOf("\n");
+  const title = (nl > 0 ? text.slice(0, nl) : "คลิป YouTube").replace(/^#+\s*/, "").trim().slice(0, 90) || "คลิป YouTube";
+  return { title, summary: nl > 0 ? text.slice(nl + 1).trim() : text };
+}
+
+// ===== Vex ตอบเป็นเสียง (Gemini TTS → ffmpeg → OGG/Opus ให้ Telegram sendVoice) =====
+
+export async function ttsOgg(text: string): Promise<Buffer | null> {
+  try {
+    const key = process.env.GEMINI_API_KEY?.trim();
+    if (!key) return null;
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: text.slice(0, 900) }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Charon" } } },
+          },
+        }),
+      },
+    );
+    const j = (await res.json()) as {
+      candidates?: { content?: { parts?: { inlineData?: { data?: string; mimeType?: string } }[] } }[];
+      error?: { message?: string };
+    };
+    const b64 = j.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData?.data;
+    if (!b64) return null;
+    const os = await import("node:os");
+    const { execFile } = await import("node:child_process");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kiki-tts-"));
+    const pcm = path.join(dir, "v.pcm");
+    const ogg = path.join(dir, "v.ogg");
+    await fs.writeFile(pcm, Buffer.from(b64, "base64"));
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        "ffmpeg",
+        ["-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", pcm, "-c:a", "libopus", "-b:a", "48k", ogg],
+        { timeout: 30_000 },
+        (err) => (err ? reject(err) : resolve()),
+      );
+    });
+    return await fs.readFile(ogg);
+  } catch {
+    return null;
+  }
+}
+
+// ===== Semantic search คลังส่วนตัว (sqlite-vec + bge-m3 — โต๊ะแยกใน thunder-vec.db) =====
+
+let _vecDb: import("better-sqlite3").Database | null = null;
+
+async function vecConn(): Promise<import("better-sqlite3").Database | null> {
+  try {
+    if (_vecDb) return _vecDb;
+    const { default: Database } = await import("better-sqlite3");
+    const sqliteVec = await import("sqlite-vec");
+    const { EMBED_DIM } = await import("./embeddings");
+    const dbPath = process.env.THUNDER_VEC_PATH || path.join(process.cwd(), "prisma", "thunder-vec.db");
+    const d = new Database(dbPath);
+    d.pragma("busy_timeout = 5000");
+    try { d.pragma("journal_mode = WAL"); } catch { /* ข้าม */ }
+    sqliteVec.load(d);
+    d.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS kiki_vec USING vec0(note_path TEXT PRIMARY KEY, embedding float[${EMBED_DIM}] distance_metric=cosine)`);
+    _vecDb = d;
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+export async function indexPersonalNote(rel: string, content: string): Promise<boolean> {
+  try {
+    const { embedText } = await import("./embeddings");
+    const vec = await embedText(`${rel}\n${content.slice(0, 4000)}`);
+    if (!vec) return false;
+    const d = await vecConn();
+    if (!d) return false;
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    d.prepare("DELETE FROM kiki_vec WHERE note_path = ?").run(rel);
+    d.prepare("INSERT INTO kiki_vec(note_path, embedding) VALUES (?, ?)").run(rel, buf);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function searchPersonalVec(query: string, k = 4): Promise<string[]> {
+  try {
+    const { embedText } = await import("./embeddings");
+    const vec = await embedText(query);
+    if (!vec) return [];
+    const d = await vecConn();
+    if (!d) return [];
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    const rows = d
+      .prepare("SELECT note_path, distance FROM kiki_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?")
+      .all(buf, k) as { note_path: string; distance: number }[];
+    return rows.filter((r) => r.distance < 0.72).map((r) => r.note_path); // ไกลเกิน = ไม่เกี่ยวจริง
+  } catch {
+    return [];
+  }
+}
+
+// index ย้อนหลังทั้งคลัง (รันครั้งเดียวตอนติดตั้ง / ซ่อม)
+export async function reindexPersonal(): Promise<number> {
+  const vault = getVaultPath();
+  if (!vault) return 0;
+  const root = path.resolve(vault, PERSONAL_FOLDER);
+  let n = 0;
+  async function walk(d: string) {
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = await fs.readdir(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.name.endsWith(".md")) {
+        try {
+          const rel = path.relative(root, full);
+          if (await indexPersonalNote(rel, await fs.readFile(full, "utf8"))) n++;
+        } catch { /* ข้าม */ }
+      }
+    }
+  }
+  await walk(root);
+  return n;
 }

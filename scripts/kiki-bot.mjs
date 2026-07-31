@@ -88,6 +88,13 @@ async function deliver(chatId, sends) {
       if (s.caption) form.append("caption", s.caption);
       form.append("photo", new Blob([new Uint8Array(Buffer.from(s.dataBase64, "base64"))]), s.filename || "image.png");
       await fetch(API("sendPhoto"), { method: "POST", body: form }).catch((e) => console.error("send photo err:", e?.message));
+    } else if (s.kind === "voice" && s.dataBase64) {
+      await tg("sendChatAction", { chat_id: target, action: "record_voice" }).catch(() => {});
+      const form = new FormData();
+      form.append("chat_id", String(target));
+      if (s.caption) form.append("caption", s.caption);
+      form.append("voice", new Blob([new Uint8Array(Buffer.from(s.dataBase64, "base64"))]), s.filename || "voice.ogg");
+      await fetch(API("sendVoice"), { method: "POST", body: form }).catch((e) => console.error("send voice err:", e?.message));
     } else if (s.kind === "document" && s.dataBase64) {
       await tg("sendChatAction", { chat_id: target, action: "upload_document" }).catch(() => {});
       const form = new FormData();

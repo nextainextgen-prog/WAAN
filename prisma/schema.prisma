@@ -204,3 +204,58 @@ model KikiChat {
   role      String                        // user | assistant
   content   String
 }
+
+// ของที่อยากได้ (wishlist) — Vex วิเคราะห์จากเงินจริงว่าซื้อไหวไหม/ออมกี่วัน
+model WishItem {
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  title     String
+  price     Float?                        // ไม่รู้ราคา = null (ถามทีหลัง)
+  note      String?
+  boughtAt  DateTime?                     // ซื้อแล้วเมื่อไหร่
+  active    Boolean   @default(true)
+
+  @@index([active])
+}
+
+// สมุดหนี้/เงินยืม — แยกจากรายจ่าย (ให้ยืมไม่ใช่ใช้เงิน) + Vex ทวงให้
+model Debt {
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  direction String                        // they_owe (เขาติดเรา) | i_owe (เราติดเขา)
+  person    String
+  amount    Float
+  note      String?
+  dueDate   DateTime?
+  settledAt DateTime?
+  nagCount  Int       @default(0)         // ทวงไปแล้วกี่รอบ
+
+  @@index([settledAt])
+}
+
+// เตือนซ้ำประจำ — ทุกวันที่ X / ทุกวันจันทร์ / ทุกวัน เวลา HH:MM
+model Recurring {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  chatId        String
+  title         String                    // สิ่งที่ต้องเตือน
+  freq          String                    // monthly | weekly | daily
+  day           Int?                      // monthly: วันที่ 1-31
+  weekday       Int?                      // weekly: 0=อาทิตย์ ... 6=เสาร์
+  timeText      String   @default("08:00") // เวลาเตือน HH:MM
+  active        Boolean  @default(true)
+  lastFiredDate String?                   // "YYYY-MM-DD" กันยิงซ้ำในวันเดียว
+
+  @@index([active])
+}
+
+// บันทึกฟิตเนส/สุขภาพ — น้ำหนัก การเล่น อาหาร นอน (Vex เป็นโค้ชจากคลัง 7966)
+model FitnessLog {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  kind      String                        // weight | workout | food | sleep | other
+  value     Float?                        // น้ำหนัก kg / เวลานอน ชม.
+  note      String?                       // เล่นอะไร กินอะไร
+
+  @@index([kind, createdAt])
+}
