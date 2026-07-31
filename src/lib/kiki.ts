@@ -503,7 +503,35 @@ export async function askKiki(message: string, extraContext?: string): Promise<s
   const now = new Date();
   const nowLine = `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
   const parts = [KIKI_PERSONA, rules, nowLine, facts, convo, extraContext || ""].filter(Boolean);
-  return askClaude(message, { guard: KIKI_GUARD, system: parts.join("\n\n"), timeoutMs: 150_000 });
+  const sys = parts.join("\n\n");
+  try {
+    return await askClaude(message, { guard: KIKI_GUARD, system: sys, timeoutMs: 150_000 });
+  } catch (e) {
+    // Claude CLI ค้าง/คิวชน (บัญชีเดียวกับงานอื่น) → สมองสำรอง Gemini ตอบแทน ไม่ปล่อยเจ้าของค้าง
+    const g = await askGeminiChat(`${KIKI_GUARD}\n\n${sys}`, message).catch(() => "");
+    if (g) return g;
+    throw e;
+  }
+}
+
+// สมองสำรอง: Gemini API (เร็ว ใช้ persona เดียวกัน) — ใช้เฉพาะตอน Claude CLI ล่ม/ช้าเกิน
+async function askGeminiChat(system: string, message: string): Promise<string> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new Error("no GEMINI_API_KEY");
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: message }] }],
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+  if (j.error?.message) throw new Error(j.error.message);
+  const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+  if (!text) throw new Error("empty");
+  return text;
 }
 
 // ===== YouTube → ความรู้ (Gemini ดูคลิปจริง) =====

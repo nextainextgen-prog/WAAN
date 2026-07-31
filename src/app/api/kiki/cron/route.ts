@@ -176,10 +176,18 @@ export async function POST(req: Request) {
   try {
     if (mainChat) {
       for (const ev of await pollBankEmails()) {
-        const dir = ev.txn.type === "expense" ? "เงินออก" : "เงินเข้า";
-        const t = await askKiki(
-          `[เมลธนาคารเข้า] K PLUS แจ้ง${dir} ${fmtBaht(ev.txn.amount)} บาท ${ev.txn.type === "expense" ? "ไปที่" : "จาก"} "${ev.counterparty}" — ระบบจดไว้เป็นหมวด "รอระบุ" แล้ว ถามเจ้าของสั้น ๆ ว่าเป็นค่าอะไร ให้ตอบมาเดี๋ยวจัดหมวดให้`,
-        ).catch(() => `K PLUS แจ้ง${dir} ${fmtBaht(ev.txn.amount)} ฿ (${ev.counterparty}) — ค่าอะไรครับ บอกมาเดี๋ยวจดหมวดให้ 💸`);
+        // โครงข้อความตายตัวตามที่เจ้าของสั่ง (31 ก.ค.): 🟢 เงินเข้า / 🔴 เงินออก + ข้อมูลเรียงอ่านง่าย
+        const out = ev.txn.type === "expense";
+        const when = ev.txn.occurredAt.toLocaleString("th-TH-u-ca-gregory", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+        const head = [
+          `${out ? "🔴 เงินออก" : "🟢 เงินเข้า"} ${fmtBaht(ev.txn.amount)} ฿`,
+          `${out ? "ไปที่" : "จาก"}: ${ev.counterparty}`,
+          `เวลา: ${when} น. · K PLUS`,
+        ].join("\n");
+        const tail = await askKiki(
+          `[แจ้งเงิน${out ? "ออก" : "เข้า"}จากเมลธนาคาร] ส่วนหัวระบบจัดให้แล้ว:\n${head}\n\nเติมท้ายให้ 1-2 บรรทัด: ${out ? "ถามว่าเป็นค่าอะไร ให้ตอบมาเดี๋ยวจัดหมวดให้" : "ถามว่าเงินอะไรเข้ามา"} (กวนได้นิดหน่อย) ตอบเฉพาะบรรทัดที่จะเติม`,
+        ).catch(() => (out ? "ค่าอะไรครับ บอกมาเดี๋ยวจดหมวดให้" : "เงินอะไรเข้ามาครับ"));
+        const t = `${head}\n\n${tail}`;
         sends.push({ chatId: mainChat, kind: "text", text: t });
         await saveKikiChat("assistant", t);
       }
