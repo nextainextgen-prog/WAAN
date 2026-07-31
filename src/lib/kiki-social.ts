@@ -71,3 +71,72 @@ export async function grabFeeds(): Promise<FeedGrab> {
     await context.close().catch(() => {});
   }
 }
+
+// ===== โหมดแคปโพสต์: ดึงโพสต์ทีละอัน (ข้อความ + ภาพแคปจริง) — เจ้าของขอ "แคปหน้าฟีดมาทุกโพสต์ที่พูดถึง" =====
+
+export interface FeedPost {
+  source: "เฟส" | "X";
+  text: string;
+  shotBase64?: string;
+}
+
+export async function grabFeedPosts(perSite = 4): Promise<{ posts: FeedPost[]; issues: string[] }> {
+  const issues: string[] = [];
+  if (!socialReady()) return { posts: [], issues: ["ยังไม่ได้ล็อกอิน — รัน npm run kiki:social-auth"] };
+  let context: import("playwright").BrowserContext;
+  try {
+    context = await chromium.launchPersistentContext(PROFILE(), {
+      headless: true,
+      channel: "chrome",
+      viewport: { width: 1280, height: 900 },
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      ignoreDefaultArgs: ["--enable-automation"],
+    });
+  } catch (e) {
+    const locked = e instanceof Error && /ProcessSingleton|SingletonLock/i.test(e.message);
+    return { posts: [], issues: [locked ? "โปรไฟล์ถูกใช้อยู่ — ปิดหน้าต่าง auth ก่อนครับ" : "เปิดเบราว์เซอร์ไม่ได้"] };
+  }
+  const posts: FeedPost[] = [];
+  const collect = async (url: string, selectors: string[], source: "เฟส" | "X", name: string) => {
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await page.waitForTimeout(6000);
+      await page.mouse.wheel(0, 1200);
+      await page.waitForTimeout(2500);
+      const body = ((await page.evaluate(() => document.body.innerText)) || "").slice(0, 800);
+      if (/log ?in|เข้าสู่ระบบ|sign ?in to x|create account/i.test(body) && body.length < 700) {
+        issues.push(`${name}: session หลุด — รัน npm run kiki:social-auth ใหม่`);
+        return;
+      }
+      for (const sel of selectors) {
+        const els = page.locator(sel);
+        const n = Math.min(await els.count().catch(() => 0), perSite * 3);
+        let got = 0;
+        for (let i = 0; i < n && got < perSite; i++) {
+          const el = els.nth(i);
+          try {
+            const txt = ((await el.innerText({ timeout: 3000 })) || "").replace(/\n{2,}/g, "\n").trim();
+            if (txt.length < 40) continue; // ข้ามกล่องเปล่า/ปุ่ม
+            await el.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+            const shot = await el.screenshot({ timeout: 6000 }).catch(() => null);
+            posts.push({ source, text: txt.slice(0, 1200), shotBase64: shot ? shot.toString("base64") : undefined });
+            got++;
+          } catch { /* โพสต์นี้เก็บไม่ได้ ข้าม */ }
+        }
+        if (got > 0) break; // selector แรกที่ได้ผล พอแล้ว
+      }
+    } catch (e) {
+      issues.push(`${name}: เปิดไม่สำเร็จ (${e instanceof Error ? e.message.slice(0, 60) : "error"})`);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  };
+  try {
+    await collect("https://www.facebook.com/", ['div[role="feed"] > div', 'div[role="article"]'], "เฟส", "Facebook");
+    await collect("https://x.com/home", ["article"], "X", "X");
+  } finally {
+    await context.close().catch(() => {});
+  }
+  return { posts, issues };
+}

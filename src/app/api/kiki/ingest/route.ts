@@ -196,7 +196,15 @@ export async function POST(req: Request) {
       } else {
         for (const para of seg.split(/\n{2,}/)) {
           const p = para.trim();
-          if (p) out.push({ kind: "text", text: p });
+          if (!p) continue;
+          const lines = p.split("\n").map((x) => x.trim()).filter(Boolean);
+          const isStructured = (l: string) => /^([-•·*]|\d+[.)]\s|[🟢🔴⚠️✅]|\|)/.test(l);
+          if (lines.length >= 2 && !lines.some(isStructured)) {
+            // prose หลายบรรทัดติดกัน (AI ลืมเว้นบรรทัดว่าง — เคสจริง 31 ก.ค.) → แยกบรรทัดละบับเบิล อ่านง่าย
+            for (const l of lines) out.push({ kind: "text", text: l });
+          } else {
+            out.push({ kind: "text", text: p }); // ลิสต์/ตาราง/บล็อกแจ้งเงิน อยู่ก้อนเดียวกัน
+          }
         }
       }
     });
@@ -387,9 +395,25 @@ export async function POST(req: Request) {
       }
     }
 
-    // ===== สรุปฟีด Facebook/X ตอนนี้ =====
-    if (/สรุปฟีด|ฟีด(วันนี้|มีอะไร)|(เฟส|facebook|ทวิต).{0,16}(มีอะไร|สรุป|ข่าว|อัปเดต)/i.test(text)) {
+    // ===== สรุปฟีด Facebook/X ตอนนี้ (ขอ "แคป/ภาพ/โพสต์" = แนบภาพแคปโพสต์จริงทีละอัน) =====
+    if (/สรุปฟีด|ฟีด(วันนี้|มีอะไร)|(เฟส|facebook|ทวิต).{0,16}(มีอะไร|สรุป|ข่าว|อัปเดต|แคป)/i.test(text)) {
       if (!socialReady()) return reply([{ kind: "text", text: `ยังไม่ได้ล็อกอินเฟส/X ให้ผมครับ ⚠️ รันในเทอร์มินัล: npm run kiki:social-auth (ครั้งเดียว)`, replyTo: msgId }]);
+      const wantShots = /แคป|ภาพ|รูป|screenshot|ทุกโพสต์|แนบโพสต์/i.test(text);
+      if (wantShots) {
+        const { posts, issues } = await grabFeedPosts(4);
+        if (!posts.length) return reply([{ kind: "text", text: `เก็บโพสต์ไม่ได้ครับ ⚠️ ${issues.join(" · ") || "ฟีดไม่ขึ้น ลองใหม่อีกที"}`, replyTo: msgId }]);
+        const numbered = posts.map((p, i) => `[${p.source} #${i + 1}]\n${p.text}`).join("\n\n---\n\n");
+        const answer = await askKiki(
+          "สรุปโพสต์จากฟีดของเจ้าของ: เล่าทีละโพสต์สั้น ๆ โดยอ้างหมายเลข [เฟส #1] [X #2] ตามที่ให้ (ภาพแคปโพสต์จริงถูกส่งไปพร้อมกันแล้ว ให้เจ้าของดูเทียบได้) ปิดท้ายชี้โพสต์ที่น่าสนใจสุด",
+          `=== โพสต์ที่เก็บมา (พร้อมภาพแคป) ===\n${numbered.slice(0, 12_000)}`,
+        );
+        const sends: Send[] = posts
+          .filter((p) => p.shotBase64)
+          .slice(0, 8)
+          .map((p, i) => ({ kind: "photo" as const, dataBase64: p.shotBase64!, filename: `post-${i + 1}.png`, caption: `${p.source} #${posts.indexOf(p) + 1}` }));
+        sends.push({ kind: "text", text: answer.slice(0, 3900), replyTo: msgId });
+        return reply(sends);
+      }
       const g = await grabFeeds();
       if (!g.fb && !g.x) return reply([{ kind: "text", text: `อ่านฟีดไม่ได้ครับ ⚠️ ${g.issues.join(" · ")}`, replyTo: msgId }]);
       const answer = await askKiki(
