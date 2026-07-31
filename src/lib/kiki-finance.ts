@@ -26,6 +26,7 @@ const EXTRACT_SYSTEM = `คุณคือระบบสกัดรายก�
 - category ของ expense เลือกจาก: ${EXPENSE_CATS.join(" | ")}
 - category ของ income เลือกจาก: ${INCOME_CATS.join(" | ")}
 - ถ้ามีรูปสลิปให้เปิดอ่านด้วยเครื่องมือ Read ตาม path ที่ให้ แล้วเอายอด/วันเวลา/ผู้รับจากสลิปจริง (ยึดข้อความเจ้าของเป็นตัวบอกว่าค่าอะไร)
+- occurredAt = วันเวลาที่ "เงินเข้า/ออกจริง" จากสลิปโอนเท่านั้น — ถ้าเป็นจดหมาย/ใบแจ้ง/เอกสารที่วันที่ไม่ใช่วันโอนจริง หรือไม่แน่ใจ ให้เว้นว่าง (ระบบจะใช้เวลาปัจจุบัน = เวลาที่เจ้าของแจ้ง)
 - หนึ่งข้อความอาจมีหลายรายการ — แยกเป็นหลาย item
 - ไม่ใช่เรื่องการเงินเลย = {"items":[]}`;
 
@@ -69,10 +70,15 @@ export interface TxnRecord {
 export async function recordTxns(items: ParsedTxn[], opts: { slipPath?: string; msgId?: string } = {}): Promise<TxnRecord[]> {
   const out: TxnRecord[] = [];
   for (const it of items) {
-    let occurred = new Date();
+    // วันที่จากเอกสารเชื่อได้แค่ช่วงใกล้ ๆ (ย้อนหลัง 14 วัน – พรุ่งนี้) — นอกช่วง = วันที่ในเอกสารไม่ใช่วันเงินเข้า/ออกจริง
+    // (เคยพัง: จดหมายเงินคืน AIA ลงวันที่เดือนอื่น ทำยอดหายจากสรุปเดือนปัจจุบัน)
+    const now = new Date();
+    let occurred = now;
     if (it.occurredAt) {
       const d = new Date(it.occurredAt);
-      if (!isNaN(d.getTime()) && d.getFullYear() > 2000) occurred = d;
+      const inRange = !isNaN(d.getTime()) && d.getFullYear() > 2000 &&
+        d.getTime() >= now.getTime() - 14 * 86400_000 && d.getTime() <= now.getTime() + 86400_000;
+      if (inRange) occurred = d;
     }
     const rec = await db.financeTxn.create({
       data: {
@@ -223,6 +229,14 @@ function esc(s: string): string {
   return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 }
 
+// ตัวเลขย่อสำหรับป้ายบนแท่งกราฟ (185, 1.2k, 21k)
+function fmtCompact(n: number): string {
+  if (n >= 100_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(Math.round(n));
+}
+
+// การ์ดสไตล์เดียวกับ Usage Monitor — เจ้าของสั่ง (31 ก.ค. 2026): ห้ามมีอิโมจิในการ์ดนี้
 export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecord[] } = {}): string {
   const pctTotal = s.totalBudget ? Math.min(100, Math.round((s.monthExpense / s.totalBudget) * 100)) : null;
   const monthLabel = s.now.toLocaleDateString("th-TH-u-ca-gregory", { month: "long", year: "numeric" });
@@ -242,23 +256,33 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     .map((r) => {
       const pct = r.cap ? Math.min(100, Math.round((r.used / r.cap) * 100)) : Math.round((r.used / maxUsed) * 100);
       const warn = r.cap ? r.used / r.cap >= 0.85 : false;
-      const val = r.cap ? `${fmtBaht(r.used)} / ${fmtBaht(r.cap)} · ${pct}%` : `${fmtBaht(r.used)} ฿`;
+      const val = r.cap
+        ? `<b${warn ? ' class="red"' : ""}>${pct}%</b> · <span class="muted">${fmtBaht(r.used)} / ${fmtBaht(r.cap)}</span>`
+        : `<b>${fmtBaht(r.used)} ฿</b>`;
       return `<div class="row">
         <div class="wlabel">${esc(r.label)}</div>
         <div class="track"><div class="fill${warn ? " warn" : ""}" style="width:${Math.max(2, pct)}%"></div></div>
-        <div class="wval${warn ? " red" : ""}">${esc(val)}</div>
+        <div class="wval">${val}</div>
       </div>`;
     })
     .join("");
 
-  const maxDay = Math.max(1, ...s.daily14.map((d) => d.amount));
-  const bars = s.daily14
-    .map((d, i) => {
-      const h = Math.round((d.amount / maxDay) * 78);
-      const today = i === s.daily14.length - 1;
-      return `<div class="bcol"><div class="bar${today ? " today" : ""}" style="height:${Math.max(3, h)}px"></div><div class="blab">${esc(d.label)}</div></div>`;
-    })
-    .join("");
+  // กราฟรายวัน: ทุกวันมี "ราง" จุดเต็มความสูงแบบหลอด Usage + แท่งเติมจากล่าง + ป้ายยอดบนแท่งที่มีจริง
+  // ไม่มีข้อมูลเลย = ข้อความแทน (แท่งเปล่า ๆ ทั้งแถวดูเหมือนการ์ดพัง)
+  const maxDay = Math.max(...s.daily14.map((d) => d.amount));
+  const chart = maxDay <= 0
+    ? `<div class="empty">ยังไม่มีรายจ่ายใน 14 วันที่ผ่านมา — ส่งสลิปหรือพิมพ์บอกได้เลย</div>`
+    : `<div class="chart">${s.daily14
+        .map((d, i) => {
+          const today = i === s.daily14.length - 1;
+          const h = Math.round((d.amount / maxDay) * 100);
+          return `<div class="bcol">
+            <div class="bval">${d.amount > 0 ? fmtCompact(d.amount) : ""}</div>
+            <div class="btrack"><div class="bfill${today ? " today" : ""}" style="height:${d.amount > 0 ? Math.max(6, h) : 0}%"></div></div>
+            <div class="blab${today ? " now" : ""}">${esc(d.label)}</div>
+          </div>`;
+        })
+        .join("")}</div>`;
 
   const added = (opts.justAdded || [])
     .map((t) => {
@@ -272,20 +296,21 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     ? `<div class="row big">
         <div class="wlabel">งบเดือนนี้</div>
         <div class="track"><div class="fill${pctTotal >= 85 ? " warn" : ""}" style="width:${Math.max(2, pctTotal)}%"></div></div>
-        <div class="wval${pctTotal >= 85 ? " red" : ""}">${pctTotal}% · เหลือ ${fmtBaht(Math.max(0, (s.totalBudget || 0) - s.monthExpense))} ฿</div>
+        <div class="wval"><b${pctTotal >= 85 ? ' class="red"' : ""}>${pctTotal}%</b> · <span class="muted">เหลือ ${fmtBaht(Math.max(0, (s.totalBudget || 0) - s.monthExpense))} ฿</span></div>
       </div>`
     : `<div class="nobudget">ยังไม่ได้ตั้งงบรวม — พิมพ์ "ตั้งงบเดือนละ 20000" ได้เลย</div>`;
 
   const safe = s.safePerDay !== null
-    ? `<div class="safe">ใช้ได้อีกวันละ <b>${fmtBaht(Math.floor(s.safePerDay))} ฿</b> (เหลือ ${s.daysLeft} วันถึงสิ้นเดือน)</div>`
+    ? `<div class="safe">ใช้ได้อีกวันละ <b>${fmtBaht(Math.floor(s.safePerDay))} ฿</b> <span class="muted">(เหลือ ${s.daysLeft} วันถึงสิ้นเดือน)</span></div>`
     : "";
 
   return `<!doctype html><html lang="th"><head><meta charset="utf-8"/>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { width:720px; background:#161b22; color:#e6edf3; font-family:"Noto Sans Thai","Sarabun","Helvetica Neue",Arial,sans-serif; padding:26px 30px 22px; -webkit-font-smoothing:antialiased; }
-    .title { font-size:20px; font-weight:800; }
-    .title .em { color:#f0b429; }
+    .title { font-size:20px; font-weight:800; letter-spacing:.2px; }
+    .muted { color:#8b949e; }
+    .title .muted { font-weight:600; }
     .sub { color:#8b949e; font-size:13px; margin-top:3px; }
     .hr { height:1px; background:#2d333b; margin:14px 0 16px; }
     .stats { display:flex; gap:12px; margin-bottom:16px; }
@@ -295,25 +320,30 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     .green { color:#3fb950; } .red { color:#ff7b72; }
     .row { display:flex; align-items:center; gap:12px; margin:7px 0; }
     .row.big { margin:10px 0 4px; }
-    .wlabel { flex:0 0 96px; font-size:13px; font-weight:600; color:#adbac7; background:#21262d; border-radius:6px; padding:5px 8px; text-align:center; }
+    .wlabel { flex:0 0 96px; font-size:13px; font-weight:600; color:#adbac7; font-family:"SF Mono",ui-monospace,Menlo,"Noto Sans Thai",monospace; background:#21262d; border-radius:6px; padding:5px 8px; text-align:center; }
     .track { position:relative; flex:1; height:22px; border-radius:6px; background-color:#262c34; background-image:radial-gradient(rgba(255,255,255,.16) 1.3px, transparent 1.4px); background-size:9px 9px; overflow:hidden; }
     .fill { position:absolute; top:0; left:0; bottom:0; border-radius:6px; background:linear-gradient(90deg,#4b78ff,#7d9bff); }
     .fill.warn { background:linear-gradient(90deg,#e5534b,#ff7b72); }
-    .wval { flex:0 0 auto; min-width:150px; font-size:13px; font-weight:600; text-align:right; color:#adbac7; }
+    .wval { flex:0 0 auto; min-width:170px; font-size:13.5px; text-align:right; color:#e6edf3; }
+    .wval b { font-weight:700; }
     .nobudget { color:#8b949e; font-size:13px; margin:8px 0 4px; }
-    .safe { margin:10px 0 2px; font-size:14.5px; color:#e6edf3; }
+    .safe { margin:10px 0 2px; font-size:14.5px; }
     .safe b { color:#3fb950; font-size:16px; }
-    .sect { font-size:14px; font-weight:700; margin:16px 0 8px; color:#adbac7; }
-    .chart { display:flex; align-items:flex-end; gap:7px; height:100px; padding:2px 2px 0; }
+    .sect { font-size:14px; font-weight:700; margin:16px 0 10px; color:#adbac7; }
+    .empty { color:#6e7681; font-size:13px; background:#1b2129; border:1px dashed #2d333b; border-radius:8px; padding:16px; text-align:center; }
+    .chart { display:flex; gap:7px; }
     .bcol { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
-    .bar { width:100%; border-radius:4px 4px 0 0; background:linear-gradient(180deg,#7d9bff,#4b78ff); }
-    .bar.today { background:linear-gradient(180deg,#ffd166,#f0b429); }
+    .bval { height:15px; font-size:10.5px; font-weight:700; color:#adbac7; }
+    .btrack { position:relative; width:100%; height:96px; border-radius:5px; background-color:#20262e; background-image:radial-gradient(rgba(255,255,255,.13) 1.2px, transparent 1.3px); background-size:8px 8px; overflow:hidden; }
+    .bfill { position:absolute; left:0; right:0; bottom:0; border-radius:5px 5px 0 0; background:linear-gradient(180deg,#7d9bff,#4b78ff); }
+    .bfill.today { background:linear-gradient(180deg,#ffd166,#f0b429); }
     .blab { font-size:10.5px; color:#6e7681; }
+    .blab.now { color:#f0b429; font-weight:700; }
     .added { font-size:14px; margin:3px 0; }
-    .foot { border-top:1px solid #2d333b; margin-top:14px; padding-top:12px; font-size:12px; color:#6e7681; }
+    .foot { border-top:1px solid #2d333b; margin-top:16px; padding-top:12px; font-size:12px; color:#6e7681; }
   </style></head>
   <body>
-    <div class="title">💸 <span class="em">การเงินส่วนตัว</span> · ${esc(monthLabel)}</div>
+    <div class="title">การเงินส่วนตัว <span class="muted">· ${esc(monthLabel)}</span></div>
     <div class="sub">บันทึกแล้ว ${s.txnCount} รายการเดือนนี้</div>
     <div class="hr"></div>
     ${added ? `<div style="margin-bottom:12px">${added}</div>` : ""}
@@ -325,10 +355,10 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     </div>
     ${totalBar}
     ${safe}
-    ${rowHtml ? `<div class="sect">รายหมวด (เดือนนี้)</div>${rowHtml}` : ""}
+    ${rowHtml ? `<div class="sect">รายหมวด · เดือนนี้</div>${rowHtml}` : ""}
     <div class="sect">รายจ่ายรายวัน · 14 วันล่าสุด</div>
-    <div class="chart">${bars}</div>
-    <div class="foot">🕐 ${esc(s.now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "short", timeStyle: "short" }))} · Vex</div>
+    ${chart}
+    <div class="foot">${esc(s.now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "short", timeStyle: "short" }))} · Vex</div>
   </body></html>`;
 }
 
