@@ -395,30 +395,29 @@ export async function POST(req: Request) {
       }
     }
 
-    // ===== สรุปฟีด Facebook/X ตอนนี้ (ขอ "แคป/ภาพ/โพสต์" = แนบภาพแคปโพสต์จริงทีละอัน) =====
-    if (/สรุปฟีด|ฟีด(วันนี้|มีอะไร)|(เฟส|facebook|ทวิต).{0,16}(มีอะไร|สรุป|ข่าว|อัปเดต|แคป)/i.test(text)) {
+    // ===== สรุปฟีด Facebook/X (เจ้าของสั่ง 31 ก.ค.: อ่านฟีดทุกครั้ง = แคปภาพโพสต์แนบมาเสมอ) =====
+    if (/สรุปฟีด|อ่านฟีด|ไล่ฟีด|เช็ค?ฟีด|ฟีด(วันนี้|มีอะไร)|แคป.{0,14}โพสต์|โพสต์.{0,14}แคป|(เฟส|facebook|ทวิต).{0,16}(มีอะไร|สรุป|ข่าว|อัปเดต|แคป)/i.test(text)) {
       if (!socialReady()) return reply([{ kind: "text", text: `ยังไม่ได้ล็อกอินเฟส/X ให้ผมครับ ⚠️ รันในเทอร์มินัล: npm run kiki:social-auth (ครั้งเดียว)`, replyTo: msgId }]);
-      const wantShots = /แคป|ภาพ|รูป|screenshot|ทุกโพสต์|แนบโพสต์/i.test(text);
-      if (wantShots) {
-        const { posts, issues } = await grabFeedPosts(4);
-        if (!posts.length) return reply([{ kind: "text", text: `เก็บโพสต์ไม่ได้ครับ ⚠️ ${issues.join(" · ") || "ฟีดไม่ขึ้น ลองใหม่อีกที"}`, replyTo: msgId }]);
+      const { posts, issues } = await grabFeedPosts(4);
+      if (posts.length) {
         const numbered = posts.map((p, i) => `[${p.source} #${i + 1}]\n${p.text}`).join("\n\n---\n\n");
         const answer = await askKiki(
           "สรุปโพสต์จากฟีดของเจ้าของ: เล่าทีละโพสต์สั้น ๆ โดยอ้างหมายเลข [เฟส #1] [X #2] ตามที่ให้ (ภาพแคปโพสต์จริงถูกส่งไปพร้อมกันแล้ว ให้เจ้าของดูเทียบได้) ปิดท้ายชี้โพสต์ที่น่าสนใจสุด",
-          `=== โพสต์ที่เก็บมา (พร้อมภาพแคป) ===\n${numbered.slice(0, 12_000)}`,
+          `=== โพสต์ที่เก็บมา (พร้อมภาพแคป) ===\n${numbered.slice(0, 12_000)}${issues.length ? `\nหมายเหตุ: ${issues.join(" · ")}` : ""}`,
         );
         const sends: Send[] = posts
           .filter((p) => p.shotBase64)
           .slice(0, 8)
-          .map((p, i) => ({ kind: "photo" as const, dataBase64: p.shotBase64!, filename: `post-${i + 1}.png`, caption: `${p.source} #${posts.indexOf(p) + 1}` }));
+          .map((p) => ({ kind: "photo" as const, dataBase64: p.shotBase64!, filename: `post.png`, caption: `${p.source} #${posts.indexOf(p) + 1}` }));
         sends.push({ kind: "text", text: answer.slice(0, 3900), replyTo: msgId });
         return reply(sends);
       }
+      // เก็บโพสต์รายอันไม่ได้ → ถอยไปสรุปจากข้อความฟีดล้วน (ดีกว่าเงียบ)
       const g = await grabFeeds();
-      if (!g.fb && !g.x) return reply([{ kind: "text", text: `อ่านฟีดไม่ได้ครับ ⚠️ ${g.issues.join(" · ")}`, replyTo: msgId }]);
+      if (!g.fb && !g.x) return reply([{ kind: "text", text: `อ่านฟีดไม่ได้ครับ ⚠️ ${[...issues, ...g.issues].join(" · ")}`, replyTo: msgId }]);
       const answer = await askKiki(
-        "สรุปฟีดโซเชียลของเจ้าของตอนนี้: ข่าว/เรื่องเด่น/อัปเดตจากคนที่ติดตาม แยกเป็นหัวข้ออ่านง่าย อะไรน่าสนใจชี้เป้า",
-        [g.fb ? `=== เนื้อหาจากฟีด Facebook ===\n${g.fb}` : "", g.x ? `=== เนื้อหาจากฟีด X ===\n${g.x}` : "", g.issues.length ? `หมายเหตุ: ${g.issues.join(" · ")}` : ""].filter(Boolean).join("\n\n"),
+        "สรุปฟีดโซเชียลของเจ้าของตอนนี้: ข่าว/เรื่องเด่น/อัปเดตจากคนที่ติดตาม แยกเป็นหัวข้ออ่านง่าย อะไรน่าสนใจชี้เป้า (รอบนี้แคปภาพโพสต์ไม่ได้ บอกเจ้าของตรง ๆ สั้น ๆ ด้วย)",
+        [g.fb ? `=== เนื้อหาจากฟีด Facebook ===\n${g.fb}` : "", g.x ? `=== เนื้อหาจากฟีด X ===\n${g.x}` : "", issues.length ? `หมายเหตุ: ${issues.join(" · ")}` : ""].filter(Boolean).join("\n\n"),
       );
       return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
     }

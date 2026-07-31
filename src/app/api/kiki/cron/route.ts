@@ -7,7 +7,7 @@ import { financeSnapshot, snapshotFacts, financeCardHtml, fmtBaht } from "@/lib/
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
 import { dueRecurrings, debtNagFacts, weeklyReportFacts } from "@/lib/kiki-life";
 import { pollBankEmails } from "@/lib/kiki-gmail";
-import { socialReady, grabFeeds } from "@/lib/kiki-social";
+import { socialReady, grabFeedPosts } from "@/lib/kiki-social";
 import { ttsOgg } from "@/lib/kiki";
 import { askClaude } from "@/lib/claude";
 import { KIKI_GUARD, KIKI_PERSONA } from "@/lib/kiki";
@@ -271,20 +271,25 @@ ${nags.join("\n")}`);
   try {
     if (mainChat && socialReady() && (now.getHours() > 8 || (now.getHours() === 8 && now.getMinutes() >= 30)) && (await getSetting("kiki_last_social_brief")) !== today) {
       await setSetting("kiki_last_social_brief", today);
-      const g = await grabFeeds();
-      if (g.fb || g.x) {
+      // เจ้าของสั่ง: อ่านฟีดทุกครั้งต้องแคปภาพโพสต์แนบด้วยเสมอ
+      const { posts, issues } = await grabFeedPosts(3);
+      if (posts.length) {
+        const numbered = posts.map((p, i) => `[${p.source} #${i + 1}]\n${p.text}`).join("\n\n---\n\n");
         const t = await askKiki(
-          "[ข่าวเช้าจากฟีด] สรุปฟีดโซเชียลของเจ้าของเช้านี้: ข่าวเด่น เรื่องที่คนพูดถึง อัปเดตจากคนที่ติดตาม แยกหัวข้อสั้น ๆ อ่านง่าย ปิดท้ายชี้เรื่องน่าสนใจสุด (เขียนเป็นภาษาพูด จะถูกอ่านออกเสียงด้วย)",
-          [g.fb ? `=== ฟีด Facebook ===\n${g.fb}` : "", g.x ? `=== ฟีด X ===\n${g.x}` : ""].filter(Boolean).join("\n\n"),
+          "[ข่าวเช้าจากฟีด] สรุปโพสต์เด่นจากฟีดของเจ้าของเช้านี้ อ้างหมายเลข [เฟส #1] [X #2] (ภาพแคปส่งไปพร้อมกันแล้ว) แยกหัวข้อสั้น ๆ ปิดท้ายชี้เรื่องน่าสนใจสุด (เขียนเป็นภาษาพูด จะถูกอ่านออกเสียงด้วย)",
+          `=== โพสต์เช้านี้ ===\n${numbered.slice(0, 12_000)}`,
         ).catch(() => "");
         if (t) {
+          for (const p of posts.filter((x) => x.shotBase64).slice(0, 6)) {
+            sends.push({ chatId: mainChat, kind: "photo", dataBase64: p.shotBase64!, filename: "post.png", caption: `${p.source} #${posts.indexOf(p) + 1}` });
+          }
           sends.push({ chatId: mainChat, kind: "text", text: t });
           const ogg = await ttsOgg(t).catch(() => null);
           if (ogg) sends.push({ chatId: mainChat, kind: "voice", dataBase64: ogg.toString("base64"), filename: "news.ogg" });
           await saveKikiChat("assistant", t);
         }
-      } else if (g.issues.length) {
-        sends.push({ chatId: mainChat, kind: "text", text: `อ่านฟีดเช้านี้ไม่ได้ครับ ⚠️ ${g.issues.join(" · ")}` });
+      } else if (issues.length) {
+        sends.push({ chatId: mainChat, kind: "text", text: `อ่านฟีดเช้านี้ไม่ได้ครับ ⚠️ ${issues.join(" · ")}` });
       }
     }
   } catch { /* พรุ่งนี้ค่อยลอง */ }
