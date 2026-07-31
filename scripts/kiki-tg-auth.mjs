@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions.js";
+import { StringSession } from "telegram/sessions/index.js";
 
 function loadEnv() {
   const p = path.join(process.cwd(), ".env");

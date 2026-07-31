@@ -11,9 +11,13 @@ const ask = (q) => new Promise((r) => rl.question(q, r));
 
 async function main() {
   console.log("\nกำลังเปิดเบราว์เซอร์ — ล็อกอิน Facebook และ X (สลับแท็บได้) ให้เห็นฟีดทั้งสองเว็บ\n");
+  // ใช้ Chrome จริงในเครื่อง + ปิดร่องรอย automation — X/FB ตรวจจับ Chromium เปล่าของ Playwright แล้วบล็อกเงียบ
   const context = await chromium.launchPersistentContext(PROFILE, {
     headless: false,
+    channel: "chrome",
     viewport: { width: 1280, height: 900 },
+    args: ["--disable-blink-features=AutomationControlled"],
+    ignoreDefaultArgs: ["--enable-automation"],
   });
   const p1 = await context.newPage();
   await p1.goto("https://www.facebook.com/").catch(() => {});

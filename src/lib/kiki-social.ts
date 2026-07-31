@@ -49,10 +49,13 @@ async function grabPage(context: import("playwright").BrowserContext, url: strin
 export async function grabFeeds(): Promise<FeedGrab> {
   const issues: string[] = [];
   if (!socialReady()) return { issues: ["ยังไม่ได้ล็อกอิน — รัน npm run kiki:social-auth"] };
+  // Chrome จริง + ปิดร่องรอย automation (เหมือนตอน auth) — ไม่งั้น X บล็อก/เด้ง login ทั้งที่ session ยังดี
   const context = await chromium.launchPersistentContext(PROFILE(), {
     headless: true,
+    channel: "chrome",
     viewport: { width: 1280, height: 900 },
-    args: ["--no-sandbox"],
+    args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+    ignoreDefaultArgs: ["--enable-automation"],
   });
   try {
     const fb = await grabPage(context, "https://www.facebook.com/", "Facebook", issues);
