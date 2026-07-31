@@ -156,31 +156,45 @@ async function processMessage(msgs) {
   await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
   const typing = setInterval(() => tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {}), 4500);
 
-  try {
-    const res = await fetch(APP_URL + "/api/kiki/ingest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({
-        chatId,
-        text,
-        fromId: String(from.id || ""),
-        fromName: [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || "",
-        isGroup,
-        chatTitle: msg.chat.title || "",
-        replyText,
-        imageFiles,
-        audioFiles,
-        msgId: msg.message_id,
-      }),
-    });
-    const data = await res.json();
-    clearInterval(typing);
-    await deliver(chatId, data.sends || []);
-  } catch (e) {
-    clearInterval(typing);
-    console.error("ingest err:", e?.message);
-    await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านไม่ตอบครับ ⚠️ เดี๋ยวลองใหม่อีกทีนะครับ" }).catch(() => {});
+  // ลองใหม่เองก่อนยอมแพ้ — เว็บอาจกำลังรีสตาร์ท (บูต ~10 วิ) ไม่ใช่เหตุให้ทิ้งข้อความเจ้าของ
+  const body = JSON.stringify({
+    chatId,
+    text,
+    fromId: String(from.id || ""),
+    fromName: [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || "",
+    isGroup,
+    chatTitle: msg.chat.title || "",
+    replyText,
+    imageFiles,
+    audioFiles,
+    msgId: msg.message_id,
+  });
+  const waits = [0, 5000, 12000];
+  let lastErr = null;
+  for (let i = 0; i < waits.length; i++) {
+    if (waits[i]) await new Promise((r) => setTimeout(r, waits[i]));
+    try {
+      const ctl = new AbortController();
+      const killer = setTimeout(() => ctl.abort(), 250000);
+      const res = await fetch(APP_URL + "/api/kiki/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body,
+        signal: ctl.signal,
+      });
+      clearTimeout(killer);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      clearInterval(typing);
+      await deliver(chatId, data.sends || []);
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.error(`ingest err (รอบ ${i + 1}/${waits.length}):`, e?.message);
+    }
   }
+  clearInterval(typing);
+  await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านไม่ตอบครับ ⚠️ (ลองไป 3 รอบแล้ว) เดี๋ยวลองพิมพ์ใหม่อีกทีนะครับ" }).catch(() => {});
 }
 
 function handleMessage(msg) {

@@ -181,8 +181,8 @@ export async function POST(req: Request) {
   await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`);
   const reply = async (sends: Send[]) => {
     for (const s of sends) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text);
-    // เจ้าของพูดมาเป็นเสียง → คำตอบหลักถูกอ่านเป็นเสียงกลับเสมอ (ครอบทุก intent ไม่ใช่แค่คุยทั่วไป)
-    if (voiceNote) {
+    // เจ้าของพูดมาเป็นเสียง หรือเปิดโหมดตอบเสียงตลอด → คำตอบหลักถูกอ่านเป็นเสียงกลับเสมอ (ครอบทุก intent)
+    if (voiceNote || (await getSetting("kiki_voice_always")) === "1") {
       const mainText = sends.find((s) => s.kind === "text" && s.text)?.text;
       if (mainText) {
         const ogg = await ttsOgg(mainText.replace(/<[^>]+>/g, " "));
@@ -263,6 +263,20 @@ export async function POST(req: Request) {
       if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png", caption: undefined });
       sends.push({ kind: "text", text: t, replyTo: msgId });
       return reply(sends);
+    }
+
+    // ===== โหมดตอบเสียงตลอด =====
+    if (/ตอบเสียงตลอด|โหมดเสียง(?!.{0,6}(ปิด|ออก))|พูดตลอด|ตอบเป็นเสียงทุกครั้ง/.test(text) && !/ปิด|เลิก|หยุด|ไม่เอา/.test(text)) {
+      await setSetting("kiki_voice_always", "1");
+      const sends: Send[] = [{ kind: "text", text: `เปิดโหมดตอบเสียงตลอดแล้วครับ ✅ ทุกคำตอบจะมีเสียงแนบ
+เบื่อเมื่อไหร่พิมพ์ "ปิดโหมดเสียง"`, replyTo: msgId }];
+      const ogg = await ttsOgg("เปิดโหมดพูดตลอดแล้วครับผม ต่อไปนี้ผมพูดให้ฟังทุกคำตอบเลย");
+      if (ogg) sends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
+      return reply(sends);
+    }
+    if (/(ปิด|เลิก|หยุด|ไม่เอา).{0,10}(โหมดเสียง|ตอบเสียง|พูดตลอด)|ตอบข้อความพอ/.test(text)) {
+      await setSetting("kiki_voice_always", "");
+      return reply([{ kind: "text", text: "ปิดโหมดตอบเสียงตลอดแล้วครับ ✅ จะพูดเฉพาะตอนพี่พูดมา หรือสั่ง \"ตอบเสียง\"", replyTo: msgId }]);
     }
 
     // ===== เปลี่ยนเสียงพูดของ Vex =====
