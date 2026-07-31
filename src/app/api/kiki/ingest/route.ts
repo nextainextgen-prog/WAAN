@@ -32,6 +32,7 @@ import {
   extractFinance,
   recordTxns,
   deleteLastTxn,
+  editFinance,
   setBudget,
   financeSnapshot,
   snapshotFacts,
@@ -169,12 +170,30 @@ export async function POST(req: Request) {
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
-    // ===== ลบรายการเงินล่าสุด =====
-    if (/(ลบ|ยกเลิก|เอาออก).{0,12}(รายการ|บันทึก|อันเมื่อกี้|ล่าสุด)|บันทึกผิด|ลงผิด/i.test(text)) {
+    // ===== ลบรายการเงินล่าสุด (ทางลัด — เฉพาะพูดถึง "ล่าสุด/เมื่อกี้" ชัด ๆ) =====
+    if (/(ลบ|ยกเลิก|เอาออก).{0,12}(อันเมื่อกี้|ล่าสุด|เมื่อกี้)|บันทึกผิด|ลงผิด/i.test(text)) {
       const last = await deleteLastTxn();
       if (!last) return reply([{ kind: "text", text: "ยังไม่มีรายการให้ลบเลยครับ 🎯", replyTo: msgId }]);
       const t = `ลบให้แล้วครับ ✅\n\n${last.type === "income" ? "รับ" : "จ่าย"} ${fmtBaht(last.amount)} ฿ · ${last.category}${last.note ? ` · ${last.note}` : ""}`;
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== แก้บัญชีด้วยภาษาคน (ลบตัวซ้ำ/แก้ยอด/เปลี่ยนตัวเลข — Vex ลงมือเองจริง) =====
+    if (/เปลี่ยนตัวเลข|แก้ตัวเลข|แก้ยอด|ยอด\s*(ผิด|เกิน|ไม่ตรง|เพี้ยน|ไม่ใช่)|ตัวเลข\s*(ผิด|ไม่ตรง|มั่ว|เพี้ยน)|ลบรายการ|แก้รายการ|ตัดรายการ|(ลบ|เอา(ออก)?|ตัด|เคลียร์).{0,16}(ซ้ำ|ตัวซ้ำ)|ซ้ำ.{0,12}(ลบ|ออก|เคลียร์)/i.test(text)) {
+      const r = await editFinance([replyText, text].filter(Boolean).join("\n"));
+      if (!r.applied.length) {
+        return reply([{ kind: "text", text: `ยังไม่ได้แตะอะไรนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงรายการไหน"}\n\nบอกชื่อรายการ+ยอดชัด ๆ ได้เลย เช่น "ลบรายการเงินเดือน 20,739.12 ที่ซ้ำ"`, replyTo: msgId }]);
+      }
+      const { png, snapFacts } = await financeCardPng();
+      const t = await vexSay(
+        `เพิ่งแก้บัญชีตามคำสั่งเจ้าของสำเร็จจริง ${r.applied.length} รายการ — ยืนยันสิ่งที่ทำ + ยอดล่าสุด สั้น ๆ`,
+        [...r.applied.map((x) => `ทำแล้ว: ${x}`), ...snapFacts],
+        `จัดการแล้วครับ ✅\n\n${r.applied.join("\n")}`,
+      );
+      const sends: Send[] = [];
+      if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
+      sends.push({ kind: "text", text: t, replyTo: msgId });
+      return reply(sends);
     }
 
     // ===== ตั้งงบ =====
@@ -273,7 +292,13 @@ export async function POST(req: Request) {
       ? (text ? FINANCE_VERB_RE.test(text) || text.length < 60 : true)
       : FINANCE_VERB_RE.test(text) && /\d/.test(text);
     if (financeLikely) {
-      const items = await extractFinance([replyText, text].filter(Boolean).join("\n"), imageFiles);
+      // แนบรายการล่าสุดให้ตัวสกัดด้วย — เจ้าของพูดถึงยอดเดิม (ถาม/บ่น/แก้ความเข้าใจ) ต้องไม่ถูกลงซ้ำ
+      const recent = await (await import("@/lib/db")).db.financeTxn.findMany({
+        where: { occurredAt: { gte: new Date(Date.now() - 10 * 86400_000) } },
+        orderBy: { createdAt: "desc" },
+        take: 15,
+      });
+      const items = await extractFinance([replyText, text].filter(Boolean).join("\n"), imageFiles, recent);
       if (items.length) {
         const slipPath = imageFiles.length ? await storeSlips(imageFiles) : null;
         const recs = await recordTxns(items, { slipPath: slipPath || undefined, msgId: msgId ? String(msgId) : undefined });

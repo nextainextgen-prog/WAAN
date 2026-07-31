@@ -30,11 +30,17 @@ const EXTRACT_SYSTEM = `คุณคือระบบสกัดรายก�
 - หนึ่งข้อความอาจมีหลายรายการ — แยกเป็นหลาย item
 - ไม่ใช่เรื่องการเงินเลย = {"items":[]}`;
 
-export async function extractFinance(text: string, imagePaths: string[] = []): Promise<ParsedTxn[]> {
+export async function extractFinance(text: string, imagePaths: string[] = [], recent: TxnRecord[] = []): Promise<ParsedTxn[]> {
   const img = imagePaths.length
     ? `\n\nรูปสลิปที่แนบมา (เปิดอ่านด้วย Read ทุกไฟล์):\n${imagePaths.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
     : "";
-  const raw = await askClaude(`ข้อความจากเจ้าของ: """${text}"""${img}`, {
+  // กันบันทึกซ้ำ: เจ้าของมัก "พูดถึง" ยอดเดิมตอนคุย/แก้ความเข้าใจ — ไม่ใช่แจ้งรายการใหม่ (เคยพัง: เงินเดือน+AIA โดนลงซ้ำ)
+  const rec = recent.length
+    ? `\n\nรายการที่บันทึกไปแล้วล่าสุด (ห้ามสร้างซ้ำ — ถ้ายอด/เรื่องที่เจ้าของพูดถึงตรงกับในนี้ = เขาพูดถึงของเดิม ห้ามใส่ใน items):\n${recent
+        .map((r) => `- ${r.type === "income" ? "รับ" : "จ่าย"} ${r.amount} บาท · ${r.category}${r.note ? ` · ${r.note}` : ""}`)
+        .join("\n")}\nถ้าเจ้าของแค่ถาม/อธิบาย/บ่น/แก้ความเข้าใจเรื่องยอดเดิม โดยไม่ได้แจ้งรายการใหม่ = {"items":[]}`
+    : "";
+  const raw = await askClaude(`ข้อความจากเจ้าของ: """${text}"""${img}${rec}`, {
     guard: KIKI_GUARD,
     system: EXTRACT_SYSTEM,
     timeoutMs: 120_000,
@@ -93,8 +99,9 @@ export async function recordTxns(items: ParsedTxn[], opts: { slipPath?: string; 
       },
     });
     out.push(rec);
-    await appendLedger(rec).catch(() => {});
   }
+  const months = new Set(out.map((r) => ymOf(r.occurredAt)));
+  for (const ym of months) await rebuildLedgerMonth(ym).catch(() => {});
   return out;
 }
 
@@ -102,6 +109,7 @@ export async function deleteLastTxn(): Promise<TxnRecord | null> {
   const last = await db.financeTxn.findFirst({ orderBy: { createdAt: "desc" } });
   if (!last) return null;
   await db.financeTxn.delete({ where: { id: last.id } });
+  await rebuildLedgerMonth(ymOf(last.occurredAt)).catch(() => {});
   return last;
 }
 
@@ -363,33 +371,114 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
 }
 
 // ===== สมุดบัญชีใน Obsidian (AI-Personal/finance/YYYY-MM.md) =====
+// เขียนใหม่ทั้งไฟล์จาก DB ทุกครั้งที่บัญชีเปลี่ยน (append อย่างเดียวทำไฟล์เพี้ยนตอนลบ/แก้รายการ)
 
-async function appendLedger(t: TxnRecord): Promise<void> {
-  const d = t.occurredAt;
-  const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  const rel = `finance/${ym}.md`;
-  const exists = await readPersonalNote(rel);
-  if (!exists) {
-    const head = [
-      "---",
-      "type: ledger",
-      "tags: [ส่วนตัว, การเงิน]",
-      `month: ${ym}`,
-      "---",
-      "",
-      `# บัญชี ${ym}`,
-      "",
-      "| วันที่ | ประเภท | หมวด | จำนวน (฿) | รายละเอียด |",
-      "|---|---|---|---:|---|",
-      "",
-    ].join("\n");
-    await writePersonalNote(rel, head + personalHubFooter([`[[${PERSONAL_FOLDER}/finance/_สารบัญ-การเงิน|สารบัญการเงิน]]`]));
+export function ymOf(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export async function rebuildLedgerMonth(ym: string): Promise<void> {
+  const [y, m] = ym.split("-").map(Number);
+  const from = new Date(y, m - 1, 1);
+  const to = new Date(y, m, 1);
+  const rows = await db.financeTxn.findMany({
+    where: { occurredAt: { gte: from, lt: to } },
+    orderBy: { occurredAt: "asc" },
+  });
+  const lines = rows.map((t) => {
+    const dateStr = t.occurredAt.toLocaleString("th-TH-u-ca-gregory", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `| ${dateStr} | ${t.type === "income" ? "รับ" : "จ่าย"} | ${t.category} | ${t.type === "income" ? "+" : "−"}${fmtBaht(t.amount)} | ${t.note || "-"} |`;
+  });
+  const income = rows.filter((r) => r.type === "income").reduce((a, r) => a + r.amount, 0);
+  const expense = rows.filter((r) => r.type === "expense").reduce((a, r) => a + r.amount, 0);
+  const md = [
+    "---",
+    "type: ledger",
+    "tags: [ส่วนตัว, การเงิน]",
+    `month: ${ym}`,
+    "---",
+    "",
+    `# บัญชี ${ym}`,
+    "",
+    `รับ ${fmtBaht(income)} ฿ · จ่าย ${fmtBaht(expense)} ฿ · คงเหลือ ${fmtBaht(income - expense)} ฿ (${rows.length} รายการ)`,
+    "",
+    "| วันที่ | ประเภท | หมวด | จำนวน (฿) | รายละเอียด |",
+    "|---|---|---|---:|---|",
+    ...(lines.length ? lines : ["| - | - | - | - | ยังไม่มีรายการ |"]),
+  ].join("\n");
+  await writePersonalNote(`finance/${ym}.md`, md + personalHubFooter([`[[${PERSONAL_FOLDER}/finance/_สารบัญ-การเงิน|สารบัญการเงิน]]`]));
+}
+
+// ===== แก้บัญชีด้วยภาษาคน (Vex แก้ตัวเลขเองได้) =====
+// เจ้าของสั่งอิสระ เช่น "ลบรายการเงินเดือน Thunder ที่ซ้ำ" / "แก้ค่ากาแฟเมื่อกี้เป็น 55" / "ยอดจริงคือ 22,879.12"
+// LLM เลือก action จากตารางรายการจริงเท่านั้น → ระบบลงมือ + rebuild สมุดบัญชี → ยืนยันด้วยผลที่ทำจริง
+
+const EDIT_SYSTEM = `คุณคือระบบแก้ไขบัญชีการเงินส่วนตัว ตอบ JSON เท่านั้น ไม่มีข้อความอื่น ไม่มี \`\`\`
+โครงสร้าง: {"actions":[{"action":"delete","id":"..."},{"action":"update","id":"...","set":{"amount":123.45,"category":"...","type":"income|expense","note":"...","occurredAt":"YYYY-MM-DDTHH:mm"}}],"reason":"อธิบายสั้น ๆ ว่าทำอะไรเพราะอะไร"}
+กติกา:
+- เลือก id จาก "ตารางรายการ" ที่ให้เท่านั้น ห้ามสร้าง id เอง
+- "ซ้ำ/ตัวซ้ำ/บันทึกซ้ำ" = เก็บรายการที่บันทึกก่อน (บันทึกเมื่อ เก่าสุด) แล้วลบตัวที่บันทึกทีหลัง
+- ถ้าเจ้าของบอกยอดรวมที่ถูกต้อง ให้หา action ที่ทำให้ยอดรวมตรงตามนั้น (มักเป็นการลบตัวซ้ำ)
+- update.set ใส่เฉพาะ field ที่ต้องเปลี่ยน
+- แก้เฉพาะที่เจ้าของสั่งชัดเจนเท่านั้น ไม่แน่ใจว่าหมายถึงรายการไหน = {"actions":[],"reason":"บอกว่าติดตรงไหน"}`;
+
+export interface EditFinanceResult {
+  applied: string[]; // สิ่งที่ทำสำเร็จ (ประโยคอ่านรู้เรื่อง)
+  reason: string;    // คำอธิบาย/เหตุที่ไม่ทำ
+}
+
+export async function editFinance(command: string): Promise<EditFinanceResult> {
+  const since = new Date(Date.now() - 62 * 86400_000);
+  const rows = await db.financeTxn.findMany({ where: { occurredAt: { gte: since } }, orderBy: { createdAt: "asc" }, take: 60 });
+  if (!rows.length) return { applied: [], reason: "ยังไม่มีรายการในระบบ" };
+  const table = rows
+    .map((r) => `${r.id} | เกิด ${r.occurredAt.toISOString().slice(0, 16)} | ${r.type} | ${r.amount} | ${r.category} | ${r.note || "-"} | บันทึกเมื่อ ${r.createdAt.toISOString().slice(0, 16)}`)
+    .join("\n");
+  const raw = await askClaude(
+    `คำสั่งจากเจ้าของ: """${command}"""\n\nตารางรายการ (id | เกิดเมื่อ | ประเภท | จำนวน | หมวด | โน้ต | บันทึกเมื่อ):\n${table}`,
+    { guard: KIKI_GUARD, system: EDIT_SYSTEM, timeoutMs: 120_000 },
+  );
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return { applied: [], reason: "อ่านคำสั่งไม่ออก ลองบอกชื่อรายการ+ยอดชัด ๆ อีกที" };
+  let actions: { action: string; id: string; set?: Record<string, unknown> }[] = [];
+  let reason = "";
+  try {
+    const j = JSON.parse(m[0]);
+    actions = Array.isArray(j.actions) ? j.actions : [];
+    reason = String(j.reason || "");
+  } catch {
+    return { applied: [], reason: "อ่านคำสั่งไม่ออก ลองบอกชื่อรายการ+ยอดชัด ๆ อีกที" };
   }
-  const dateStr = d.toLocaleString("th-TH-u-ca-gregory", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-  const row = `| ${dateStr} | ${t.type === "income" ? "รับ" : "จ่าย"} | ${t.category} | ${t.type === "income" ? "+" : "−"}${fmtBaht(t.amount)} | ${t.note || "-"} |`;
-  // แทรกแถวก่อน footer (ท้ายตาราง)
-  const cur = (await readPersonalNote(rel)) || "";
-  const idx = cur.indexOf("\n\n---\n🔗");
-  if (idx >= 0) await writePersonalNote(rel, cur.slice(0, idx) + row + "\n" + cur.slice(idx));
-  else await appendPersonalNote(rel, row + "\n");
+
+  const applied: string[] = [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const touched = new Set<string>();
+  for (const a of actions.slice(0, 12)) {
+    const row = byId.get(String(a.id));
+    if (!row) continue;
+    if (a.action === "delete") {
+      await db.financeTxn.delete({ where: { id: row.id } }).catch(() => null);
+      applied.push(`ลบ: ${row.type === "income" ? "รับ" : "จ่าย"} ${fmtBaht(row.amount)} ฿ · ${row.category}${row.note ? ` · ${row.note}` : ""}`);
+      touched.add(ymOf(row.occurredAt));
+    } else if (a.action === "update" && a.set && typeof a.set === "object") {
+      const set = a.set as { amount?: number; category?: string; type?: string; note?: string; occurredAt?: string };
+      const data: Record<string, unknown> = {};
+      if (typeof set.amount === "number" && set.amount > 0) data.amount = Math.round(set.amount * 100) / 100;
+      if (set.category) data.category = String(set.category).slice(0, 30);
+      if (set.type === "income" || set.type === "expense") data.type = set.type;
+      if (set.note !== undefined) data.note = String(set.note).slice(0, 200) || null;
+      if (set.occurredAt) {
+        const d = new Date(set.occurredAt);
+        if (!isNaN(d.getTime()) && d.getFullYear() > 2000) data.occurredAt = d;
+      }
+      if (!Object.keys(data).length) continue;
+      await db.financeTxn.update({ where: { id: row.id }, data }).catch(() => null);
+      const changes = Object.entries(data).map(([k, v]) => `${k}=${v instanceof Date ? v.toLocaleDateString("th-TH-u-ca-gregory") : v}`).join(", ");
+      applied.push(`แก้ ${row.category} ${fmtBaht(row.amount)} ฿ → ${changes}`);
+      touched.add(ymOf(row.occurredAt));
+      if (data.occurredAt instanceof Date) touched.add(ymOf(data.occurredAt));
+    }
+  }
+  for (const ym of touched) await rebuildLedgerMonth(ym).catch(() => {});
+  return { applied, reason };
 }
