@@ -574,7 +574,7 @@ export async function summarizeYoutube(url: string, userNote?: string): Promise<
 
 export const TTS_VOICES = ["Charon", "Puck", "Fenrir", "Orus", "Iapetus", "Algenib", "Gacrux", "Achird", "Zubenelgenubi", "Alnilam", "Enceladus", "Sadaltager", "Kore", "Zephyr", "Leda", "Aoede", "Autonoe", "Callirrhoe", "Umbriel", "Algieba", "Despina", "Erinome", "Rasalgethi", "Laomedeia", "Achernar", "Schedar", "Pulcherrima", "Vindemiatrix", "Sadachbia", "Sulafat"] as const;
 
-export async function ttsOgg(text: string, voiceOverride?: string): Promise<Buffer | null> {
+export async function ttsOgg(text: string, voiceOverride?: string, maxChars = 900): Promise<Buffer | null> {
   try {
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) return null;
@@ -588,7 +588,7 @@ export async function ttsOgg(text: string, voiceOverride?: string): Promise<Buff
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: text.slice(0, 900) }] }],
+          contents: [{ parts: [{ text: text.slice(0, maxChars) }] }],
           generationConfig: {
             responseModalities: ["AUDIO"],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
