@@ -265,6 +265,26 @@ export async function POST(req: Request) {
       return reply(sends);
     }
 
+    // ===== เปลี่ยนเสียงพูดของ Vex =====
+    const voiceM = text.match(/(?:เปลี่ยน|ใช้|เอา)เสียง(?:เป็น|ชื่อ)?\s*([A-Za-z]+)/);
+    if (voiceM) {
+      const { TTS_VOICES } = await import("@/lib/kiki");
+      const pick = TTS_VOICES.find((v) => v.toLowerCase() === voiceM[1].toLowerCase());
+      if (pick) {
+        await setSetting("kiki_tts_voice", pick);
+        const sends: Send[] = [{ kind: "text", text: `เปลี่ยนเสียงเป็น ${pick} แล้วครับ ✅ ฟังตัวอย่างด้านล่างเลย`, replyTo: msgId }];
+        const ogg = await ttsOgg(`สวัสดีครับ นี่เสียงใหม่ของผม ${pick} ครับผม เป็นไงบ้าง ชอบมั้ยครับ`, pick);
+        if (ogg) sends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
+        return reply(sends);
+      }
+      return reply([{ kind: "text", text: `ไม่รู้จักเสียง "${voiceM[1]}" ครับ — พิมพ์ "มีเสียงอะไรบ้าง" ดูรายชื่อได้`, replyTo: msgId }]);
+    }
+    if (/มีเสียง(อะไร|ไหน)บ้าง|เสียงทั้งหมด|รายชื่อเสียง/.test(text)) {
+      const { TTS_VOICES } = await import("@/lib/kiki");
+      const cur = (await getSetting("kiki_tts_voice")) || "Charon";
+      return reply([{ kind: "text", text: `เสียงที่เลือกได้ (ตอนนี้ใช้ ${cur}):\n\n${TTS_VOICES.join(" · ")}\n\nเปลี่ยนโดยพิมพ์ "เปลี่ยนเสียงเป็น <ชื่อ>" ครับ`, replyTo: msgId }]);
+    }
+
     // ===== เก็บรูปเข้าคลัง (เจ้าของสั่ง "เก็บรูปนี้") — เช็คก่อนเรื่องเงิน =====
     if (imageFiles.length && /เก็บ(รูป|ภาพ|ไว้)|เซฟ(รูป|ภาพ)|บันทึก(รูป|ภาพ)|save\s*(รูป|ภาพ|pic)/i.test(text) && !FINANCE_VERB_RE.test(text)) {
       const label = text.replace(/เก็บ|เซฟ|บันทึก|save|รูป(นี้|พวกนี้)?|ภาพ(นี้|พวกนี้)?|ไว้|ให้(หน่อย|ที)?|ด้วย|นะ|ครับ|หน่อย/gi, " ").trim();

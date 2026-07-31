@@ -570,10 +570,13 @@ export async function summarizeYoutube(url: string, userNote?: string): Promise<
 
 // ===== Vex ตอบเป็นเสียง (Gemini TTS → ffmpeg → OGG/Opus ให้ Telegram sendVoice) =====
 
-export async function ttsOgg(text: string): Promise<Buffer | null> {
+export const TTS_VOICES = ["Charon", "Puck", "Fenrir", "Orus", "Iapetus", "Algenib", "Gacrux", "Achird", "Zubenelgenubi", "Alnilam", "Enceladus", "Sadaltager", "Kore", "Zephyr", "Leda", "Aoede", "Autonoe", "Callirrhoe", "Umbriel", "Algieba", "Despina", "Erinome", "Rasalgethi", "Laomedeia", "Achernar", "Schedar", "Pulcherrima", "Vindemiatrix", "Sadachbia", "Sulafat"] as const;
+
+export async function ttsOgg(text: string, voiceOverride?: string): Promise<Buffer | null> {
   try {
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) return null;
+    const voice = voiceOverride || (await getSetting("kiki_tts_voice")) || "Charon";
     // ตัดอิโมจิ/มาร์กอัปก่อนอ่านออกเสียง (ไม่งั้น TTS อ่าน "เครื่องหมายเตือน" ออกมาด้วย)
     text = text.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, " ").replace(/[*_`#>|]/g, " ").replace(/\s+/g, " ").trim();
     if (!text) return null;
@@ -586,7 +589,7 @@ export async function ttsOgg(text: string): Promise<Buffer | null> {
           contents: [{ parts: [{ text: text.slice(0, 900) }] }],
           generationConfig: {
             responseModalities: ["AUDIO"],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Charon" } } },
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
           },
         }),
       },
