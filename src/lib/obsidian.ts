@@ -36,9 +36,11 @@ export function getReadableFolders(): string[] {
 export const AI_HUB_NOTE = "_สารบัญ-เลขาAI";
 
 // ฟุตเตอร์ลิงก์กลับสารบัญ + index หลัก — ผนวกท้ายโน้ตที่ AI สร้าง เพื่อให้เชื่อมกราฟเสมอ
+// กราฟแบบก้อนแยก (เจ้าของสั่ง 3 ส.ค. 2026): โน้ตลิงก์หา "hub เฉพาะทางของตัวเอง" ลูกเดียว
+// ห้ามลิงก์ index/สารบัญเลขาAI จากโน้ตรายใบ — เส้นเข้าศูนย์กลางให้เป็นหน้าที่ของ hub เท่านั้น ไม่งั้นกราฟพันเป็นก้อนเดียว
 export function aiHubFooter(extraLinks: string[] = []): string {
   const ai = getAiFolder();
-  const links = [`[[${ai}/${AI_HUB_NOTE}|สารบัญเลขา AI]]`, `[[index|Second Brain Index]]`, ...extraLinks];
+  const links = extraLinks.length ? extraLinks : [`[[${ai}/${AI_HUB_NOTE}|สารบัญเลขา AI]]`];
   return `\n\n---\n🔗 ${links.join(" · ")}\n`;
 }
 
