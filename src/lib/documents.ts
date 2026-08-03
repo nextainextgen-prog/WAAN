@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { db } from "./db";
 import { extractText, summarizeDocument } from "./extract";
 import { signPdf } from "./sign";
-import { getAllowedChatId, getBotToken, tgSendMessage } from "./telegram";
-import { writeAiNote, getVaultPath } from "./obsidian";
+import { getAllowedChatId, getBotToken, tgSendMessage, tgSendDocument } from "./telegram";
+import { writeAiNote, getVaultPath, aiHubFooter } from "./obsidian";
 
 const DIR = path.join(process.cwd(), ".generated", "documents");
 
@@ -49,18 +49,29 @@ export async function ingestDocument(
     },
   });
 
-  // แจ้งเตือน Telegram พร้อมปุ่มอนุมัติ/ไม่อนุมัติ
-  await notifyNewDocument(id, filename, summary).catch(() => {});
+  // แจ้งเตือน Telegram พร้อมไฟล์ + ปุ่มอนุมัติ/ไม่อนุมัติ
+  await notifyNewDocument(id, filename, summary, stored).catch(() => {});
 
   return { id, summary };
 }
 
-async function notifyNewDocument(id: string, filename: string, summary: string) {
+// Telegram จำกัด caption ไว้ 1024 ตัวอักษร ถ้าสรุปยาวกว่านี้ต้องแยกเป็นอีกข้อความ
+const TG_CAPTION_LIMIT = 1024;
+// ไฟล์ที่บอทอัปได้สูงสุด 50MB
+const TG_FILE_LIMIT = 50 * 1024 * 1024;
+
+async function notifyNewDocument(
+  id: string,
+  filename: string,
+  summary: string,
+  filePath: string,
+) {
   if (!getBotToken()) return;
   const chatId = await getAllowedChatId();
   if (!chatId) return;
+
   const text = `เอกสารใหม่รออนุมัติ\n\nไฟล์: ${filename}\n\nสรุป:\n${summary}`;
-  await tgSendMessage(chatId, text, {
+  const keyboard = {
     reply_markup: {
       inline_keyboard: [
         [
@@ -69,7 +80,40 @@ async function notifyNewDocument(id: string, filename: string, summary: string) 
         ],
       ],
     },
-  });
+  };
+
+  // แนบไฟล์ตัวจริงเข้าแชทเพื่อกดเปิดดูได้เลย — ถ้าแนบไม่สำเร็จต้องยังได้ข้อความแจ้งเตือนเสมอ
+  let buffer: Buffer | null = null;
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.size <= TG_FILE_LIMIT) buffer = await fs.readFile(filePath);
+  } catch {
+    buffer = null;
+  }
+
+  if (!buffer) {
+    await tgSendMessage(chatId, text, keyboard);
+    return;
+  }
+
+  // สรุปสั้นพอ → รวบเป็นข้อความเดียว ไฟล์+สรุป+ปุ่มอยู่ด้วยกัน
+  if (text.length <= TG_CAPTION_LIMIT) {
+    try {
+      await tgSendDocument(chatId, buffer, filename, text, keyboard);
+      return;
+    } catch {
+      await tgSendMessage(chatId, text, keyboard);
+      return;
+    }
+  }
+
+  // สรุปยาว → ส่งไฟล์ก่อน (กดเปิดได้) แล้วตามด้วยสรุป+ปุ่ม
+  try {
+    await tgSendDocument(chatId, buffer, filename, "เอกสารใหม่รออนุมัติ");
+  } catch {
+    // แนบไม่ได้ก็ไม่เป็นไร ข้อความสรุปด้านล่างยังส่งอยู่
+  }
+  await tgSendMessage(chatId, text, keyboard);
 }
 
 // ตัดสินใจอนุมัติ/ไม่อนุมัติ
@@ -124,7 +168,7 @@ async function logToObsidian(filename: string, action: string, summary: string) 
   const time = new Date().toISOString();
   await writeAiNote(
     `logs/${date}-documents.md`,
-    `\n## ${time} — ${action}\nไฟล์: ${filename}\nสรุป: ${summary}\n`,
+    `\n## ${time} — ${action}\nไฟล์: ${filename}\nสรุป: ${summary}\n` + aiHubFooter(),
   ).catch(() => {});
 }
 

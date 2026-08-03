@@ -39,6 +39,19 @@ const EMPTY: FieldsState = {
   otherDocLabel: "",
 };
 
+// ประเภทบริการตามบริษัทที่ออกเอกสาร — Thunder = BOT/API · EasySlip = BOT/API + BoostSMS/CRM
+const SERVICE_BASE = [
+  { v: "BOT", t: "บริการ BOT" },
+  { v: "API", t: "บริการ API" },
+];
+const SERVICE_EASYSLIP_EXTRA = [
+  { v: "BoostSMS", t: "บริการ BoostSMS" },
+  { v: "CRM", t: "บริการ CRM" },
+];
+function serviceOptions(brand: Brand | "") {
+  return brand === "easyslip" ? [...SERVICE_BASE, ...SERVICE_EASYSLIP_EXTRA] : SERVICE_BASE;
+}
+
 const DOC_TYPES: { v: DocType; t: string; d: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { v: "general", t: "คืนเงินทั่วไป", d: "ยกเลิก / ใช้งานไม่ได้", icon: RotateCcw },
   { v: "wht", t: "คืนเงินหัก ณ ที่จ่าย", d: "ขอหักภาษี ณ ที่จ่ายย้อนหลัง", icon: Percent },
@@ -92,17 +105,22 @@ export function RefundWizard() {
       const data = await res.json();
       if (data.found && data.contact) {
         const c = data.contact;
-        setF((p) => ({
+        setF((p) => {
+          const brand = c.brand === "easyslip" || c.brand === "thunder" ? c.brand : p.brand;
+          const svc = c.serviceLabel || p.serviceLabel;
+          return {
           ...p,
-          brand: c.brand === "easyslip" || c.brand === "thunder" ? c.brand : p.brand,
+          brand,
           userId: c.userId || p.userId,
           companyName: c.companyName || p.companyName,
-          serviceLabel: c.serviceLabel || p.serviceLabel,
+          // ความจำเก่าอาจเป็นบริการที่บริษัทนี้ไม่มี (เช่น CRM ของ EasySlip แล้วเคสนี้ออกในนาม Thunder) → ไม่เติม
+          serviceLabel: serviceOptions(brand).some((s) => s.v === svc) ? svc : "",
           packageName: c.packageName || p.packageName,
           bank: c.bank || p.bank,
           accountNo: c.accountNo || p.accountNo,
           accountName: c.accountName || p.accountName,
-        }));
+          };
+        });
         setPrefilled(true);
       } else {
         setPrefilled(false);
@@ -161,6 +179,8 @@ export function RefundWizard() {
   // แพ็กเกจตามแบรนด์+บริการ (มีดรอปดาว = Thunder BOT) · เลือกแล้วคำนวณราคาอัตโนมัติตามจำนวนเดือน
   const pkgs = useMemo(() => getPackages(f.brand || "", f.serviceLabel), [f.brand, f.serviceLabel]);
   const monthOpts = useMemo(() => getMonthOptions(f.serviceLabel), [f.serviceLabel]);
+  // ประเภทบริการที่เลือกได้ ขึ้นกับบริษัทที่ออกเอกสาร — BoostSMS/CRM มีเฉพาะกรณีออกในนาม EasySlip
+  const serviceOpts = useMemo(() => serviceOptions(f.brand), [f.brand]);
 
   // ตั้งราคาค่าบริการ + (เคสหัก ณ ที่จ่าย) คำนวณ "ยอดหักภาษี 3%" (ฐานก่อน VAT) + "ยอดโอนคืน" ให้อัตโนมัติ
   const setNetPrice = (v: string) => {
@@ -182,8 +202,16 @@ export function RefundWizard() {
       set("docType", v);
     }
   };
-  // เปลี่ยนประเภทบริการ (BOT/API) → รีเซ็ตแพ็กเกจ/เดือน/ราคา (เพราะรายการ+ตัวเลือกต่างกัน)
-  const selectService = (v: "BOT" | "API") => {
+  // เปลี่ยนบริษัทที่ออกเอกสาร → ถ้าบริการที่เลือกไว้ไม่มีในบริษัทใหม่ (เช่น CRM แล้วสลับไป Thunder) ให้ล้างทิ้ง
+  // ไม่งั้นจะออกเอกสารด้วยบริการที่บริษัทนั้นไม่ได้ขาย
+  const selectBrand = (v: Brand) => {
+    setF((p) => {
+      const ok = serviceOptions(v).some((s) => s.v === p.serviceLabel);
+      return ok ? { ...p, brand: v } : { ...p, brand: v, serviceLabel: "", packageName: "", months: "", netPrice: "" };
+    });
+  };
+  // เปลี่ยนประเภทบริการ → รีเซ็ตแพ็กเกจ/เดือน/ราคา (เพราะรายการ+ตัวเลือกต่างกัน)
+  const selectService = (v: string) => {
     const nv = f.serviceLabel === v ? "" : v;
     setF((p) => ({ ...p, serviceLabel: nv, packageName: "", months: "", netPrice: "" }));
   };
@@ -381,7 +409,7 @@ export function RefundWizard() {
                 ] as const).map((b) => (
                   <button
                     key={b.v}
-                    onClick={() => set("brand", b.v)}
+                    onClick={() => selectBrand(b.v)}
                     className={cn(
                       "flex items-center gap-3 rounded-xl border p-3.5 text-left transition-colors",
                       f.brand === b.v ? "border-primary bg-primary-soft ring-2 ring-primary/20" : "border-border-strong hover:bg-surface-2",
@@ -447,10 +475,7 @@ export function RefundWizard() {
             <div className="space-y-1.5">
               <label className="block text-sm font-medium">ประเภทบริการ</label>
               <div className="grid grid-cols-2 gap-3">
-                {([
-                  { v: "BOT", t: "บริการ BOT" },
-                  { v: "API", t: "บริการ API" },
-                ] as const).map((s) => (
+                {serviceOpts.map((s) => (
                   <button
                     key={s.v}
                     onClick={() => selectService(s.v)}

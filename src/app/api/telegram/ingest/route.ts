@@ -9,13 +9,16 @@ import { askBrain } from "@/lib/brain";
 import { addLesson, listLessons, deactivateLessons } from "@/lib/lessons";
 import { getActivityDigest } from "@/lib/activity";
 import { saveChat } from "@/lib/secretary";
+import { parseThaiRange, buildMonitorReport, teachKnowledge, thunderAnswer, customerLookup, bizDateOf, prevBizDate, getThunderContext } from "@/lib/thunder";
+import { db } from "@/lib/db";
 import { extractEvents, createEvent, createMeetLink, getUpcoming, thaiDate, buildCalendarDayHtml } from "@/lib/calendar";
 import { generateDeck } from "@/lib/deck-generate";
 import { saveDeckFiles } from "@/lib/slide-store";
 import { renderDeckPngs, renderHtmlToPng } from "@/lib/html-pdf";
 import { pageForQuestion, captureAppPage } from "@/lib/screenshot";
-import { extractUrls, fetchUrlContent, saveLinkToBrain } from "@/lib/weblink";
-import { previewExpiry, extractUsername } from "@/lib/thunder-expiry";
+import { extractUrls, fetchUrlContent } from "@/lib/weblink";
+import { saveLinkContentToKnowledge } from "@/lib/knowledge";
+import { previewExpiry, extractUsername, extractShopName } from "@/lib/thunder-expiry";
 import { muteGroup, unmuteGroup, listMutedGroups, muteBrand, unmuteBrand, listMutedBrands } from "@/lib/mute";
 import { rememberGroup, resolveGroups, listGroups, type GroupInfo } from "@/lib/groups";
 import { detectBrands, brandLabel, BRANDS } from "@/lib/brands";
@@ -134,19 +137,32 @@ async function handleThunderExpiry(text: string, threadId: string, fromUsername:
   const tag = fromUsername ? `@${fromUsername} ` : fromName ? `${fromName} ` : "";
   // username จากข้อความปัจจุบัน ถ้าไม่มี (เช่น reply ว่า "ลองหาใหม่อีกครั้ง") → ดึงจากข้อความที่ reply อ้างถึง
   const username = extractUsername(text) || extractUsername(replyText);
+  const shopName = extractShopName(text) || extractShopName(replyText) || undefined; // เฟส C: ระบุชื่อสาขา
   if (!username) {
     return [{ kind: "text", text: `${tag}พิมพ์ username ที่จะปรับวันหมดอายุมาได้เลยค่ะ เช่น "preechapanit101 ปรับวันหมดอายุให้หน่อย"`, threadId: thr }];
   }
-  const pv = await previewExpiry(username);
+  // เก็บ pending (ชื่อสาขาที่ระบุ) ไว้ให้ตอนกดปุ่มยืนยัน — เพราะ callback ไม่มีข้อความเดิม + callback_data จำกัด 64 ตัว
+  // เขียนทุกครั้ง (แม้ไม่ระบุชื่อสาขา = null) เพื่อล้าง pending เก่า กันกู้/ปรับผิดร้านจากคำสั่งก่อนหน้า
+  {
+    const pendVal = JSON.stringify({ shopName: shopName || null, ts: bizDateOf() });
+    await db.setting.upsert({
+      where: { key: `texp_pending:${username.toLowerCase()}` },
+      update: { value: pendVal },
+      create: { key: `texp_pending:${username.toLowerCase()}`, value: pendVal },
+    }).catch(() => {});
+  }
+  const pv = await previewExpiry(username, { shopName });
   if (!pv.ok) {
     const msg =
       pv.error === "no_session" || pv.error === "session_expired"
         ? "ระบบหลังบ้าน Thunder ต้องล็อกอินใหม่ค่ะ (session หมดอายุ) รบกวนพี่โด้รัน `npm run thunder:auth` แล้วสั่งใหม่นะคะ"
         : pv.error === "not_found"
           ? `ไม่พบยูสเซอร์ "${username}" ในระบบหลังบ้านค่ะ ลองตรวจชื่ออีกครั้งนะคะ`
-          : pv.error === "no_main_branch"
-            ? `เจอ "${username}" แต่ไม่มีแถวที่เป็น "สาขาหลัก" ค่ะ (มี ${pv.otherCount} แถวที่เป็นสาขาย่อย/ชื่อไม่ตรง) ยังไม่ปรับให้นะคะ`
-            : `ตรวจสอบระบบหลังบ้านไม่สำเร็จค่ะ (${pv.error || "unknown"})`;
+          : pv.error === "shop_not_found"
+            ? `เจอยูสเซอร์ "${username}" แต่ไม่เจอสาขาชื่อ "${shopName}" ค่ะ (มี ${pv.otherCount} แถวชื่ออื่น) ลองตรวจชื่อสาขาอีกครั้งนะคะ`
+            : pv.error === "no_main_branch"
+              ? `เจอ "${username}" แต่ไม่มีแถวที่เป็น "สาขาหลัก" ค่ะ (มี ${pv.otherCount} แถวที่เป็นสาขาย่อย/ชื่อไม่ตรง) ยังไม่ปรับให้นะคะ`
+              : `ตรวจสอบระบบหลังบ้านไม่สำเร็จค่ะ (${pv.error || "unknown"})`;
     const sends: Send[] = [{ kind: "text", text: `${tag}${msg}`, threadId: thr }];
     if (pv.shotLeftBase64) sends.push({ kind: "photo", dataBase64: pv.shotLeftBase64, caption: "หน้าจอระบบหลังบ้าน", threadId: thr });
     return sends;
@@ -161,6 +177,30 @@ async function handleThunderExpiry(text: string, threadId: string, fromUsername:
     if (pv.shotRightBase64) sends.push({ kind: "photo", dataBase64: pv.shotRightBase64, caption: "วันหมดอายุปัจจุบัน + สถานะ", threadId: thr });
     return sends;
   };
+
+  // เฟส D: เจอสาขาที่ถูกลบ → เสนอกู้คืนก่อน (+ ขยายวัน) ก่อนเรื่องอื่น
+  const deleted = pv.deletedRows || [];
+  if (deleted.length) {
+    const delList = deleted.map((r, i) => `${i + 1}. ${r.shopName || "-"} (id ${r.serviceId || "-"}) · 🗑️ ถูกลบ · เดิม: ${r.currentExpiry || "-"}`).join("\n");
+    const mainList = pv.mainRows.length
+      ? "\nสาขาที่ยังอยู่:\n" + pv.mainRows.map((r) => `• ${r.shopName || "-"} (id ${r.serviceId}) · ${r.expired ? "🔴 หมดอายุ" : "🟢 ยังไม่หมด"}`).join("\n")
+      : "";
+    const capDel =
+      `${tag}🗑️ ยูสเซอร์ ${username} มีสาขาที่ <b>ถูกลบ</b> ${deleted.length} รายการค่ะ\n${delList}${mainList}\n\n` +
+      `กด "กู้คืน + ขยายวัน" เพื่อให้วานกู้ร้านคืน แล้วตั้งวันหมดอายุเป็นปัจจุบันให้ค่ะ`;
+    const okRestore = { text: `🔧 กู้คืน + ขยายวัน (${deleted.length})`, data: `texp:ok:restore:${username}`.slice(0, 64) };
+    return withShots([{ kind: "text", text: capDel, threadId: thr, buttons: [okRestore, cancel] }]);
+  }
+
+  // เฟส C: ระบุชื่อสาขา → ยืนยันปรับ "สาขานั้น" ตัวเดียว (ไม่แยกหมดอายุ/ทุกสาขา)
+  if (shopName) {
+    const list = pv.mainRows.map((r, i) => `${i + 1}. ${r.shopName || "-"} (id ${r.serviceId || "-"}) · ${r.expired ? "🔴 หมดอายุ" : "🟢 ยังไม่หมด"} · เดิม: ${r.currentExpiry || "-"}`).join("\n");
+    const capShop =
+      `${tag}📅 ยืนยันปรับวันหมดอายุ (ระบุสาขา "${shopName}")?\n` +
+      `👤 ยูสเซอร์: ${username}\n${list}\n➡️ จะตั้งเป็น ${nowStr} (วัน/เวลาปัจจุบัน)`;
+    const okShop = { text: `✅ ยืนยันปรับ (${n})`, data: `texp:ok:shop:${username}`.slice(0, 64) };
+    return withShots([{ kind: "text", text: capShop, threadId: thr, buttons: [okShop, cancel] }]);
+  }
 
   // ไม่มีสาขาไหนหมดอายุเลย (วันที่บอทหมดอายุไม่แดง) → ทักกลับ ยังไม่ปรับให้ (ต้องกดยืนยันฝืนเอง)
   if (expired === 0) {
@@ -194,6 +234,177 @@ async function handleThunderExpiry(text: string, threadId: string, fromUsername:
 
 // ===== แนบไฟล์ที่ agent (hermes) สร้างในเครื่อง แทนการพ่น path ให้ผู้ใช้ =====
 // ปลอดภัย: แนบเฉพาะไฟล์ที่ "มีจริง" และอยู่ใน workspace ชั่วคราวของ agent (tmp / waan-hermes-cwd)
+// ===== Thunder: รายงานมอนิเตอร์จากความจำ (BotActivity) → ข้อความย่อ + ไฟล์ .md ถ้าเยอะ =====
+function isMonitorReportIntent(text: string): boolean {
+  const t = text.toLowerCase();
+  // ถามว่าฟีเจอร์ทำอะไร/ยังไง ไม่ใช่ขอรายงาน → ไม่ดัก ปล่อยให้ AI อธิบาย
+  if (/ทำอะไร|คืออะไร|ยังไง|อย่างไร|อธิบาย|ลิส|list|มีอะไรบ้าง|ได้ข้อมูลอะไร|ทำงาน|วิธี|สอน|ช่วยบอก/.test(t)) return false;
+  const report = /(รายงาน|สรุป|ขอดู|report|ดูสถิติ|สถิติ)/.test(t);
+  const monitor = /(มอนิเตอร์|monitor)/.test(t);
+  const monitorSoft = /(ลืมปิดแชท|แชทค้าง|ค้างแชท|เฝ้าแชท|หลุดกี่|ค้างกี่|ลืมปิดกี่)/.test(t);
+  return (report && monitor) || (report && monitorSoft);
+}
+const RANGE_SLUG: Record<string, string> = {
+  เมื่อวาน: "yesterday", วันนี้: "today", "สัปดาห์ที่แล้ว": "last-week",
+  "สัปดาห์นี้": "this-week", "เดือนที่แล้ว": "last-month", "เดือนนี้": "this-month",
+};
+// ขอไฟล์รายงาน (.md) — reply ข้อความรายงานที่วานตอบไปแล้ว + พิมพ์ "ขอไฟล์/ขอ md/ส่งเป็นไฟล์"
+// ดูจาก text + ข้อความที่ reply เพื่อรู้ว่าเป็นรายงานแชท/มอนิเตอร์ + ช่วงเวลาไหน
+async function handleReportFile(text: string, replyText: string, threadId: string): Promise<Send[] | null> {
+  if (!/ขอไฟล์|ขอ\s*md|ส่ง(?:เป็น)?ไฟล์|เป็นไฟล์|ไฟล์\s*(?:md|รายงาน)|\.md\b/i.test(text)) return null;
+  const ctx = `${replyText} ${text}`;
+  const range = parseThaiRange(ctx);
+  // มอนิเตอร์ หรือ แชท (ดูจากคำในบริบท — ค่าเริ่มต้น = แชท เพราะเป็นรายงานหลัก)
+  const isMonitor = /มอนิเตอร์|monitor|ระบบเฝ้า|เฝ้าแชท|ลืมปิด|แชทค้าง|session|หลุด/.test(ctx) && !/ลูกค้าถาม|เสียงลูกค้า|ต่ออายุ|ติดตั้ง|ปัญหา.*สลิป/.test(ctx);
+  if (isMonitor) {
+    const rep = await buildMonitorReport(range);
+    if (!rep.count) return [{ kind: "text", text: `ยังไม่มีข้อมูลมอนิเตอร์ช่วง ${range.label} ค่ะ`, threadId }];
+    return [
+      { kind: "text", text: `📄 รายงานมอนิเตอร์ · ${range.label} (ไฟล์เต็ม)`, threadId },
+      { kind: "document", dataBase64: Buffer.from(rep.markdown, "utf8").toString("base64"), filename: `monitor-${rangeSlug(range.label)}.md`, caption: `${rep.count.toLocaleString()} เหตุการณ์`, threadId },
+    ];
+  }
+  const { buildChatRangeReport } = await import("@/lib/chat-report");
+  const rep = await buildChatRangeReport(range.sinceMs, range.untilMs, range.label);
+  if (!rep || !rep.markdown) return [{ kind: "text", text: `ยังไม่มีข้อมูลแชทช่วง ${range.label} ค่ะ`, threadId }];
+  return [
+    { kind: "text", text: `📄 รายงานแชท · ${range.label} (ไฟล์เต็ม)`, threadId },
+    { kind: "document", dataBase64: Buffer.from(rep.markdown, "utf8").toString("base64"), filename: `chat-report-${rangeSlug(range.label)}.md`, caption: `${rep.count} เคส`, threadId },
+  ];
+}
+
+function rangeSlug(label: string): string {
+  // label แบบช่วง ("20 ก.ค. 69 – 24 ก.ค. 69") → เอาวันแรกของแต่ละฝั่ง = "20-24" · label คำ → slug ปกติ
+  if (RANGE_SLUG[label]) return RANGE_SLUG[label];
+  const sides = label.split(/[–\-]/);
+  if (sides.length >= 2) {
+    const a = sides[0].match(/\d{1,2}/)?.[0], b = sides[sides.length - 1].match(/\d{1,2}/)?.[0];
+    if (a && b) return `${a}-${b}`;
+  }
+  return label.replace(/[^\wก-๙]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "report";
+}
+async function handleThunderReport(text: string, threadId: string): Promise<Send[] | null> {
+  if (!isMonitorReportIntent(text)) return null;
+  const range = parseThaiRange(text);
+  const rep = await buildMonitorReport(range);
+  const sends: Send[] = [{ kind: "text", text: rep.short, parseMode: "HTML", threadId }];
+  // ส่งไฟล์ .md เสมอเมื่อมีข้อมูล (ตามที่ขอ — อยากได้ไฟล์รายงานทุกครั้ง)
+  if (rep.count > 0) {
+    sends.push({
+      kind: "document",
+      dataBase64: Buffer.from(rep.markdown, "utf8").toString("base64"),
+      filename: `monitor-${rangeSlug(range.label)}.md`,
+      caption: `📄 รายงานเต็ม (${rep.count.toLocaleString()} เหตุการณ์)`,
+      threadId,
+    });
+  }
+  return sends;
+}
+
+// ===== Thunder: รายงานแชทประจำวัน (ผูกห้อง + ถามย้อนหลัง) =====
+async function handleChatReport(text: string, chatId: string, threadId: string): Promise<Send[] | null> {
+  const t = text.trim();
+
+  // ผูกห้องนี้เป็นห้องรับรายงานแชท
+  if (/(ตั้ง|ผูก|กำหนด).*(ห้อง|กลุ่ม)?.*(รายงานแชท|รายงานลูกค้า|report แชท)/i.test(t)) {
+    await db.setting.upsert({
+      where: { key: "chat_report_target" },
+      update: { value: JSON.stringify({ chatId, threadId: threadId || null }) },
+      create: { key: "chat_report_target", value: JSON.stringify({ chatId, threadId: threadId || null }) },
+    });
+    return [{ kind: "text", text: "รับทราบค่ะ ✅ ตั้งห้องนี้เป็น <b>ห้องรายงานแชทประจำวัน</b> แล้ว\nทุกเช้า 06:00 วานจะสรุปแชทของเมื่อวานมาให้ที่นี่ (ข้อความย่อ + ไฟล์เต็ม)", parseMode: "HTML", threadId }];
+  }
+
+  // ถามรายงานย้อนหลัง: "รายงานแชทเมื่อวาน" / "สรุปแชทวันนี้"
+  if (!/(รายงาน|สรุป|ขอดู).{0,12}(แชท|ลูกค้า)/.test(t)) return null;
+  if (/มอนิเตอร์|monitor/.test(t)) return null; // อันนั้นเป็นรายงานมอนิเตอร์ ไม่ใช่รายงานแชท
+  // ถามว่า "ฟีเจอร์นี้ทำอะไร/ยังไง" ไม่ใช่ "ขอรายงาน" → ปล่อยให้ AI อธิบายเอง
+  if (/ทำอะไร|คืออะไร|ยังไง|อย่างไร|อธิบาย|ลิส|list|มีอะไรบ้าง|ได้ข้อมูลอะไร|ทำงาน|วิธี|สอน|ช่วยบอก/.test(t)) return null;
+
+  // ระบุช่วงหลายวัน (X ถึง Y / สัปดาห์ / เดือน / N วัน) → รายงานรวมช่วง + ไฟล์ .md
+  const range = parseThaiRange(t);
+  const isMultiDay = /ถึง|สัปดาห์|อาทิตย์|เดือน|\d+\s*วัน/.test(t) && !/วันนี้|เมื่อวาน/.test(t);
+  if (isMultiDay) {
+    const { buildChatRangeReport } = await import("@/lib/chat-report");
+    const rep = await buildChatRangeReport(range.sinceMs, range.untilMs, range.label);
+    if (!rep) return [{ kind: "text", text: `ยังไม่มีบทสนทนาในช่วง ${range.label} ค่ะ`, threadId }];
+    const sends: Send[] = [{ kind: "text", text: rep.short, parseMode: "HTML", threadId }];
+    if (rep.markdown) sends.push({ kind: "document", dataBase64: Buffer.from(rep.markdown, "utf8").toString("base64"), filename: `chat-report-${rangeSlug(range.label)}.md`, caption: `📄 รายงานแชท ${range.label} (${rep.count} เคส)`, threadId });
+    return sends;
+  }
+
+  const today = bizDateOf();
+  const bizDate = /วันนี้/.test(t) ? today : prevBizDate(today);
+  let saved = await db.dailyReport.findUnique({ where: { bizDate } });
+  let fallbackNote = "";
+  // ไม่มีของวันที่ขอ → ใช้รายงานล่าสุดที่มี แล้วบอกให้รู้ (ดีกว่าตอบว่าไม่มีแล้วจบ)
+  if (!saved) {
+    const latest = await db.dailyReport.findFirst({ orderBy: { bizDate: "desc" } });
+    if (latest) { saved = latest; fallbackNote = `\n\n<i>(ยังไม่มีรายงานของ ${bizDate} — นี่คือรายงานล่าสุดที่มี)</i>`; }
+  }
+  if (saved) {
+    // shortText เก็บเป็น JSON array ของหลายข้อความ (รูปแบบใหม่) หรือสตริงเดียว (ของเก่า)
+    let parts: string[] = [];
+    try { const j = JSON.parse(saved.shortText); parts = Array.isArray(j) ? j : [String(saved.shortText)]; }
+    catch { parts = [saved.shortText]; }
+    const sends: Send[] = parts.map((t, i) => ({
+      kind: "text" as const,
+      text: i === parts.length - 1 ? t + fallbackNote : t,
+      parseMode: "HTML" as const,
+      threadId,
+    }));
+    sends.push({ kind: "document", dataBase64: Buffer.from(saved.markdown, "utf8").toString("base64"), filename: `chat-report-${saved.bizDate}.md`, caption: `📄 รายงานเต็ม (${saved.chatCount} เคส)`, threadId });
+    return sends;
+  }
+  const pending = await db.chatLog.count({ where: { bizDate } });
+  if (!pending) return [{ kind: "text", text: `ยังไม่มีบทสนทนาที่เก็บไว้ของ ${bizDate} ค่ะ`, threadId }];
+  return [{ kind: "text", text: `ยังไม่ได้สรุปของ ${bizDate} ค่ะ (มี ${pending} เคสรอวิเคราะห์)\nวานจะสรุปให้อัตโนมัติตอน 06:00 หรือสั่งรันเลยก็ได้: <code>npm run thunder:daily -- ${bizDate}</code>`, parseMode: "HTML", threadId }];
+}
+
+// ===== Thunder คลังความรู้: สอน / ค้นลูกค้า / ตอบจากคลัง =====
+async function handleThunderKnowledge(text: string, threadId: string): Promise<Send[] | null> {
+  const t = text.trim();
+
+  // 1) สอน Q&A: "จำไว้ ถ้าลูกค้าถาม X ให้ตอบ Y" หรือ "จำคำตอบ ถาม=X ตอบ=Y"
+  if (/(?:^|วาน)\s*(?:จำ|จดจำ|เก็บ)(?:ไว้|คำตอบ|ความรู้|เข้าคลัง)?/.test(t) && /ตอบ/.test(t)) {
+    const m =
+      t.match(/ถ้า[\s\S]*?ถาม(?:ว่า)?\s*[:：]?\s*([\s\S]+?)\s*(?:ให้)?ตอบ(?:ว่า|กลับ)?\s*[:：]?\s*([\s\S]+)/) ||
+      t.match(/ถาม\s*[=:：]\s*([\s\S]+?)\s*ตอบ\s*[=:：]\s*([\s\S]+)/);
+    if (m) {
+      const question = m[1].trim();
+      const answer = m[2].trim();
+      const scopeM = t.match(/(?:แบรนด์|scope)\s*[=:：]?\s*([A-Za-z ]{2,20})/);
+      const res = await teachKnowledge(question, answer, { scope: scopeM?.[1]?.trim().toUpperCase() || "general", source: "สอนในกลุ่ม" });
+      const note = res.embedded ? "จำเข้าคลังความรู้แล้วค่ะ ✅ ครั้งหน้าถ้าลูกค้าถามคล้ายๆ นี้ วานจะดึงคำตอบนี้มาให้เลย"
+        : "จำเข้าคลังแล้วค่ะ แต่ตอนนี้ Ollama ยังไม่พร้อม เลยยังค้นด้วยความหมายไม่ได้ (จะ embed อัตโนมัติเมื่อพร้อม)";
+      return [{ kind: "text", text: `📚 ${note}\n\n<b>ถาม:</b> ${escHtml(question)}\n<b>ตอบ:</b> ${escHtml(answer)}`, parseMode: "HTML", threadId }];
+    }
+  }
+
+  // 2) ค้นข้อมูลลูกค้า: "ลูกค้า <ชื่อ> ..." / "ข้อมูลลูกค้า <ชื่อ>"
+  const custM = t.match(/^(?:วาน\s*)?(?:ขอ)?(?:ดู|ข้อมูล)?\s*ลูกค้า\s+(.+?)(?:\s*(?:เป็นใคร|คือใคร|เป็นยังไง|หน่อย|ค่ะ|ครับ))?\s*$/);
+  if (custM) {
+    const info = await customerLookup(custM[1]);
+    return [{ kind: "text", text: info ? `🧠 <b>ความจำลูกค้า</b>\n\n${info}` : `ยังไม่มีข้อมูลลูกค้า "${escHtml(custM[1])}" ในคลังค่ะ`, parseMode: "HTML", threadId }];
+  }
+
+  // 3) ตอบจากคลัง: "ลูกค้าถามว่า X" / "มีคำตอบเรื่อง X ไหม" / "คลังความรู้ X"
+  const askM = t.match(/(?:ลูกค้าถาม(?:ว่า)?|มีคำตอบ(?:เรื่อง)?|เคยตอบ(?:เรื่อง)?|คลังความรู้|ค้นคลัง)\s*[:：]?\s*(.+)/);
+  if (askM) {
+    const query = askM[1].replace(/(ไหม|มั้ย|หน่อย|ยังไง|ค่ะ|ครับ)\s*$/g, "").trim();
+    if (query.length >= 2) {
+      const hits = await thunderAnswer(query, 3);
+      const top = hits[0];
+      if (top?.confident) {
+        return [{ kind: "text", text: `💡 <b>จากคลังความรู้</b> (${top.scope})\n\n${escHtml(top.answer)}\n\n<i>ตรงกับที่เคยเก็บไว้: "${escHtml(top.question)}"</i>`, parseMode: "HTML", threadId }];
+      }
+      // ไม่มั่นใจ → ไม่แย่งงาน AI ปกติ (คืน null ให้ไหลต่อ)
+      return null;
+    }
+  }
+  return null;
+}
+
 function isSafeAgentFile(p: string): boolean {
   try {
     const real = fs.realpathSync(p);
@@ -476,9 +687,17 @@ export async function POST(req: Request) {
       await revokeMember(person.id);
       return NextResponse.json({ sends: [{ kind: "text", text: `ยกเลิกสิทธิ์ของ ${person.name} แล้วค่ะ` }] as Send[] });
     }
-    if (/จำ|นี่คือ|แนะนำ|ตำแหน่ง|เป็น(คน|ทีม|ฝ่าย)|profile|ประวัติ/i.test(text)) {
+    // จดจำคนที่ reply ถึง — รับภาษาธรรมชาติกว้างขึ้น (reply แล้วบอกว่าเป็นใคร/ชื่ออะไร/แอดมิน/เวร ก็เก็บ ID ได้เลย)
+    // ไม่ต้องจำคำสั่งเป๊ะ ๆ — ตราบใดที่เจ้าของ reply ถึง "คนใดคนหนึ่ง" แล้วเอ่ยถึงตัวตน/หน้าที่ของเขา
+    if (/จำ|นี่คือ|นี่แหละ|นี่พี่|คนนี้|ชื่อ|แนะนำ|ตำแหน่ง|เป็น(คน|ทีม|ฝ่าย)|แอดมิน|ทีม|เวร|กะ(เช้า|เย็น|ดึก|บ่าย)|profile|ประวัติ/i.test(text)) {
       await rememberMember(person, { notes: text });
-      return NextResponse.json({ sends: [{ kind: "text", text: `จำ ${person.name} (${nick || person.name}) ไว้แล้วค่ะ` }] as Send[] });
+      // ตอบด้วย "แท็กจริง" (tg://user?id=) เพื่อยืนยันว่าเก็บ ID ได้แล้ว — เจ้าของเห็นลิงก์แท็ก = สำเร็จ
+      const tag = person.username
+        ? `@${person.username}`
+        : `<a href="tg://user?id=${person.id}">${escHtml(person.name || realName)}</a>`;
+      return NextResponse.json({
+        sends: [{ kind: "text", text: `รับทราบค่ะ จำ ${tag} ไว้แล้วนะคะ 🙏 ต่อไปแท็กในระบบมอนิเตอร์/แจ้งเตือนได้เลยค่ะ`, parseMode: "HTML" }] as Send[],
+      });
     }
   }
 
@@ -520,6 +739,18 @@ export async function POST(req: Request) {
     }
     // จำชื่อกลุ่มไว้ (ให้กลุ่มหลักอ้างชื่อสั่งข้ามกลุ่มได้) + ศูนย์บัญชาการ: เปิด/ปิด/รายงาน กลุ่มไหนก็ได้
     await rememberGroup(chatId, chatTitle);
+    // Thunder: ขอไฟล์รายงาน (reply ข้อความรายงาน + "ขอไฟล์/ขอ md") — เช็คก่อน เพราะเจาะจงสุด
+    const fileReq = await handleReportFile(text, replyText, threadId);
+    if (fileReq) return NextResponse.json({ sends: fileReq });
+    // Thunder: รายงานมอนิเตอร์ (หลุด/ค้าง/ลืมปิด) — เช็คก่อนศูนย์บัญชาการ
+    const monitorReport = await handleThunderReport(text, threadId);
+    if (monitorReport) return NextResponse.json({ sends: monitorReport });
+    // Thunder: คลังความรู้ (สอน/ค้นลูกค้า/ตอบจากคลัง) — คืน null ถ้าไม่ตรง ให้ไหลต่อ
+    const kbReply = await handleThunderKnowledge(text, threadId);
+    if (kbReply) return NextResponse.json({ sends: kbReply });
+    // Thunder: รายงานแชทประจำวัน (ผูกห้อง / ถามย้อนหลัง)
+    const chatRep = await handleChatReport(text, chatId, threadId);
+    if (chatRep) return NextResponse.json({ sends: chatRep });
     const cmdReply = await handleCommandCenter(text, chatId, fromName, chatTitle);
     if (cmdReply) return NextResponse.json({ sends: [{ kind: "text", text: cmdReply }] as Send[] });
     // กลุ่ม "ขยายวันหมดอายุ Thunder" → จัดการเฉพาะทาง (ไม่ส่งเข้า agent ที่เปิดเว็บมั่ว)
@@ -789,13 +1020,13 @@ export async function POST(req: Request) {
     // ถ้ามีลิงก์ในข้อความ/ข้อความที่ reply → เปิดอ่านเนื้อหาจริง + เก็บลงสมอง (ถ้าสั่งบันทึก)
     const urls = [...extractUrls(text), ...extractUrls(replyText)].slice(0, 3);
     if (urls.length) {
-      const saveIntent = /บันทึก|เก็บ|จำ|save|เซฟ|จดไว้|เก็บไว้|ลงสมอง|ลงความจำ/i.test(text);
-      const dateStr = new Date().toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" });
+      const saveIntent = /บันทึก|เก็บ|จำ|save|เซฟ|จดไว้|เก็บไว้|ลงสมอง|ลงความจำ|เข้าคลัง/i.test(text);
       const fetched: string[] = [];
       for (const u of urls) {
         try {
           const c = await fetchUrlContent(u);
-          if (saveIntent) await saveLinkToBrain(c, dateStr, text.slice(0, 200));
+          // สั่งบันทึก → ขยาย+จัดโครงสร้างเป็นโน้ตในคลังความรู้ (ไม่ดัมป์ดิบ)
+          if (saveIntent) await saveLinkContentToKnowledge(c, text.slice(0, 200)).catch(() => null);
           fetched.push(`### ${c.title} (${c.url})\n${c.text.slice(0, 8000)}`);
         } catch (err) {
           fetched.push(`### ${u}\n(เปิดลิงก์ไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)})`);
@@ -826,6 +1057,11 @@ export async function POST(req: Request) {
         `[คำสั่ง: รีวิวตัวเอง] นี่คือบันทึกกิจกรรมของคุณ 7 วันล่าสุด — วิเคราะห์แล้วตอบเป็นข้อ: (1) สรุปทำอะไรไปบ้าง (2) ปัญหา/แพตเทิร์นที่เกิดซ้ำ (3) เสนอ "บทเรียนที่ควรจำ" 2-3 ข้อ (สั้น ทำได้จริง) แล้วบอกเจ้าของว่าถ้าเห็นด้วยพิมพ์ "สอนวาน: <บทเรียน>" ได้เลย จะได้จำไว้ใช้ครั้งต่อไป\n${wk}`,
       );
     }
+    // Thunder: ฉีดความจำที่เกี่ยวกับคำถาม (คลังความรู้ + ลูกค้า + รายงานแชท + สถิติมอนิเตอร์)
+    try {
+      const tctx = await getThunderContext(text);
+      if (tctx) ctxParts.push(tctx);
+    } catch { /* ไม่มีความจำก็ตอบตามปกติ */ }
     // การจัดการไฟล์: ให้บอก path ของไฟล์ที่สร้าง (ระบบจะแนบไฟล์เข้าแชทให้เอง + ซ่อน path จากผู้ใช้)
     ctxParts.push(
       `[การส่งไฟล์] ถ้าเธอสร้างไฟล์ (PDF/เอกสาร/รูป/ฯลฯ) ให้พิมพ์ path เต็มของไฟล์นั้นไว้ในคำตอบด้วย ระบบจะแนบไฟล์จริงเข้าแชทให้อัตโนมัติและซ่อน path ออกจากข้อความเอง — ห้ามขอโทษว่าแนบไฟล์ไม่ได้ เพราะแนบได้ ให้บอกสั้นๆ ว่าทำไฟล์อะไรเสร็จแล้ว`,

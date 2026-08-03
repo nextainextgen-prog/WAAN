@@ -48,6 +48,16 @@ async function refreshAlertChat() {
   } catch { /* ใช้ค่าเดิม */ }
 }
 
+// Thunder: ส่งบทสนทนาที่อ่านมาเก็บเป็น ChatLog (fire-and-forget — ห้ามทำให้งานเฝ้าสะดุด)
+function saveChatLog({ convId, channel, platform, customer, admin, brand, service, messages }) {
+  if (!convId || !Array.isArray(messages) || !messages.length) return;
+  fetch(APP_URL + "/api/thunder/chatlog", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+    body: JSON.stringify({ convId, channel, platform, customer, admin, brand, service, messages }),
+  }).catch(() => { /* เก็บไม่ได้ก็ไม่เป็นไร รอบหน้าเก็บใหม่ */ });
+}
+
 // ระดับการเตือน (escalation) + สีความรุนแรง
 const LEVELS = [
   { sec: THRESHOLD, emoji: "🟡", label: `ค้างเกิน ${Math.round(THRESHOLD / 60)} นาที ยังไม่มีคนรับ` },
@@ -342,6 +352,13 @@ async function tick(page) {
     // เข้าไปอ่านบทสนทนาจริง (สถานะ + แคปหน้าแชท + ข้อความลูกค้าล่าสุด + แอดมินที่รับ + เวลาตั้งแต่รับ)
     const insp = await inspectRoom(page, w.convId);
 
+    // Thunder: เก็บบทสนทนาไว้วิเคราะห์/รายงานรายวัน (ยิงแล้วลืม ไม่ให้กระทบงานเฝ้า)
+    saveChatLog({
+      convId: w.convId, channel: w.channel, platform: w.platform, customer: w.customer,
+      admin: insp.assignedName || null, brand: route?.company || null, service: route?.product || null,
+      messages: insp.recentMsgs || [],
+    });
+
     // แอดมินรับแชทแล้ว (header "กำลังดูแล") = ไม่ใช่ "ยังไม่มีคนรับ" → ไม่ต้องปลุกทั้งกลุ่มให้กดรับ
     // (เคส Image #1: ลูกค้าพิมพ์เพิ่มระหว่างที่แอดมินดูแลอยู่ — เดิมเตือนผิดว่าค้าง ตอนนี้ข้าม)
     // เช็คก่อน lastSide=customer เพราะสถานะ "กำลังดูแล" สำคัญกว่าใครพิมพ์ล่าสุด
@@ -350,7 +367,7 @@ async function tick(page) {
       if (insp.handlingSec >= CLOSE_AFTER) {
         if (!prev?.closeReminded) {
           // ลำดับความสำคัญ: ช่องทาง (EasySlip=หนิง+โด้) → ชื่อแอดมินที่ดูแล → เวร (กันไม่มีคนถูกแท็ก)
-          const owners = tagsForChannel(w.channel).length ? tagsForChannel(w.channel) : tagsForAgent(insp.assignedName);
+          const owners = tagsForChannel(w.channel, now).length ? tagsForChannel(w.channel, now) : tagsForAgent(insp.assignedName);
           const tagStr = owners.length ? formatTags(owners) : formatTags(taggees);
           const caption =
             brandHead +
@@ -399,7 +416,7 @@ async function tick(page) {
         if (onBreak) notes.push("ช่วงนี้อาจมีคนพัก");
         if (crossShift) notes.push("แชทค้างข้ามกะ — แท็กกะที่รับช่วงต่อ");
         // ช่องทางที่มีเจ้าภาพเฉพาะ (EasySlip=หนิง+โด้) แท็กเฉพาะเจ้าภาพ ไม่งั้นแท็กเวร+ผจก.+เจ้าของ
-        const alertTags = formatTags(tagsForChannel(w.channel).length ? tagsForChannel(w.channel) : taggees);
+        const alertTags = formatTags(tagsForChannel(w.channel, now).length ? tagsForChannel(w.channel, now) : taggees);
         // AI วิเคราะห์บทสนทนา → ร่างข้อความพร้อมส่งให้ลูกค้า (ก๊อปได้) — ล่ม/ช้า = ข้าม ไม่บล็อกการเตือน
         let aiLine = "", aiReply = "";
         if (route) {

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
+import { logGrantEvent } from "@/lib/grant-events";
+import { fiscalYearOf } from "@/lib/fiscal";
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -8,6 +10,7 @@ export async function GET() {
 
   const grants = await db.grant.findMany({
     orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+    include: { installments: { orderBy: { seq: "asc" } } },
   });
   return NextResponse.json({ grants });
 }
@@ -36,7 +39,17 @@ export async function POST(req: Request) {
       nextDeadline: body.nextDeadline ? new Date(body.nextDeadline) : null,
       note: body.note?.trim() || null,
       orderIndex: (max._max.orderIndex ?? -1) + 1,
+      fiscalYear: Number(body.fiscalYear) || fiscalYearOf(),
+      probability: body.probability != null ? Number(body.probability) : null,
+      startDate: body.startDate ? new Date(body.startDate) : null,
+      endDate: body.endDate ? new Date(body.endDate) : null,
     },
   });
+
+  await logGrantEvent(grant.id, "created", `เพิ่มทุน "${grant.projectName}" เข้าระบบ`, {
+    toStatus: grant.status,
+    actor: user.name,
+  });
+
   return NextResponse.json({ grant });
 }

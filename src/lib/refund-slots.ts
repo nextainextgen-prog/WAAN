@@ -52,6 +52,15 @@ export interface RefundFormInput {
   accountName?: string;
   // ชื่อ/ข้อความเพิ่มสำหรับช่อง "อื่นๆ" (ถ้าแอดมินพิมพ์ระบุ)
   otherDocLabel?: string;
+  // วันที่บนเอกสาร (ช่อง "วันที่" ใต้ลายเซ็นทั้ง 3 บล็อก) — ไม่ใส่ = ใช้วันที่ตอนออกเอกสาร
+  docDate?: string;
+  // ผู้ลงนามรายฉบับ — ไม่ใส่ = ใช้ค่าเริ่มต้นของบริษัท (แก้ผ่านคำสั่งในแชทได้)
+  makerName?: string;
+  makerPosition?: string;
+  reviewerName?: string;
+  reviewerPosition?: string;
+  approverName?: string;
+  approverPosition?: string;
 }
 
 // สร้างข้อความ "รายละเอียดเอกสารแนบอื่นๆ" (ข้อสุดท้าย) จากช่อง extra ที่มีไฟล์แนบ

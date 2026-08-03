@@ -91,7 +91,7 @@ export function roleFromTopicName(name: string): RoleId | null {
 }
 
 // ===== หน้าที่ของ "ทั้งกลุ่ม" (group function) — แต่ละกลุ่มทำงานไม่เหมือนกัน =====
-export type GroupFunc = "aff" | "cs" | "agent" | "secretary" | "thunder_expiry";
+export type GroupFunc = "aff" | "cs" | "agent" | "secretary" | "thunder_expiry" | "thunder_refund" | "tax_invoice";
 
 export interface GroupFuncProfile {
   id: GroupFunc;
@@ -131,10 +131,22 @@ export const GROUP_FUNCS: Record<GroupFunc, GroupFuncProfile> = {
     emoji: "📅",
     desc: "กลุ่มนี้ทำหน้าที่เดียว: ปรับ 'วันที่บอทหมดอายุ' ในระบบหลังบ้าน Thunder (old.thunder.in.th/admin/service) เมื่อแอดมินพิมพ์ username มา ให้ค้นหา username นั้น เลือกเฉพาะแถว 'สาขาหลัก' ที่ username ตรงเป๊ะ แสดงพรีวิว+ปุ่มยืนยัน เมื่อยืนยันจึงตั้งวันหมดอายุเป็นวัน/เวลาปัจจุบันแล้วบันทึก ห้ามเปิด/ค้นเว็บอื่นเด็ดขาด",
   },
+  thunder_refund: {
+    id: "thunder_refund",
+    label: "คืนเครดิต Thunder",
+    emoji: "💳",
+    desc: "กลุ่มนี้ทำหน้าที่เดียว: วานเฝ้าหน้า 'จัดการ ขอคืนเงิน' (old.thunder.in.th/admin/refund) เอง ถ้าเจอคำขอสถานะ 'รออนุมัติ' จะตรวจข้อมูลข้ามกับหน้าประวัติบริการให้ก่อน แล้วโพสต์สรุป+ปุ่มให้แอดมินกดคืน (คำขอที่ร้องขอโดย nining ไม่ต้องแจ้ง) ทีมในกลุ่มนี้แทบไม่ต้องพิมพ์คุย แค่กดปุ่ม — ห้ามเปิด/ค้นเว็บอื่นเด็ดขาด",
+  },
+  tax_invoice: {
+    id: "tax_invoice",
+    label: "สถานะใบกำกับภาษี",
+    emoji: "🧾",
+    desc: "กลุ่มนี้ทำหน้าที่หลัก: ตอบสถานะการนำส่งใบกำกับภาษี เมื่อแอดมินพิมพ์ชื่อบริษัทหรือยูสเซอร์มาถาม ให้อ่านชีตสถานะการนำส่งใบกำกับภาษีแล้วตอบใบล่าสุด พร้อมช่องทาง/วันที่/เลขพัสดุ/สถานะพัสดุ และข้อความให้แอดมินก็อปส่งลูกค้า — ข้อความที่ไม่ได้ถามเรื่องใบกำกับและไม่ได้เรียกวาน ให้เงียบ ไม่ต้องแทรกบทสนทนาของทีม",
+  },
 };
 
 export function isGroupFunc(v: string): v is GroupFunc {
-  return ["aff", "cs", "agent", "secretary", "thunder_expiry"].includes(v);
+  return ["aff", "cs", "agent", "secretary", "thunder_expiry", "thunder_refund", "tax_invoice"].includes(v);
 }
 
 const FUNC_KEY = "group_functions";

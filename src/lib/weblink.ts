@@ -1,6 +1,6 @@
 import { google } from "googleapis";
 import { getOAuthClient } from "./google";
-import { writeAiNote } from "./obsidian";
+import { writeAiNote, aiHubFooter } from "./obsidian";
 
 export interface LinkContent {
   url: string;
@@ -124,6 +124,6 @@ export async function saveLinkToBrain(c: LinkContent, dateStr: string, note?: st
     c.text.slice(0, 30000),
   ]
     .filter((l) => l !== "")
-    .join("\n");
+    .join("\n") + aiHubFooter();
   return writeAiNote(`links/${slugify(c.title)}.md`, body);
 }

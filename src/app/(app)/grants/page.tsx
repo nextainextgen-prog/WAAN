@@ -16,6 +16,16 @@ export default async function GrantsPage() {
     nextDeadline: g.nextDeadline ? g.nextDeadline.toISOString() : null,
     note: g.note,
     orderIndex: g.orderIndex,
+    fiscalYear: g.fiscalYear,
+    probability: g.probability,
+    startDate: g.startDate ? g.startDate.toISOString() : null,
+    endDate: g.endDate ? g.endDate.toISOString() : null,
+    installments: g.installments.map((i) => ({
+      id: i.id,
+      amount: i.amount,
+      receivedAt: i.receivedAt ? i.receivedAt.toISOString() : null,
+      receivedAmount: i.receivedAmount,
+    })),
   }));
 
   return (

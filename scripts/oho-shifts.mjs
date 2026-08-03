@@ -7,9 +7,15 @@ const A = {
   noey: { id: "8254095362", name: "เนย" },
   prae: { id: "8171020139", name: "พี่แพร" },
   korn: { id: "6382364836", name: "พี่กร" },
+  // แอดมิน EasySlip (ทีมแยก) — แท็กด้วย @username (public) ได้เลย ไม่ต้องมี numeric id
+  beam: { username: "merryme14", name: "พี่บีม" }, // EASY.Beam · กะเช้า 08:00–18:00
+  tarn: { name: "พี่ตาล" }, // Easy.N.Tan · กะเย็น 18:00–02:00 — รอ @username/id
 };
 const OWNER = { id: "7750653134", name: "พี่โด้" };
 const MANAGER = A.ning;
+
+// แท็กคนนี้ได้ไหม (มี id หรือ @username) — ใช้กรองคนที่ยังไม่มีข้อมูลออก
+const taggable = (p) => Boolean(p && (p.id || p.username));
 
 // ชื่อแอดมินที่ OHO แสดง (header "กำลังดูแล") → คนที่ต้องแท็กใน Telegram
 // ใช้ตอนแอดมิน "รับแชทแล้ว" เพื่อแท็กเฉพาะคนที่ดูแลจริง (ไม่ปลุกทั้งเวร)
@@ -19,6 +25,8 @@ const AGENT_TAG = {
   "d'noey": [A.noey], // D'Noey → เนย
   "n.korn": [A.korn], // N.Korn → พี่กร
   "n.prae": [A.prae], // N.Prae → พี่แพร
+  "easy.beam": [A.beam], // EASY.Beam → พี่บีม (EasySlip)
+  "easy.n.tan": [A.tarn], // Easy.N.Tan → พี่ตาล (EasySlip)
 };
 // ปรับชื่อให้เทียบ key ได้ (ตัดช่องว่าง, แปลง ' โค้ง→ตรง, พิมพ์เล็ก)
 function normAgent(name) {
@@ -36,14 +44,22 @@ export function tagsForAgent(name) {
   return [];
 }
 
-// แท็กตาม "ช่องทาง/บริการ" (สำคัญกว่าชื่อแอดมิน) — บาง product มีเจ้าภาพเฉพาะ
-// EasySlip = ดูแลโดยพี่หนิง+พี่โด้เท่านั้น ไม่ต้องปลุกเวร Thunder
-const CHANNEL_TAG = [
-  { match: /easy\s*slip|easy\.beam/i, tags: [MANAGER, OWNER] }, // EASYSLIP / EASY.Beam → พี่หนิง พี่โด้
-];
-export function tagsForChannel(channel) {
+// แอดมิน EasySlip ตามกะ (ครอบ "ทุกบริการ EasySlip": EasySlip, EasySlip Bot/Api)
+// บีมกะเช้า 08:00–18:00 · ตาลกะเย็น 18:00–02:00 · 02:00–08:00 นอกกะ
+function easyslipShift({ hm }) {
+  if (hm >= 8 * 60 && hm < 18 * 60) return [A.beam]; // 08:00–18:00 → พี่บีม
+  if (hm >= 18 * 60 || hm < 2 * 60) return [A.tarn]; // 18:00–02:00 → พี่ตาล
+  return []; // 02:00–08:00 นอกเวลาทำการ
+}
+
+// แท็กตาม "ช่องทาง/บริการ" (สำคัญกว่าชื่อแอดมิน)
+// EasySlip = ทีมแยก (บีม/ตาล) แท็กตามกะ · นอกกะ/ยังไม่มีข้อมูล → ผจก.+เจ้าของ (กันแชทค้างไม่มีใครถูกแท็ก)
+export function tagsForChannel(channel, date) {
   const c = String(channel || "");
-  for (const r of CHANNEL_TAG) if (r.match.test(c)) return r.tags;
+  if (/easy\s*slip/i.test(c)) {
+    const shift = date ? easyslipShift(bkkParts(date)).filter(taggable) : [];
+    return shift.length ? shift : [MANAGER, OWNER];
+  }
   return [];
 }
 
@@ -98,7 +114,10 @@ export function getTaggees(date) {
   return { taggees: list, shift, offHours: off, onBreak: onBreak(parts) };
 }
 
-// สร้างสตริงแท็ก HTML (tg://user?id=) — ใช้กับ parse_mode HTML
+// สร้างสตริงแท็ก — มี numeric id ใช้ลิงก์ tg://user (ชัวร์สุด) · มีแต่ @username ใช้ @mention (public username เด้งเตือนในกลุ่มได้)
 export function formatTags(taggees) {
-  return taggees.map((p) => `<a href="tg://user?id=${p.id}">${p.name}</a>`).join(" ");
+  return taggees
+    .map((p) => (p.id ? `<a href="tg://user?id=${p.id}">${p.name}</a>` : p.username ? `@${p.username}` : ""))
+    .filter(Boolean)
+    .join(" ");
 }

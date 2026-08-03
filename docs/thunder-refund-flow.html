@@ -1,0 +1,531 @@
+<title>Flow การทำงาน · ระบบคืนเครดิต Thunder</title>
+<style>
+  :root{
+    --paper:#f6f8fc; --card:#ffffff; --ink:#0f2547; --ink-2:#334e78; --mute:#6b83a8;
+    --line:#dbe5f4; --line-2:#eef3fb;
+    --blue:#1e50a0; --blue-deep:#17418a; --blue-soft:#eaf1fd;
+    --red:#e11d1d; --red-soft:#fdeded; --green:#15803d; --green-soft:#e6f7ec;
+    --amber:#92660e; --amber-soft:#fdf3de;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --thai:"Noto Sans Thai","IBM Plex Sans Thai","Sarabun",-apple-system,"Helvetica Neue",sans-serif;
+    --shadow:0 1px 2px rgba(15,37,71,.04),0 8px 28px rgba(15,37,71,.06);
+    --dash:rgba(30,80,160,.42);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0b1220; --card:#111c2f; --ink:#e8eefb; --ink-2:#b7c6de; --mute:#8296b5;
+      --line:#22334f; --line-2:#1a2739;
+      --blue:#6c9bea; --blue-deep:#8fb5f2; --blue-soft:#16294a;
+      --red:#f47171; --red-soft:#331a1c; --green:#5cc98b; --green-soft:#123227;
+      --amber:#e0b160; --amber-soft:#332816;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.35);
+      --dash:rgba(108,155,234,.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0b1220; --card:#111c2f; --ink:#e8eefb; --ink-2:#b7c6de; --mute:#8296b5;
+    --line:#22334f; --line-2:#1a2739;
+    --blue:#6c9bea; --blue-deep:#8fb5f2; --blue-soft:#16294a;
+    --red:#f47171; --red-soft:#331a1c; --green:#5cc98b; --green-soft:#123227;
+    --amber:#e0b160; --amber-soft:#332816;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.35);
+    --dash:rgba(108,155,234,.5);
+  }
+  :root[data-theme="light"]{
+    --paper:#f6f8fc; --card:#ffffff; --ink:#0f2547; --ink-2:#334e78; --mute:#6b83a8;
+    --line:#dbe5f4; --line-2:#eef3fb;
+    --blue:#1e50a0; --blue-deep:#17418a; --blue-soft:#eaf1fd;
+    --red:#e11d1d; --red-soft:#fdeded; --green:#15803d; --green-soft:#e6f7ec;
+    --amber:#92660e; --amber-soft:#fdf3de;
+    --shadow:0 1px 2px rgba(15,37,71,.04),0 8px 28px rgba(15,37,71,.06);
+    --dash:rgba(30,80,160,.42);
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--thai);line-height:1.65;
+       -webkit-font-smoothing:antialiased;padding:0 0 80px}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+  .full{max-width:none;padding:0}
+
+  code,.mono{font-family:var(--mono);font-size:.86em;font-variant-numeric:tabular-nums}
+  code{background:var(--blue-soft);color:var(--blue-deep);padding:1px 6px;border-radius:5px;
+       word-break:break-word}
+
+  /* ---------- head ---------- */
+  header{border-bottom:1px solid var(--line);background:var(--card);padding:38px 0 30px;margin-bottom:44px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--blue);
+           font-family:var(--mono)}
+  h1{font-size:clamp(26px,3.4vw,38px);line-height:1.25;margin:12px 0 10px;font-weight:800;
+     letter-spacing:-.015em;text-wrap:balance}
+  .lede{font-size:17px;color:var(--ink-2);max-width:66ch;margin:0}
+  .facts{display:flex;flex-wrap:wrap;gap:10px 34px;margin-top:26px;padding-top:22px;border-top:1px solid var(--line-2)}
+  .fact{min-width:120px}
+  .fact b{display:block;font-size:19px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+  .fact span{font-size:12.5px;color:var(--mute)}
+
+  /* ---------- section ---------- */
+  section{margin-bottom:56px}
+  .shead{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+  .shead .n{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--blue);letter-spacing:.08em}
+  h2{font-size:22px;font-weight:800;letter-spacing:-.01em;margin:0}
+  .sdesc{color:var(--mute);font-size:14.5px;margin:0 0 22px;max-width:70ch}
+
+  /* ---------- flow rail ---------- */
+  .railwrap{overflow-x:auto;padding:6px 0 22px;scrollbar-width:thin}
+  .rail{display:flex;align-items:stretch;gap:0;padding:0 28px;min-width:min-content}
+  .node{flex:0 0 246px;background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:16px 17px 15px;box-shadow:var(--shadow);position:relative;display:flex;flex-direction:column;gap:9px}
+  .node.act{border-color:var(--blue);box-shadow:var(--shadow),0 0 0 3px var(--blue-soft)}
+  .node.risk{border-color:var(--red);box-shadow:var(--shadow),0 0 0 3px var(--red-soft)}
+  .step{display:flex;align-items:center;gap:9px}
+  .step .idx{width:22px;height:22px;flex:0 0 22px;border-radius:6px;background:var(--blue);color:#fff;
+             font-family:var(--mono);font-size:11px;font-weight:700;display:grid;place-items:center}
+  .node.risk .idx{background:var(--red)}
+  .step h3{font-size:14.5px;font-weight:800;margin:0;letter-spacing:-.005em}
+  .node p{margin:0;font-size:13px;color:var(--ink-2);line-height:1.6}
+  .meta{margin-top:auto;padding-top:10px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:4px}
+  .meta div{font-size:11.5px;color:var(--mute);display:flex;gap:7px;line-height:1.5}
+  .meta div b{color:var(--ink-2);font-weight:700;flex:0 0 30px}
+  .meta .mono{color:var(--blue-deep);font-size:11px}
+  .tag{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:999px;
+       font-family:var(--mono);letter-spacing:.03em}
+  .tag.read{background:var(--blue-soft);color:var(--blue-deep)}
+  .tag.write{background:var(--red-soft);color:var(--red)}
+  .tag.db{background:var(--amber-soft);color:var(--amber)}
+
+  /* animated dashed connector */
+  .link{flex:0 0 62px;align-self:center;position:relative;height:22px}
+  .link .ln{position:absolute;top:50%;left:0;right:9px;height:2px;transform:translateY(-50%);
+     background-image:linear-gradient(90deg,var(--dash) 0 7px,transparent 7px 14px);
+     background-size:14px 2px;background-repeat:repeat-x;animation:march 900ms linear infinite}
+  .link .hd{position:absolute;top:50%;right:0;width:0;height:0;transform:translateY(-50%);
+     border-left:8px solid var(--dash);border-top:5px solid transparent;border-bottom:5px solid transparent}
+  .link .lbl{position:absolute;bottom:calc(50% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;
+     font-family:var(--mono);font-size:10px;font-weight:700;color:var(--mute);letter-spacing:.03em}
+  @keyframes march{to{background-position:14px 0}}
+  @media (prefers-reduced-motion:reduce){.link .ln{animation:none}}
+
+  /* branch drops */
+  .branchwrap{overflow-x:auto;padding-bottom:8px}
+  .branches{display:flex;gap:14px;padding:0 28px;min-width:min-content}
+  .branch{flex:0 0 232px;position:relative;padding-top:34px}
+  .branch::before{content:"";position:absolute;top:0;left:26px;width:2px;height:26px;
+     background-image:linear-gradient(180deg,var(--dash) 0 6px,transparent 6px 12px);
+     background-size:2px 12px;background-repeat:repeat-y;animation:drop 800ms linear infinite}
+  .branch::after{content:"";position:absolute;top:26px;left:22px;width:0;height:0;
+     border-top:7px solid var(--dash);border-left:5px solid transparent;border-right:5px solid transparent}
+  @keyframes drop{to{background-position:0 12px}}
+  @media (prefers-reduced-motion:reduce){.branch::before{animation:none}}
+  .bcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 15px;
+     box-shadow:var(--shadow);border-left:3px solid var(--mute);height:100%}
+  .bcard.stop{border-left-color:var(--red)}
+  .bcard.wait{border-left-color:var(--amber)}
+  .bcard.done{border-left-color:var(--green)}
+  .bcard h4{margin:0 0 5px;font-size:13.5px;font-weight:800}
+  .bcard p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.55}
+  .bcard .st{display:inline-block;margin-top:9px;font-family:var(--mono);font-size:10.5px;font-weight:700;
+     background:var(--line-2);color:var(--ink-2);padding:2px 8px;border-radius:5px}
+
+  /* ---------- tables ---------- */
+  .tablewrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;
+     box-shadow:var(--shadow)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:640px}
+  thead th{background:var(--blue);color:#fff;text-align:left;padding:11px 16px;font-size:12.5px;font-weight:700;
+     white-space:nowrap}
+  tbody td{padding:11px 16px;border-top:1px solid var(--line-2);vertical-align:top;color:var(--ink-2)}
+  tbody tr:nth-child(even){background:color-mix(in srgb,var(--blue-soft) 40%,transparent)}
+  tbody td:first-child{color:var(--ink);font-weight:600}
+  .lvl{font-family:var(--mono);font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;white-space:nowrap}
+  .lvl.hard{background:var(--red-soft);color:var(--red)}
+  .lvl.soft{background:var(--amber-soft);color:var(--amber)}
+  .lvl.na{background:var(--line-2);color:var(--mute)}
+
+  /* ---------- guards ---------- */
+  .guards{display:grid;grid-template-columns:repeat(auto-fit,minmax(238px,1fr));gap:14px}
+  .guard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 17px;
+     box-shadow:var(--shadow);position:relative}
+  .guard .g{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--red);letter-spacing:.08em}
+  .guard h4{margin:6px 0 6px;font-size:14px;font-weight:800}
+  .guard p{margin:0;font-size:12.5px;color:var(--ink-2);line-height:1.6}
+
+  /* ---------- state machine ---------- */
+  .states{display:flex;flex-wrap:wrap;gap:8px}
+  .pill{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:5px 11px;border-radius:7px;
+     border:1px solid var(--line);background:var(--card);color:var(--ink-2);display:flex;gap:7px;align-items:center}
+  .pill i{width:6px;height:6px;border-radius:50%;background:var(--mute);font-style:normal}
+  .pill.live i{background:var(--blue)} .pill.good i{background:var(--green)}
+  .pill.bad i{background:var(--red)} .pill.warn i{background:var(--amber)}
+  .pill em{font-style:normal;font-family:var(--thai);font-weight:600;color:var(--mute);font-size:11.5px}
+
+  pre.tree{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;
+     overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.85;color:var(--ink-2);
+     box-shadow:var(--shadow);margin:0}
+
+  .note{border-left:3px solid var(--amber);background:var(--amber-soft);color:var(--ink);border-radius:0 8px 8px 0;
+     padding:12px 16px;font-size:13.5px;margin-top:16px}
+  .note b{font-weight:800}
+
+  footer{border-top:1px solid var(--line);padding-top:20px;color:var(--mute);font-size:12.5px;
+     display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+
+  @media (max-width:640px){
+    .wrap{padding:0 18px} .rail,.branches{padding:0 18px}
+  }
+</style>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Runbook · thunder_refund</div>
+    <h1>Flow การทำงาน — ระบบคืนเครดิต Thunder</h1>
+    <p class="lede">น้องวานเฝ้าหน้าหลังบ้าน Thunder เอง ตรวจคำขอคืนเครดิตทีละจุดเทียบข้ามสองหน้า
+      แล้วยื่นให้แอดมินกดปุ่มเดียว จากนั้นลงมือกดอนุมัติในระบบจริงแทนคน พร้อมภาพยืนยันผล
+      เอกสารนี้ไล่ตามโค้ดที่รันอยู่จริง ไม่ใช่สเปกตอนออกแบบ</p>
+    <div class="facts">
+      <div class="fact"><b>2 นาที</b><span>รอบเฝ้าหน้า /admin/refund</span></div>
+      <div class="fact"><b>2 หน้า</b><span>เทียบข้ามด้วยไอดีประวัติ</span></div>
+      <div class="fact"><b>8 จุด</b><span>เมทริกซ์ตรวจ (6 จุดเมื่อไม่มี noti)</span></div>
+      <div class="fact"><b>4 ชั้น</b><span>ป้องกันก่อนกดอนุมัติจริง</span></div>
+      <div class="fact"><b>10 สถานะ</b><span>state machine กันคืนซ้ำ</span></div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="full">
+  <div class="wrap">
+    <div class="shead"><span class="n">FLOW 01</span><h2>เส้นทางหลัก — ตั้งแต่คำขอเข้าจนเครดิตกลับถึงลูกค้า</h2></div>
+    <p class="sdesc">อ่านจากซ้ายไปขวา ป้ายบนเส้นคือเงื่อนไขที่ทำให้เดินต่อ · แถบสีน้ำเงินคือขั้นอ่านอย่างเดียว
+      แถบแดงคือขั้นที่แตะเงินลูกค้าจริง (เลื่อนแนวนอนเพื่อดูจนจบ)</p>
+  </div>
+
+  <div class="railwrap">
+    <div class="rail">
+
+      <div class="node">
+        <div class="step"><span class="idx">1</span><h3>ตัวจับเวลาเตะ</h3></div>
+        <p>ตัวเฝ้าที่รันค้างไว้ยิงเข้า API ของวานทุก 2 นาที พร้อมโทเคนภายใน ไม่ต้องมีใครสั่ง</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">scripts/refund-watch.mjs</span></div>
+          <div><b>ยิงไป</b><span class="mono">POST /api/telegram/refund-poll</span></div>
+          <div><b>ปรับ</b><span class="mono">REFUND_POLL_SECONDS</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">ทุก 120 วิ</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">2</span><h3>เช็คกลุ่มปลายทาง</h3></div>
+        <p>หากลุ่มที่ผูกหน้าที่ <code>thunder_refund</code> ไว้ ถ้ายังไม่มีกลุ่ม จบรอบทันที ไม่เปิดเบราว์เซอร์ให้เปลืองแรง กลุ่มที่สั่งปิดแจ้งเตือนไว้จะถูกคัดออก</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">refund-flow.ts · pollRefunds()</span></div>
+          <div><b>ทาง</b><span>ไม่มีกลุ่ม → <span class="mono">no_group</span></span></div>
+          <div><b>ชนิด</b><span class="tag db">DB</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">มีกลุ่ม</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">3</span><h3>กวาดเคสค้างก่อน</h3></div>
+        <p>ดูเคสที่แอดมินยังไม่กด รอเกิน 30 นาทีเตือนซ้ำหนึ่งครั้ง รอเกิน 6 ชั่วโมงปิดปุ่มทิ้ง ทำก่อนเสมอเพราะไม่พึ่งหลังบ้าน</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">refund-flow.ts · sweepWaiting()</span></div>
+          <div><b>อ่านจาก</b><span class="mono">state = notified</span></div>
+          <div><b>ชนิด</b><span class="tag db">DB</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">แล้วค่อยเปิดหลังบ้าน</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node act">
+        <div class="step"><span class="idx">4</span><h3>เปิดหน้าคำขอคืนเงิน</h3></div>
+        <p>เปิด Chromium ด้วย session ที่เก็บไว้ เข้าหน้าจัดการขอคืนเงิน อ่านตารางหน้าแรก เก็บเฉพาะแถวสถานะ <b>รออนุมัติ</b></p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">thunder-refund.ts · listPendingRefunds()</span></div>
+          <div><b>ที่</b><span class="mono">/admin/refund</span></div>
+          <div><b>ชนิด</b><span class="tag read">READ</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">ต่อแถว</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">5</span><h3>คัดกรอง แล้วเปิดเคส</h3></div>
+        <p>คำขอของ <code>nining</code> ข้ามเงียบ เคสที่เคยเห็นแล้วข้าม ที่เหลือดึง noti จากแคชมาประกบ แล้วสร้างเคสใหม่ในฐานข้อมูล</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">refund-store.ts · createCase()</span></div>
+          <div><b>กันซ้ำ</b><span class="mono">refundId unique</span></div>
+          <div><b>ผล</b><span class="mono">state = pending</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">เคสใหม่</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node act">
+        <div class="step"><span class="idx">6</span><h3>ยืนยันข้ามอีกหน้า</h3></div>
+        <p>เอาไอดีประวัติจากคอลัมน์ประวัติบริการไปเปิดหน้าประวัติบริการตรง ๆ ต้องได้แถวเดียว ได้ศูนย์หรือหลายแถวคือผิดปกติ</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">thunder-refund.ts · fetchServiceLog()</span></div>
+          <div><b>ที่</b><span class="mono">/admin/logs/service?id=175979</span></div>
+          <div><b>ชนิด</b><span class="tag read">READ</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">ได้แถวเดียว</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">7</span><h3>เทียบเมทริกซ์</h3></div>
+        <p>เทียบสามทาง หน้าคืนเงิน ↔ ประวัติบริการ ↔ noti บอท จุดบังคับตกแม้ข้อเดียวคือไม่มีปุ่มคืน จุดเตือนตกยังมีปุ่มแต่ติดธงเหลือง</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">refund-check.ts · checkRefund()</span></div>
+          <div><b>เก็บผล</b><span class="mono">checks · allOk · mismatches</span></div>
+          <div><b>ชนิด</b><span class="tag db">DB</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">ตรงหมด</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">8</span><h3>ถามในกลุ่ม</h3></div>
+        <p>เรนเดอร์การ์ดเทียบเป็นภาพ ส่งเข้ากลุ่มพร้อมสรุปและปุ่มสามปุ่ม จำเลข message ไว้ใช้ปิดปุ่มทีหลัง</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">refund-flow.ts · sendForApproval()</span></div>
+          <div><b>ปุ่ม</b><span class="mono">tref:ok · tref:no · tref:detail</span></div>
+          <div><b>ผล</b><span class="mono">state = notified</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">แอดมินกด คืนเลย</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">9</span><h3>ตรวจสิทธิ์ แล้วล็อกเคส</h3></div>
+        <p>บอทรับปุ่ม ส่งต่อให้ callback ตรวจว่าเป็นเจ้าของหรือทีมที่อนุญาต แล้วชิงล็อกเคสแบบอะตอมิก คนที่สองกดจะเจอว่ามีคนกดไปแล้ว</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">callback/route.ts · lockForApprove()</span></div>
+          <div><b>ผล</b><span class="mono">state = approving</span></div>
+          <div><b>บันทึก</b><span>ใครกด · เมื่อไหร่</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">ล็อกได้</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node risk">
+        <div class="step"><span class="idx">10</span><h3>กดอนุมัติจริง</h3></div>
+        <p>เปิดหน้าคำขอเจาะจงด้วยไอดี ผ่านด่านสี่ชั้น แล้วคลิก badge รออนุมัติ → เมนูจัดการ → ปุ่มอนุมัติ</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">thunder-refund.ts · approveRefund()</span></div>
+          <div><b>ที่</b><span class="mono">/admin/refund?id=2677</span></div>
+          <div><b>ชนิด</b><span class="tag write">WRITE</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">คลิกติด</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node act">
+        <div class="step"><span class="idx">11</span><h3>ให้ระบบยืนยันเอง</h3></div>
+        <p>อ่านสถานะแถวนั้นซ้ำจนขึ้น <b>อนุมัติแล้ว</b> ภายใน 15 วินาที คลิกติดไม่นับเป็นหลักฐานว่าระบบบันทึกแล้ว</p>
+        <div class="meta">
+          <div><b>เงื่อนไข</b><span>ไม่เปลี่ยน → <span class="mono">status_unchanged</span></span></div>
+          <div><b>ชนิด</b><span class="tag read">READ</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="lbl">อนุมัติแล้ว</span><span class="ln"></span><span class="hd"></span></div>
+
+      <div class="node">
+        <div class="step"><span class="idx">12</span><h3>รายงานพร้อมภาพ</h3></div>
+        <p>แคปตารางตีกรอบแดงแถวนั้น โพสต์สรุปว่าใครอนุมัติ เวลาไหน แล้วแท็กแอดมินที่ยื่นคำร้อง จบด้วยบันทึกลงสมุดงาน</p>
+        <div class="meta">
+          <div><b>ไฟล์</b><span class="mono">shotRefundRow() · logActivity()</span></div>
+          <div><b>ผล</b><span class="mono">state = approved</span></div>
+          <div><b>ชนิด</b><span class="tag db">DB</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section class="full">
+  <div class="wrap">
+    <div class="shead"><span class="n">FLOW 02</span><h2>ทางแยก — เมื่อเส้นทางหลักไปต่อไม่ได้</h2></div>
+    <p class="sdesc">ทุกเส้นแยกจบที่สถานะของตัวเอง ไม่มีเส้นไหนเงียบหายโดยไม่บันทึก</p>
+  </div>
+  <div class="branchwrap">
+    <div class="branches">
+      <div class="branch"><div class="bcard">
+        <h4>คำขอของ nining</h4>
+        <p>คนที่ดูแลเอง ไม่ต้องขออนุญาตใคร วานบันทึกไว้เฉย ๆ เพื่อไม่ให้รอบถัดไปหยิบซ้ำ ไม่มีข้อความเข้ากลุ่ม</p>
+        <span class="st">skipped_nining</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard">
+        <h4>เคยเห็นแล้ว</h4>
+        <p>เจอไอดีคำขอนี้ในฐานข้อมูลอยู่แล้ว แปลว่าแจ้งหรือจัดการไปแล้ว ข้ามทันที นี่คือกลไกที่ทำให้ poll ทุก 2 นาทีไม่สแปม</p>
+        <span class="st">ข้าม · ไม่แตะสถานะเดิม</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard stop">
+        <h4>ค้นประวัติแล้วผิดปกติ</h4>
+        <p>ไอดีประวัติค้นไม่เจอ หรือเจอเกินหนึ่งแถวทั้งที่ต้องไม่ซ้ำ วานไม่เดาเอาแถวแรก โพสต์ธงแดงพร้อมแท็กพี่โด้</p>
+        <span class="st">flagged</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard stop">
+        <h4>เทียบแล้วมีจุดไม่ตรง</h4>
+        <p>จุดบังคับตกแม้ข้อเดียว การ์ดขึ้นว่าพบข้อผิดพลาด บอกจุดที่ไม่ตรงเป็นข้อ ๆ และ<b>ไม่มีปุ่มคืน</b> ไม่มีปุ่มฝืน</p>
+        <span class="st">flagged</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard">
+        <h4>แอดมินกด ไม่ต้อง</h4>
+        <p>วานตอบรับทราบ บันทึกว่าใครสั่งไม่คืน ถ้าเปลี่ยนใจภายหลังต้องไปกดในระบบเอง</p>
+        <span class="st">rejected</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard wait">
+        <h4>ไม่มีใครกดเลย</h4>
+        <p>30 นาที เตือนซ้ำหนึ่งครั้งโดยตอบกลับข้อความเดิม · 6 ชั่วโมง ปิดปุ่มแล้วบอกให้ไปกดในระบบ (กลุ่มลบข้อความอัตโนมัติใน 1 วัน ปุ่มค้างข้ามวันไม่มีประโยชน์)</p>
+        <span class="st">expired</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard wait">
+        <h4>มีคนจัดการไปก่อน</h4>
+        <p>ระหว่างรอแอดมินกด มีคนอนุมัติหรือปฏิเสธในระบบไปแล้ว วาน re-verify เจอสถานะไม่ใช่รออนุมัติ จึงไม่กดซ้ำ นี่ไม่ใช่ error</p>
+        <span class="st">stale</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard stop">
+        <h4>กดแล้วไม่สำเร็จ</h4>
+        <p>เมนูไม่ขึ้น ไม่เจอปุ่มอนุมัติ หรือกดแล้วสถานะไม่เปลี่ยน วานบอกสาเหตุเป็นภาษาคน ยืนยันว่ายังไม่มีการคืนเกิดขึ้น แล้วแท็กพี่โด้</p>
+        <span class="st">failed</span>
+      </div></div>
+
+      <div class="branch"><div class="bcard stop">
+        <h4>session หลังบ้านหมด</h4>
+        <p>SPA เรนเดอร์เปลือกได้แต่ตารางไม่มา วานแยกออกจาก “ไม่มีข้อมูล” แล้วเตือนให้รัน <code>npm run thunder:auth</code> <b>ครั้งเดียว</b> ไม่สแปมทุก 2 นาที</p>
+        <span class="st">refund_session_warned</span>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+
+<section>
+  <div class="shead"><span class="n">REF 01</span><h2>เมทริกซ์ตรวจ — เทียบอะไร กับอะไร</h2></div>
+  <p class="sdesc">จุด <b>บังคับ</b> ตกแม้ข้อเดียวคือไม่มีปุ่มคืน · จุด <b>เตือน</b> ตกยังมีปุ่ม แต่ติดธงเหลืองในการ์ด ·
+    จุดที่ไม่มีข้อมูลให้เทียบจะไม่ถูกนับเป็นตก และคอลัมน์นั้นจะหายไปจากการ์ดเอง</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>จุดตรวจ</th><th>หน้าจัดการขอคืนเงิน</th><th>หน้าประวัติบริการ</th><th>noti บอท</th><th>ระดับ</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>ไอดีประวัติบริการ</td><td><span class="mono">#175979</span></td><td><span class="mono">ID 175979</span></td><td>—</td><td><span class="lvl hard">บังคับ</span></td></tr>
+        <tr><td>ยูสเซอร์</td><td><span class="mono">siwaul</span></td><td><span class="mono">USERNAME siwaul</span></td><td>—</td><td><span class="lvl hard">บังคับ</span></td></tr>
+        <tr><td>ยอดเงิน</td><td>฿1,599.00</td><td>+฿1,599</td><td>1,599฿</td><td><span class="lvl hard">บังคับ</span></td></tr>
+        <tr><td>ยอดในลิงก์ประวัติ</td><td>฿1,599.00 (กันลิงก์ชี้ผิดรายการ)</td><td>+฿1,599</td><td>—</td><td><span class="lvl hard">บังคับ</span></td></tr>
+        <tr><td>สถานะคำขอ</td><td>ต้องเป็น <b>รออนุมัติ</b> เท่านั้น</td><td>—</td><td>—</td><td><span class="lvl hard">บังคับ</span></td></tr>
+        <tr><td>ชื่อร้านค้า</td><td>ไม่มีคอลัมน์นี้</td><td>โรงงานลูกชิ้นยายทอง</td><td>ชื่อร้านใน noti</td><td><span class="lvl hard">บังคับถ้ามี noti</span></td></tr>
+        <tr><td>ประเภทรายการ</td><td>เหตุผล “ต่ออายุผิด”</td><td><span class="mono">RENEW</span></td><td>—</td><td><span class="lvl soft">เตือน</span></td></tr>
+        <tr><td>ไอดีบริการ</td><td>—</td><td>—</td><td><span class="mono">#12550</span></td><td><span class="lvl na">ยังไม่เทียบ</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note"><b>ของจริงตอนนี้:</b> ไม่มี noti เข้ามาก็ทำงานได้ครบ แต่จะเทียบได้ <b>6 จุด</b> ไม่ใช่ 8 —
+    ชื่อร้านค้าต้องมี noti ถึงเทียบได้ ส่วนไอดีบริการยังเป็นช่องว่างไว้ (โค้ดใส่ <code>ok: null</code> ตรง ๆ)
+    รอเฟส 3 ที่จะเอาไปค้นย้อนว่า noti ใบนั้นชี้มาที่ไอดีประวัติเดียวกันจริง</div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">REF 02</span><h2>ด่านสี่ชั้นก่อนแตะเงินลูกค้า</h2></div>
+  <p class="sdesc">จุดเดียวในระบบที่กดแล้วเงินขยับจริง หลักการคือผิดนิดเดียวแปลว่าไม่กด แล้วไปบอกคน ไม่ใช่เดาต่อ</p>
+  <div class="guards">
+    <div class="guard"><div class="g">ชั้น 1</div><h4>เจาะจงแถว ไม่ไล่หาเอง</h4>
+      <p>เปิดหน้าด้วยไอดีคำขอตรง ๆ แล้วบังคับว่าต้องได้แถวเดียว ได้ศูนย์หรือหลายแถวคือหยุด ตัดความเสี่ยง “กดผิดแถว” ตั้งแต่ต้นทาง</p></div>
+    <div class="guard"><div class="g">ชั้น 2</div><h4>เทียบสดกับตอนที่แจ้ง</h4>
+      <p>สถานะต้องยังรออนุมัติ และยูสเซอร์ ยอด ไอดีประวัติ ต้องตรงกับตอนที่โพสต์ถามในกลุ่ม ข้อมูลเปลี่ยนระหว่างรอ = ไม่กด</p></div>
+    <div class="guard"><div class="g">ชั้น 3</div><h4>เมนูต้องเป็นของคำขอนี้</h4>
+      <p>หลังคลิก badge ต้องอ่านเจอหัวเมนูว่า “จัดการ #ไอดีนั้น” ตรงเลข ไม่ตรงคือกด Escape ทิ้งแล้วรายงาน ไม่กดต่อ</p></div>
+    <div class="guard"><div class="g">ชั้น 4</div><h4>คลิกเฉพาะคำว่า อนุมัติ เป๊ะ</h4>
+      <p>ไล่ทุกปุ่มในเมนู เจอ “ปฏิเสธ” หรือ “ยกเลิก” ข้ามทิ้งชัดเจน คลิกเฉพาะปุ่มที่ข้อความตรงเป๊ะ แล้วอ่านสถานะซ้ำจนระบบยืนยันเอง</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">REF 03</span><h2>สถานะของเคส</h2></div>
+  <p class="sdesc">หนึ่งคำขอมีได้สถานะเดียว บันทึกในตาราง RefundCase ผูกกับไอดีคำขอที่ห้ามซ้ำ</p>
+  <div class="states" style="margin-bottom:18px">
+    <span class="pill live"><i></i>pending <em>รอตรวจ</em></span>
+    <span class="pill live"><i></i>notified <em>รอแอดมินกด</em></span>
+    <span class="pill live"><i></i>approving <em>กำลังคืน</em></span>
+    <span class="pill good"><i></i>approved <em>คืนแล้ว</em></span>
+    <span class="pill"><i></i>rejected <em>สั่งไม่คืน</em></span>
+    <span class="pill bad"><i></i>flagged <em>ข้อมูลไม่ตรง</em></span>
+    <span class="pill warn"><i></i>stale <em>มีคนจัดการไปแล้ว</em></span>
+    <span class="pill bad"><i></i>failed <em>คืนไม่สำเร็จ</em></span>
+    <span class="pill warn"><i></i>expired <em>หมดเวลา</em></span>
+    <span class="pill"><i></i>skipped_nining <em>ข้ามเงียบ</em></span>
+  </div>
+<pre class="tree">poll เจอแถว ─┬─ nining ────────→ skipped_nining  (จบ)
+             │
+             └─ pending ─[ตรวจ]─┬─ flagged  (จบ · ธงแดง ไม่มีปุ่ม)
+                                │
+                                └─ notified ─┬─ rejected  (จบ · แอดมินสั่งไม่คืน)
+                                             ├─ expired   (จบ · 6 ชม. ไม่มีใครกด)
+                                             │
+                                             └─ approving ─┬─ approved  (จบ · ระบบยืนยันแล้ว)
+                                                           ├─ stale     (จบ · มีคนจัดการไปก่อน)
+                                                           └─ failed    (จบ · กดไม่สำเร็จ)</pre>
+  <div class="note"><b>เคสบอทตายกลางคัน:</b> ถ้า state ค้างที่ <code>approving</code> เกิน 10 นาที
+    ระบบถือว่าล็อกนั้นตายแล้ว ปล่อยให้กดใหม่ได้ ไม่ต้องมีคนไปแก้ในฐานข้อมูลเอง</div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">REF 04</span><h2>ไฟล์จริง ใครทำอะไร</h2></div>
+  <p class="sdesc">ทั้งหมดอยู่ใน changoh-system</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>ไฟล์</th><th>หน้าที่</th></tr></thead>
+      <tbody>
+        <tr><td><span class="mono">scripts/refund-watch.mjs</span></td><td>ตัวเฝ้า ยิง API ทุก 2 นาที เปิดเองตอนล็อกอินผ่าน run-waan.command</td></tr>
+        <tr><td><span class="mono">api/telegram/refund-poll</span></td><td>ปลายทางของตัวเฝ้า ตรวจโทเคนภายในแล้วเรียกฟลว์ทั้งเส้น</td></tr>
+        <tr><td><span class="mono">src/lib/refund-flow.ts</span></td><td>สมองของฟีเจอร์ — รอบ poll · ข้อความในกลุ่ม · การกดปุ่ม · เตือนซ้ำและปิดปุ่ม</td></tr>
+        <tr><td><span class="mono">src/lib/thunder-refund.ts</span></td><td>Playwright ทั้งหมด — อ่านคำขอ · ยืนยันข้าม · แคปภาพตีกรอบแดง · กดอนุมัติ</td></tr>
+        <tr><td><span class="mono">src/lib/refund-check.ts</span></td><td>เมทริกซ์เทียบ และการ์ดสรุปที่เรนเดอร์เป็นภาพส่งเข้ากลุ่ม</td></tr>
+        <tr><td><span class="mono">src/lib/refund-store.ts</span></td><td>อ่านเขียนเคส · state machine · ล็อกกันกดซ้อน · แปลงวันที่ไทย</td></tr>
+        <tr><td><span class="mono">src/lib/refund-notify.ts</span></td><td>แกะข้อความบอท <span class="mono">[#REQUEST_REFUND_SERVICE]</span> แล้วพักไว้ในแคช 24 ชม. รอ poll มาจับคู่</td></tr>
+        <tr><td><span class="mono">api/telegram/callback</span></td><td>รับปุ่ม <span class="mono">tref:</span> ตรวจสิทธิ์ แล้วส่งต่อให้ฟลว์</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">REF 05</span><h2>ตั้งค่าและคำสั่ง</h2></div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>ตัว</th><th>ค่าเริ่มต้น</th><th>ใช้ทำอะไร</th></tr></thead>
+      <tbody>
+        <tr><td><span class="mono">REFUND_POLL_SECONDS</span></td><td><span class="mono">120</span></td><td>รอบเฝ้า ถ้า Thunder rate-limit จนคืน “0 รายการ” มั่ว ให้ขยับเป็น 300</td></tr>
+        <tr><td><span class="mono">THUNDER_ADMIN_URL</span></td><td><span class="mono">old.thunder.in.th</span></td><td>โดเมนหลังบ้านที่วานเข้าไปอ่านและกด</td></tr>
+        <tr><td><span class="mono">THUNDER_SESSION_PATH</span></td><td><span class="mono">.thunder-session.json</span></td><td>session ที่ Playwright ใช้ อายุราว 1–1.5 ชม.</td></tr>
+        <tr><td><span class="mono">INTERNAL_API_TOKEN</span></td><td>—</td><td>โทเคนที่ตัวเฝ้าใช้ยิง API ไม่มีคือตัวเฝ้าไม่ยอมสตาร์ท</td></tr>
+        <tr><td><span class="mono">npm run refund:watch</span></td><td>—</td><td>สตาร์ตตัวเฝ้าเอง (ปกติเปิดอัตโนมัติอยู่แล้ว)</td></tr>
+        <tr><td><span class="mono">npm run thunder:auth</span></td><td>—</td><td>ต่อ session ใหม่เมื่อวานเตือนว่าเข้าหลังบ้านไม่ได้</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note"><b>ผูกกลุ่มก่อนถึงจะเริ่มทำงาน:</b> พิมพ์ในกลุ่มปลายทางว่า “วานเชื่อมกลุ่มนี้ไว้คืนเครดิตหน่อย”
+    แล้วกดปุ่มเลือกหน้าที่คืนเครดิต Thunder · ก่อนผูก ตัวเฝ้าจะคืน <code>no_group</code> เงียบ ๆ ทุกรอบและไม่เปิดเบราว์เซอร์เลย</div>
+</section>
+
+<footer>
+  <span>changoh-system · docs/thunder-refund-flow.html</span>
+  <span>ไล่ตามโค้ดที่รันจริง ณ 17 ก.ค. 2026 · สเปกฉบับเต็ม: thunder-refund-flow.md</span>
+</footer>
+
+</div>
+</main>

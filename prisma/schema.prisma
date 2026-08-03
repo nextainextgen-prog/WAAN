@@ -24,16 +24,68 @@ model Grant {
   projectName String                       // ชื่อโครงการ
   ownerName   String?                       // อาจารย์เจ้าของทุน
   source      String?                       // แหล่งทุน (TRF, สกสว, ฯลฯ)
-  amount      Float     @default(0)          // มูลค่าทุน (บาท)
+  amount      Float     @default(0)          // มูลค่าทุนตามสัญญา (บาท)
   status      String    @default("submitted") // สถานะปัจจุบัน (key)
   nextDeadline DateTime?                     // deadline งวดถัดไป
   note        String?                        // หมายเหตุ
   orderIndex  Int       @default(0)          // ลำดับใน Kanban column
+
+  fiscalYear  Int?                           // ปีงบที่นับผล (ค.ศ. — ปีงบ 2026 = 1 ต.ค. 2025 – 30 ก.ย. 2026)
+  probability Int?                           // โอกาสได้ทุน 0-100 (ใช้ถ่วงน้ำหนักท่อที่ยังไม่อนุมัติ)
+  startDate   DateTime?                      // วันเริ่มโครงการ
+  endDate     DateTime?                      // วันสิ้นสุดโครงการ
+
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  installments GrantInstallment[]
+  events       GrantEvent[]
+
+  @@index([fiscalYear])
+  @@index([status])
 }
 
-// เป้า OKR ต่อปี
+// งวดเงินของทุน — "เงินรับจริง" ของ OKR มาจากตารางนี้เท่านั้น
+model GrantInstallment {
+  id        String   @id @default(cuid())
+  grantId   String
+  grant     Grant    @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  seq       Int      @default(1)             // งวดที่ 1, 2, 3
+  label     String?                          // เช่น "งวดแรก 30%"
+  amount    Float    @default(0)             // ยอดที่ควรได้ตามสัญญา
+  dueDate   DateTime?                        // กำหนดรับเงิน / กำหนดส่งรายงานเพื่อเบิก
+
+  receivedAt     DateTime?                   // รับเงินจริงเมื่อไหร่ (null = ยังไม่รับ)
+  receivedAmount Float?                      // รับจริงเท่าไหร่ (อาจต่างจาก amount เช่นโดนหักภาษี)
+
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([grantId, seq])
+  @@index([receivedAt])
+  @@index([dueDate])
+}
+
+// ประวัติความเคลื่อนไหวของทุน (append-only) — ใช้หา "ทุนค้างสถานะ" + hit rate + หลักฐานตอนรายงาน
+model GrantEvent {
+  id         String   @id @default(cuid())
+  grantId    String
+  grant      Grant    @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  kind       String                          // created | status | installment | edited
+  fromStatus String?
+  toStatus   String?
+  detail     String                          // ประโยคเดียวอ่านรู้เรื่อง
+  actor      String?                         // ชื่อคนทำ / "น้องวาน"
+
+  @@index([grantId, createdAt])
+  @@index([kind, createdAt])
+}
+
+// เป้า OKR ต่อปีงบประมาณ (year = ปีงบ ค.ศ.)
 model OkrTarget {
   id           String @id @default(cuid())
   year         Int    @unique
@@ -144,6 +196,43 @@ model BotActivity {
   @@index([source, createdAt])
 }
 
+// คำขอคืนเครดิตบริการ Thunder (1 แถว = 1 คำขอในหน้า /admin/refund) — วานเฝ้า+ตรวจ+ให้แอดมินกดคืน
+// refundId unique = กันแจ้งซ้ำทุกรอบ poll + กันกดอนุมัติซ้ำ (state machine)
+model RefundCase {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  refundId    String   @unique // ID คำขอในหน้า refund (2677)
+  historyId   String           // ไอดีประวัติบริการ (175979) — กุญแจไปหน้า logs/service
+  serviceId   String?          // ไอดีบริการ (12550) — มีเฉพาะตอนอ่าน noti บอทได้
+  username    String           // ผู้ใช้ที่จะได้เครดิตคืน (siwaul)
+  requestedBy String           // แอดมินที่ยื่นคำร้อง (kornalone1) — คนที่ต้องแท็กตอนจบ
+  shopName    String?          // ชื่อร้านค้า (จากหน้า logs/service)
+  amount      Float            // ยอดที่ขอคืน
+  reason      String           // หมายเหตุ/เหตุผล
+  serviceType String?          // renew | buy
+  packageName String?          // Verify Slip Gold
+  requestedAt DateTime?        // เวลายื่นคำร้อง (คอลัมน์ สร้างเมื่อ)
+
+  // pending | notified | approving | approved | rejected | flagged | stale | failed | expired | skipped_nining
+  state       String   @default("pending")
+  checks      String?  // JSON ผลตรวจรายจุด
+  allOk       Boolean  @default(false)
+  mismatches  String?  // JSON จุดที่ไม่ตรง
+
+  chatId      String?  // กลุ่มที่แจ้ง
+  messageId   String?  // ข้อความที่มีปุ่ม (ไว้ปิดปุ่ม/เตือนซ้ำ)
+  notifiedAt  DateTime?
+  remindedAt  DateTime? // เตือนซ้ำไปแล้วเมื่อไหร่ (เตือนครั้งเดียว)
+  decidedBy   String?  // ชื่อคนกดปุ่ม
+  decidedById String?  // telegram user id คนกด
+  decidedAt   DateTime?
+  error       String?
+
+  @@index([state, createdAt])
+}
+
 // บทเรียนที่วานเรียนรู้ (โด้สอน หรือวานสรุปเอง) — ฉีดเข้าบริบททุกครั้งเพื่อให้ตอบเก่งขึ้น/ไม่ผิดซ้ำ
 model Lesson {
   id        String   @id @default(cuid())
@@ -155,6 +244,114 @@ model Lesson {
   active    Boolean  @default(true)
 
   @@index([active, createdAt])
+}
+
+// ===== Thunder — ความจำลูกค้า (customer brain) =====
+// ระบบใหม่ในอนาคตเก็บข้อมูลลูกค้าเข้ามาที่ตารางชุดนี้ (รวมศูนย์ที่เดียว)
+model Customer {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  name       String?                       // ชื่อที่รู้จัก
+  company    String?                       // แบรนด์/บริษัท
+  plan       String?                       // แพ็กเกจ/บริการที่ใช้
+  status     String?                       // active | expired | trial ...
+  tags       String?                       // JSON array แท็ก
+  note       String?                       // สรุปสั้นเกี่ยวกับลูกค้าคนนี้
+  lastSeenAt DateTime?                      // คุยล่าสุดเมื่อไหร่
+  identities CustomerIdentity[]
+  facts      CustomerFact[]
+
+  @@index([company])
+  @@index([lastSeenAt])
+}
+
+// 1 ลูกค้ามีได้หลายช่องทาง (LINE/FB/OHO/เบอร์) — map กลับมาที่คนเดียว
+model CustomerIdentity {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  platform    String                        // line | fb | oho | phone | email
+  handle      String                        // id/เบอร์/อีเมลในช่องนั้น
+  displayName String?
+
+  @@unique([platform, handle])
+  @@index([customerId])
+}
+
+// ข้อเท็จจริงรายข้อที่สะสมเรื่อย ๆ (นี่คือ "สมอง" — อัปเดตทับ + เก็บที่มา/ความมั่นใจ)
+model CustomerFact {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  key        String                         // เช่น อุปกรณ์ / ปัญหาที่เจอ / ความชอบ / แนวที่ทักมา
+  value      String
+  source     String?                        // line | fb | oho | manual
+  confidence Float    @default(0.7)
+
+  @@index([customerId, key])
+}
+
+// ===== Thunder — คลังความรู้ (FAQ/คำตอบ) + vector ผ่าน sqlite-vec =====
+model ThunderKnowledge {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  scope       String    @default("general")  // แบรนด์/บริการ เช่น easyslip | thunderBot | thunderApi
+  question    String                         // คำถาม/ทริกเกอร์ที่ลูกค้าชอบถาม
+  answer      String                         // คำตอบมาตรฐาน (หรือแนวที่แอดมินตอบ)
+  tags        String?
+  source      String?                        // มาจากแชทไหน/ใครสอน
+  useCount    Int       @default(0)          // ถูกใช้ตอบไปกี่ครั้ง
+  embedding   Bytes?                         // สำรอง (ตัวจริงอยู่ใน knowledge_vec)
+  status      String    @default("active")   // active (ใช้ตอบได้) | candidate (วานเก็บจากแชท รอตรวจ)
+  askCount    Int       @default(1)          // ลูกค้าถามเรื่องนี้มากี่ครั้ง (นับซ้ำแทนการเก็บใหม่)
+  lastAskedAt DateTime?
+
+  @@index([scope])
+  @@index([status])
+}
+
+// ===== Thunder — บทสนทนาแอดมิน↔ลูกค้า (เก็บ 90 วัน) + ผลวิเคราะห์รายแชท =====
+model ChatLog {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  convId    String                          // room id ใน OHO
+  bizDate   String                          // วันธุรกิจ "2026-07-20" (window 06:00→06:00)
+  brand     String?                         // easyslip | thunder
+  service   String?                         // easyslip | thunderBot | thunderApi (จาก classifyOho)
+  channel   String?                         // ชื่อช่องทางดิบ เช่น "THUNDER / API"
+  platform  String?                         // line | fb
+  customer  String?
+  admin     String?                         // แอดมินที่ดูแลเคสนี้
+  messages  String                          // JSON [{side:"customer"|"admin", text}]
+  msgCount  Int      @default(0)
+
+  // ---- ผลวิเคราะห์ (เติมโดย chat-analyze / Typhoon) ----
+  analyzed  Boolean  @default(false)
+  topic     String?                         // ต่ออายุ | ติดตั้ง | ปัญหาใช้งาน | สอบถามราคา | อื่นๆ
+  intent    String?                         // renew | install | issue | pricing | other
+  question  String?                         // คำถามหลักของลูกค้า (สรุปสั้น)
+  problem   String?                         // ปัญหาที่เจอ (ถ้ามี)
+  resolved  Boolean?                        // จบเคสได้ไหม
+  adminHelp String?                         // good | ok | poor (ช่วยเหลือตรงจุดไหม)
+  adminTone String?                         // good | ok | poor (สุภาพ/น้ำเสียง)
+  summary   String?                         // สรุปเคสหนึ่งบรรทัด
+
+  // ---- เนื้อหาจริง (ยกคำพูดมาแสดงในรายงาน) ----
+  customerSay String?                       // คำพูดจริงของลูกค้าที่สื่อปัญหา/ความต้องการที่สุด
+  adminSay    String?                       // คำตอบจริงของแอดมินที่เป็นสาระสำคัญที่สุด
+  sentiment   String?                       // happy | neutral | upset (อารมณ์ลูกค้า)
+  feedback    String?                       // คำแนะนำถึงทีม (Claude เขียนเฉพาะเคสที่ควรปรับ)
+  highlight   Boolean  @default(false)      // เคสเด่นที่ควรดู (คัดมาแคปหน้าจอ + ใส่ในรายงาน)
+  shotPath    String?                       // ไฟล์ภาพแคปหน้าจอแชท
+
+  @@unique([convId, bizDate])
+  @@index([bizDate, service])
+  @@index([analyzed])
+  @@index([createdAt])
 }
 
 // ===== kiki — เลขาส่วนตัวของเจ้าของ (ชีวิตส่วนตัว แยกจากงานบริษัทเด็ดขาด) =====
@@ -258,4 +455,16 @@ model FitnessLog {
   note      String?                       // เล่นอะไร กินอะไร
 
   @@index([kind, createdAt])
+}
+
+// ===== Thunder — รายงานแชทรายวัน (เก็บไว้ถามย้อนหลัง) =====
+model DailyReport {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  bizDate   String   @unique                // วันธุรกิจที่รายงานนี้ครอบคลุม
+  chatCount Int      @default(0)
+  stats     String                          // JSON สรุปตัวเลข (แยก brand/service/แอดมิน)
+  markdown  String                          // รายงานเต็ม
+  shortText String                          // ข้อความย่อสำหรับส่งกลุ่ม
+  posted    Boolean  @default(false)        // ส่งเข้ากลุ่มแล้วหรือยัง
 }

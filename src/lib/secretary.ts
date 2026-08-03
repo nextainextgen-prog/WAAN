@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { getOkrSummary } from "./data";
 import { statusLabel, formatBaht, formatThaiDate, daysUntil } from "./grants";
+import { fiscalLabel } from "./fiscal";
 import { teamRoster } from "./team";
 import { getActivityDigest } from "./activity";
 import { getLessonsContext } from "./lessons";
@@ -9,7 +10,10 @@ import { getLessonsContext } from "./lessons";
 export async function buildSecretaryContext(): Promise<string> {
   const [okr, grants, activityDigest, lessons] = await Promise.all([
     getOkrSummary(),
-    db.grant.findMany({ orderBy: { nextDeadline: "asc" } }),
+    db.grant.findMany({
+      orderBy: { nextDeadline: "asc" },
+      include: { installments: { orderBy: { seq: "asc" } } },
+    }),
     getActivityDigest(),
     getLessonsContext(),
   ]);
@@ -25,7 +29,13 @@ export async function buildSecretaryContext(): Promise<string> {
             const dl = g.nextDeadline
               ? `${formatThaiDate(g.nextDeadline)}${d !== null ? ` (อีก ${d} วัน)` : ""}`
               : "ไม่ระบุ";
-            return `${i + 1}. "${g.projectName}" | เจ้าของ: ${g.ownerName || "-"} | แหล่งทุน: ${g.source || "-"} | มูลค่า: ${formatBaht(g.amount)} | สถานะ: ${statusLabel(g.status)} | กำหนดส่ง: ${dl}${g.note ? ` | หมายเหตุ: ${g.note}` : ""}`;
+            const got = g.installments
+              .filter((x) => x.receivedAt)
+              .reduce((s, x) => s + (x.receivedAmount ?? x.amount ?? 0), 0);
+            const money = g.installments.length
+              ? `รับจริง ${formatBaht(got)} จากสัญญา ${formatBaht(g.amount)} (${g.installments.filter((x) => x.receivedAt).length}/${g.installments.length} งวด)`
+              : `สัญญา ${formatBaht(g.amount)} (ยังไม่ได้ลงงวดเงิน)`;
+            return `${i + 1}. "${g.projectName}" | เจ้าของ: ${g.ownerName || "-"} | แหล่งทุน: ${g.source || "-"} | ${money} | สถานะ: ${statusLabel(g.status)} | กำหนดส่ง: ${dl}${g.note ? ` | หมายเหตุ: ${g.note}` : ""}`;
           })
           .join("\n");
 
@@ -76,7 +86,14 @@ ${await teamRoster()}
 ${activityDigest}
 
 [โปรเจกต์ทุนวิจัย KKU — แยกต่างหาก ตอบเฉพาะเมื่อถูกถามถึงทุนวิจัย/OKR โดยตรงเท่านั้น]
-เป้า OKR ปี ${okr.year + 543}: ${formatBaht(okr.target)} · ผลจริง ${formatBaht(okr.actual)} (${okr.percent}%) · ${okr.totalGrants} ทุน${
+นิยามตัวเลข (ห้ามสลับกัน): "เงินรับจริง" = เงินที่เข้าจริงจากงวดที่ติ๊กรับแล้วเท่านั้น คือตัวเลขผลงาน OKR · "ผูกพันรอรับ" = อนุมัติแล้วแต่เงินยังไม่เข้า · "ท่อ" = ยื่นแล้วยังไม่อนุมัติ
+เป้าปีงบ ${fiscalLabel(okr.fiscalYear)}: ${formatBaht(okr.target)} (เหลืออีก ${okr.daysLeft} วัน)
+- เงินรับจริง ${formatBaht(okr.received)} (${okr.percent}% ของเป้า)
+- ผูกพันรอรับ ${formatBaht(okr.awaiting)} · สัญญารวมที่อนุมัติแล้ว ${formatBaht(okr.committed)}
+- ท่อที่ยื่นไป ${formatBaht(okr.pipeline)} · ถ่วงน้ำหนักโอกาสแล้ว ${formatBaht(okr.weightedPipeline)}
+- คาดการณ์สิ้นปีงบ ${formatBaht(okr.forecast)} (${okr.forecastPercent}%)
+- จังหวะ: ณ วันนี้ควรได้ ${formatBaht(okr.paceTarget)} → ${okr.paceDelta < 0 ? `ช้ากว่าเป้า ${formatBaht(Math.abs(okr.paceDelta))}` : `นำเป้า ${formatBaht(okr.paceDelta)}`}
+- ทุนในปีงบนี้ ${okr.totalGrants} ทุน${okr.missingInstallments.length ? ` · มี ${okr.missingInstallments.length} ทุนที่อนุมัติแล้วแต่ยังไม่ลงงวดเงิน (เงินรับจริงจึงยังนับไม่ครบ)` : ""}${okr.overdueInstallments.length ? ` · งวดเลยกำหนดรับ ${okr.overdueInstallments.length} งวด` : ""}${
     grants.length ? `\n[รายการทุน]\n${statusSummary}\n${grantLines}` : ""
   }`;
 }

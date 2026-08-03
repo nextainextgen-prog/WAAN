@@ -8,6 +8,7 @@ import { readUsage, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { executeExpiry } from "@/lib/thunder-expiry";
 import { logActivity } from "@/lib/activity";
+import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const maxDuration = 240; // automation Thunder ใช้เวลานาน
@@ -118,15 +119,30 @@ export async function POST(req: Request) {
     });
   }
 
-  // ปุ่มยืนยันปรับวันหมดอายุ Thunder (texp:ok[:expired|all]:<username> | texp:cancel)
-  const texp = dataStr.match(/^texp:(ok|cancel)(?::(expired|all))?(?::(.+))?$/);
+  // ปุ่มยืนยันปรับวันหมดอายุ Thunder (texp:ok[:expired|all|shop|restore]:<username> | texp:cancel)
+  const texp = dataStr.match(/^texp:(ok|cancel)(?::(expired|all|shop|restore))?(?::(.+))?$/);
   if (texp) {
     if (!((await isOwner(fromId)) || (await isAuthorized(fromId)))) return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
     if (texp[1] === "cancel") return NextResponse.json({ answer: "ยกเลิกแล้ว", sends: [{ kind: "text", text: "ยกเลิกการปรับวันหมดอายุแล้วค่ะ" }] });
-    const scope = texp[2] === "all" ? "all" : "expired"; // ไม่ระบุ (back-compat) = expired
+    const mode = texp[2] || "expired";
+    const scope = mode === "all" ? "all" : "expired";
     const username = (texp[3] || "").trim();
     if (!username) return NextResponse.json({ answer: "ข้อมูลไม่ครบ", sends: [] });
-    const res = await executeExpiry(username, scope);
+    let execOpts: import("@/lib/thunder-expiry").ExecuteOpts = { scope };
+    // เฟส C: โหมด shop → อ่านชื่อสาขาที่ระบุจาก pending (callback_data ใส่ชื่อไทยยาวไม่ได้)
+    if (mode === "shop") {
+      const row = await db.setting.findUnique({ where: { key: `texp_pending:${username.toLowerCase()}` } }).catch(() => null);
+      const shopName = row?.value ? (JSON.parse(row.value).shopName as string) : "";
+      if (!shopName) return NextResponse.json({ answer: "หมดเวลา", sends: [{ kind: "text", text: "ข้อมูลสาขาที่ระบุหมดอายุแล้วค่ะ ลองสั่งใหม่อีกครั้งนะคะ" }] });
+      execOpts = { shopName };
+    }
+    // เฟส D: โหมด restore → กู้คืนร้านที่ถูกลบก่อน แล้วขยายวัน (ถ้ามี pending ชื่อสาขา = กู้เฉพาะร้านนั้น)
+    if (mode === "restore") {
+      const row = await db.setting.findUnique({ where: { key: `texp_pending:${username.toLowerCase()}` } }).catch(() => null);
+      const shopName = row?.value ? (JSON.parse(row.value).shopName as string) : "";
+      execOpts = { restore: true, scope: "all", ...(shopName ? { shopName } : {}) };
+    }
+    const res = await executeExpiry(username, execOpts);
     if (!res.ok) {
       const msg =
         res.error === "no_session" || res.error === "session_expired"
@@ -138,21 +154,34 @@ export async function POST(req: Request) {
       if (res.shotLeftBase64) sends.push({ kind: "photo", dataBase64: res.shotLeftBase64, caption: "หน้าจอระบบหลังบ้าน" });
       return NextResponse.json({ answer: "ไม่สำเร็จ", sends });
     }
+    const restoredN = res.restored || 0;
+    const modeLabel = mode === "restore" ? "กู้คืน+ขยายวัน" : mode === "shop" ? "ระบุสาขา" : scope === "all" ? "ทุกสาขา" : "เฉพาะที่หมดอายุ";
     await logActivity({
       source: "thunder",
       kind: "expiry",
       customer: username,
       requestedBy: fromName || fromId || undefined,
-      outcome: `updated ${res.updated}`,
-      summary: `ปรับวันหมดอายุ Thunder ของ ${username} ${res.updated} สาขาหลัก (${scope === "all" ? "ทุกสาขา" : "เฉพาะที่หมดอายุ"}) ตามที่ ${fromName || "แอดมิน"} สั่ง`,
+      outcome: `updated ${res.updated}${restoredN ? ` restored ${restoredN}` : ""}`,
+      summary: `ปรับวันหมดอายุ Thunder ของ ${username} ${res.updated} สาขา${restoredN ? ` + กู้คืน ${restoredN} ร้าน` : ""} (${modeLabel}) ตามที่ ${fromName || "แอดมิน"} สั่ง`,
     });
     const tag = fromName ? `<a href="tg://user?id=${fromId}">${escH(fromName)}</a> ` : "";
+    const doneMsg = restoredN
+      ? `${tag}✅ กู้คืนร้านของ <b>${escH(username)}</b> ${restoredN} ร้าน${res.updated ? ` + ตั้งวันหมดอายุใหม่ ${res.updated} สาขา` : ""} เรียบร้อยแล้วค่ะ`
+      : `${tag}✅ แก้ไขวันหมดอายุของ <b>${escH(username)}</b> เรียบร้อยแล้วค่ะ (${res.updated} สาขา · ตั้งเป็นวัน/เวลาปัจจุบัน)`;
     const sends: { kind: string; text?: string; parseMode?: string; dataBase64?: string; caption?: string }[] = [
-      { kind: "text", text: `${tag}✅ แก้ไขวันหมดอายุของ <b>${escH(username)}</b> เรียบร้อยแล้วค่ะ (${res.updated} สาขาหลัก · ตั้งเป็นวัน/เวลาปัจจุบัน)`, parseMode: "HTML" },
+      { kind: "text", text: doneMsg, parseMode: "HTML" },
     ];
     if (res.shotLeftBase64) sends.push({ kind: "photo", dataBase64: res.shotLeftBase64, caption: "ยูสเซอร์/สาขาที่ปรับ" });
     if (res.shotRightBase64) sends.push({ kind: "photo", dataBase64: res.shotRightBase64, caption: "วันหมดอายุใหม่ + สถานะ" });
     return NextResponse.json({ answer: "เรียบร้อย", sends });
+  }
+
+  // ปุ่มคำขอคืนเครดิต Thunder (tref:ok|no|detail:<refundId>) — ทีมที่อนุญาตกดได้ทุกคน
+  const tref = dataStr.match(/^tref:(ok|no|detail):(\d+)$/);
+  if (tref) {
+    if (!((await isOwner(fromId)) || (await isAuthorized(fromId)))) return NextResponse.json({ answer: "ไม่ได้รับอนุญาต", sends: [] });
+    const { handleRefundButton } = await import("@/lib/refund-flow");
+    return NextResponse.json(await handleRefundButton(tref[1] as "ok" | "no" | "detail", tref[2], { id: fromId, name: fromName }));
   }
 
   // ปุ่มร่างเอกสาร (memo) — เซ็นเลย / แก้ไข

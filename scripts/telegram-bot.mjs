@@ -40,6 +40,87 @@ async function reactMsg(chatId, messageId, emoji) {
   }).catch(() => {});
 }
 
+// ===== เสียงพูดของน้องวาน =====
+// ไม่ล็อกประโยคตายตัวไว้ในโค้ด — ทุกครั้งที่จะพูด ส่ง "สถานการณ์ + ข้อเท็จจริง + บทสนทนาล่าสุดของห้องนั้น"
+// ให้สมองแต่งคำเอง (ดูออกว่ากำลังคุยเรื่องอะไร ใครทัก ควรพูดยังไง) · แต่งไม่ทัน/ล่ม → ใช้ประโยคสำรอง ไม่เงียบ
+const convoLog = {};  // chatId -> ["ชื่อ: ข้อความ"] บทสนทนาล่าสุดในห้อง (รวมข้อความที่ไม่ได้เรียกวาน — ไว้รู้บริบท)
+const spokenLog = {}; // chatId -> ประโยคที่วานเพิ่งพูด (กันพูดซ้ำคำเดิม)
+const chatMeta = {};  // chatId -> {isGroup,title}
+
+function noteConvo(chatId, who, text) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t) return;
+  const arr = convoLog[chatId] || (convoLog[chatId] = []);
+  arr.push(`${who}: ${t.slice(0, 300)}`);
+  if (arr.length > 14) arr.splice(0, arr.length - 14);
+}
+
+function noteSpoken(chatId, text) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t) return;
+  const arr = spokenLog[chatId] || (spokenLog[chatId] = []);
+  arr.push(t.slice(0, 200));
+  if (arr.length > 5) arr.splice(0, arr.length - 5);
+  noteConvo(chatId, "ฉัน", t);
+}
+
+async function voiceCall(chatId, payload, hardTimeoutMs) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), hardTimeoutMs);
+  try {
+    const meta = chatMeta[chatId] || {};
+    const r = await fetch(APP_URL + "/api/telegram/voice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({
+        isGroup: !!meta.isGroup,
+        chatTitle: meta.title || "",
+        recent: convoLog[chatId] || [],
+        avoid: spokenLog[chatId] || [],
+        ...payload,
+      }),
+      signal: ctl.signal,
+    });
+    return await r.json();
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// แต่งประโยคเดียวตามสถานการณ์ (ยังไม่ส่ง) — คืนประโยคสำรองถ้าแต่งไม่ได้
+async function line(chatId, { situation, facts, fallback, speaker, timeoutMs = 8000 }) {
+  const j = await voiceCall(chatId, { mode: "line", situation, facts, speaker, timeoutMs }, timeoutMs + 2000);
+  return (j && j.text) || fallback;
+}
+
+// แต่ง + ส่งเข้าแชทเลย (จำไว้ด้วยว่าพูดอะไรไป)
+async function say(chatId, opts, sendExtra = {}) {
+  const text = await line(chatId, opts);
+  const res = await tg("sendMessage", { chat_id: chatId, text, ...sendExtra }).catch(() => null);
+  noteSpoken(chatId, text);
+  return res;
+}
+
+// งานไม่สำเร็จ — บอกตามตรงว่าติดอะไร แล้วบอกทางไปต่อสั้น ๆ (ไม่ใช้ประโยคขอโทษสำเร็จรูปประโยคเดียวตลอด)
+async function sayFailed(chatId, job, reason, from) {
+  return line(chatId, {
+    situation: `ทำงาน "${job}" ให้ไม่สำเร็จ ต้องบอกตามตรงว่าติดอะไร สั้น ๆ ไม่ต้องแก้ตัวยาว แล้วบอกว่าจะทำยังไงต่อ`,
+    facts: [`สาเหตุที่ระบบแจ้งมา: ${reason || "ไม่ทราบสาเหตุ"}`],
+    speaker: from?.name || "",
+    fallback: `ทำ${job}ไม่สำเร็จค่ะ (${reason || "ไม่ทราบสาเหตุ"}) รบกวนลองใหม่อีกครั้งนะคะ`,
+    timeoutMs: 6000,
+  });
+}
+
+// แต่งชุดข้อความสถานะระหว่างทำงาน (บรรทัดแรก = รับเรื่อง, ที่เหลือ = ความคืบหน้า)
+async function voiceSteps(chatId, { situation, facts, fallback, speaker }) {
+  const n = (fallback || []).length || 4;
+  const j = await voiceCall(chatId, { mode: "steps", situation, facts, speaker, count: n, timeoutMs: 9000 }, 11000);
+  return Array.isArray(j?.steps) && j.steps.length >= 2 ? j.steps : fallback;
+}
+
 // วิเคราะห์ข้อความแล้วเลือกอิโมจิที่เหมาะ: 🔥 ชม/ตื่นเต้น · ✅ ยืนยัน/ตกลง · 👀 ตรวจ-ดู-ไฟล์ · 👌 รับงานทั่วไป
 function pickReaction(text, { hasFiles = false, isAff = false, isMemo = false } = {}) {
   const t = text || "";
@@ -130,14 +211,25 @@ async function doMemo(chatId, text, files, from, isGroup, msgId, mentions) {
   if (memoInFlight.has(String(chatId))) return; // กันออกเอกสารซ้ำ
   memoInFlight.add(String(chatId));
   try {
-  const status = await startStatus(chatId, [
-    "📥 โอเคค่ะ รับเรื่องออกเอกสารคืนเงินแล้ว เดี๋ยวจัดให้เลยนะคะ 🚀",
-    "📎 กำลังอ่านไฟล์แนบ...",
-    "🔍 กำลังดึงข้อมูลจากข้อความ...",
-    "🧮 กำลังตรวจความถูกต้องของตัวเลข...",
-    "📝 กำลังจัดรูปเอกสารตามแบบฟอร์ม...",
-    "⏳ ใกล้เสร็จแล้วค่ะ...",
-  ]);
+  const status = await startStatus(
+    chatId,
+    [
+      "📥 โอเคค่ะ รับเรื่องออกเอกสารคืนเงินแล้ว เดี๋ยวจัดให้เลยนะคะ 🚀",
+      "📎 กำลังอ่านไฟล์แนบ...",
+      "🔍 กำลังดึงข้อมูลจากข้อความ...",
+      "🧮 กำลังตรวจความถูกต้องของตัวเลข...",
+      "📝 กำลังจัดรูปเอกสารตามแบบฟอร์ม...",
+      "⏳ ใกล้เสร็จแล้วค่ะ...",
+    ],
+    {
+      situation: "เพิ่งรับงานออกเอกสารคืนเงินหัก ณ ที่จ่ายจากไฟล์ที่แนบมา กำลังจะลงมือทำให้",
+      facts: [
+        `ไฟล์ที่ได้มา ${files.length} ไฟล์`,
+        "ขั้นตอนจริง: อ่านไฟล์แนบ → ดึงข้อมูลจากข้อความ → ตรวจตัวเลข → จัดรูปตามแบบฟอร์ม → ส่งร่างให้ตรวจ",
+      ],
+      speaker: from?.name || "",
+    },
+  );
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-memo-"));
   const saved = [];
@@ -152,10 +244,17 @@ async function doMemo(chatId, text, files, from, isGroup, msgId, mentions) {
       body: JSON.stringify({ rawText: text, files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
     });
     data = await r.json();
-  } catch { await status.finishText("ขออภัยค่ะ ระบบหลังบ้านยังไม่พร้อม ลองใหม่อีกครั้งนะคะ"); return; }
+  } catch { await status.finishText(await sayFailed(chatId, "ออกเอกสารคืนเงิน", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
   if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-  if (!data.ok) { await status.finishText("ออกเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
-  await status.finishDone("✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ");
+  if (!data.ok) { await status.finishText(await sayFailed(chatId, "ออกเอกสารคืนเงิน", data.error || "ไม่ทราบสาเหตุ", from)); return; }
+  await status.finishDone(
+    await line(chatId, {
+      situation: "ออกร่างเอกสารคืนเงินเสร็จแล้ว กำลังจะส่งไฟล์ร่างให้ตรวจในข้อความถัดไป",
+      facts: ["เป็นร่าง ยังไม่ได้เซ็น", "ส่งไฟล์ให้ในแชทเลย"],
+      speaker: from?.name || "",
+      fallback: "✅ ออกร่างเอกสารเสร็จแล้วค่ะ ส่งให้ตรวจเลยนะคะ",
+    }),
+  );
   await sendMemoDraft(chatId, data);
   await reactMsg(chatId, msgId, "✅");
   // แท็กเจ้าของ (โด้) ให้ตรวจ+เซ็นก่อนเท่านั้น — เซ็นเสร็จบอทค่อยแท็กผู้จัดการ (พี่หนิง) ต่อ
@@ -164,11 +263,22 @@ async function doMemo(chatId, text, files, from, isGroup, msgId, mentions) {
     if (mn) {
       const extra = {};
       if (mn.entity) extra.entities = [mn.entity];
-      await tg("sendMessage", { chat_id: chatId, text: `${mn.prefix} ร่างเอกสารคืนเงินเสร็จแล้วค่ะ 👆 รบกวนตรวจแล้วกด “เซ็นเลย” ก่อนนะคะ เดี๋ยววานส่งต่อให้ผู้จัดการเซ็นต่อค่ะ`, ...extra });
+      const body = await line(chatId, {
+        situation:
+          "เพิ่งส่งไฟล์ร่างเอกสารคืนเงินเข้ากลุ่มไปเมื่อกี้ ตอนนี้กำลังบอกเจ้าของ (ที่ถูกแท็กไว้ข้างหน้าข้อความนี้แล้ว) ให้ตรวจแล้วกดปุ่ม เซ็นเลย",
+        facts: ["ไฟล์ร่างอยู่ในข้อความก่อนหน้า", "มีปุ่ม “เซ็นเลย” กับ “แก้ไข” ให้กด", "พอเซ็นเสร็จจะส่งต่อให้ผู้จัดการเซ็นต่อ"],
+        fallback: "ร่างเอกสารคืนเงินเสร็จแล้วค่ะ 👆 รบกวนตรวจแล้วกด “เซ็นเลย” ก่อนนะคะ เดี๋ยวส่งต่อให้ผู้จัดการเซ็นต่อค่ะ",
+      });
+      await tg("sendMessage", { chat_id: chatId, text: `${mn.prefix} ${body}`, ...extra });
+      noteSpoken(chatId, body);
     }
     // แจ้งเจ้าของทางแชทส่วนตัวด้วย (เผื่อไม่ได้เปิดกลุ่ม)
     if (OWNER_CHAT_ID && String(chatId) !== String(OWNER_CHAT_ID)) {
-      await tg("sendMessage", { chat_id: OWNER_CHAT_ID, text: "รายงานค่ะ ออกร่างเอกสารคืนเงินในกลุ่มเสร็จแล้ว รอพี่โด้ตรวจ+เซ็นค่ะ 👀" }).catch(() => {});
+      await say(OWNER_CHAT_ID, {
+        situation: "รายงานเจ้าของทางแชทส่วนตัวว่าเพิ่งออกร่างเอกสารคืนเงินให้ในกลุ่มเสร็จแล้ว และรอเขาตรวจกับเซ็น",
+        facts: [`กลุ่มที่ทำให้: ${chatMeta[chatId]?.title || "กลุ่มงาน"}`, "ร่างส่งเข้ากลุ่มไปแล้ว รอตรวจ+เซ็น"],
+        fallback: "รายงานค่ะ ออกร่างเอกสารคืนเงินในกลุ่มเสร็จแล้ว รอตรวจ+เซ็นค่ะ 👀",
+      }).catch(() => {});
     }
   }
   } finally {
@@ -218,13 +328,21 @@ async function doRevise(chatId, id, instruction, from, isGroup, msgId) {
   if (memoInFlight.has(String(chatId))) return;
   memoInFlight.add(String(chatId));
   try {
-    const status = await startStatus(chatId, [
-      "📝 รับเรื่องแก้เอกสารแล้วค่ะ เดี๋ยวปรับให้เลยนะคะ",
-      "🔍 กำลังอ่านคำสั่งแก้ไข...",
-      "🖼️ กำลังอ่านไฟล์แนบเดิม/วิเคราะห์...",
-      "🧮 กำลังตรวจตัวเลขและจัดรูปใหม่...",
-      "⏳ ใกล้เสร็จแล้วค่ะ...",
-    ]);
+    const status = await startStatus(
+      chatId,
+      [
+        "📝 รับเรื่องแก้เอกสารแล้วค่ะ เดี๋ยวปรับให้เลยนะคะ",
+        "🔍 กำลังอ่านคำสั่งแก้ไข...",
+        "🖼️ กำลังอ่านไฟล์แนบเดิม/วิเคราะห์...",
+        "🧮 กำลังตรวจตัวเลขและจัดรูปใหม่...",
+        "⏳ ใกล้เสร็จแล้วค่ะ...",
+      ],
+      {
+        situation: "เพิ่งถูกสั่งให้แก้เอกสารคืนเงินฉบับที่เพิ่งทำไป กำลังจะปรับตามที่บอก",
+        facts: [`สิ่งที่ให้แก้: ${String(instruction || "").slice(0, 300)}`, "แก้แล้วจะส่งร่างใหม่ให้ตรวจอีกรอบ"],
+        speaker: from?.name || "",
+      },
+    );
     let data;
     try {
       const r = await fetch(APP_URL + "/api/memo/revise", {
@@ -232,10 +350,17 @@ async function doRevise(chatId, id, instruction, from, isGroup, msgId) {
         body: JSON.stringify({ id, instruction, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
       });
       data = await r.json();
-    } catch { await status.finishText("ขออภัยค่ะ ระบบหลังบ้านยังไม่พร้อม ลองใหม่อีกครั้งนะคะ"); return; }
+    } catch { await status.finishText(await sayFailed(chatId, "แก้เอกสาร", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
     if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-    if (!data.ok) { await status.finishText("แก้เอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
-    await status.finishDone("✅ ปรับเอกสารให้แล้วค่ะ ส่งให้ตรวจอีกครั้งนะคะ");
+    if (!data.ok) { await status.finishText(await sayFailed(chatId, "แก้เอกสาร", data.error || "ไม่ทราบสาเหตุ", from)); return; }
+    await status.finishDone(
+      await line(chatId, {
+        situation: "แก้เอกสารตามที่สั่งเสร็จแล้ว กำลังจะส่งร่างใหม่ให้ตรวจอีกรอบ",
+        facts: [`สิ่งที่แก้ไป: ${String(instruction || "").slice(0, 300)}`],
+        speaker: from?.name || "",
+        fallback: "✅ ปรับเอกสารให้แล้วค่ะ ส่งให้ตรวจอีกครั้งนะคะ",
+      }),
+    );
     await sendMemoDraft(chatId, data);
     await reactMsg(chatId, msgId, "✅");
   } finally {
@@ -246,21 +371,42 @@ async function doRevise(chatId, id, instruction, from, isGroup, msgId) {
 // ตรวจเอกสาร Affiliate อัตโนมัติ: อ่าน PDF + เทียบชีต + ตรวจยอด → รายงาน + ภาพยืนยัน
 async function doAffCheck(chatId, text, files, from, isGroup, msgId, threadId, replyText) {
   if (memoInFlight.has(String(chatId))) return; // กันชนกับงานออกเอกสาร
-  const status = await startStatus(chatId, [
-    "📥 รับเรื่องตรวจเอกสาร Affiliate แล้วค่ะ เดี๋ยวตรวจให้เลยนะคะ 🔎",
-    "📎 กำลังอ่านเอกสารที่แนบ...",
-    "🗂️ กำลังเทียบกับชีตลูกค้า AFF...",
-    "🧮 กำลังตรวจยอดเงินและความถูกต้อง...",
-    "🖼️ กำลังทำภาพยืนยัน...",
-    "⏳ ใกล้เสร็จแล้วค่ะ...",
-  ]);
+  const status = await startStatus(
+    chatId,
+    [
+      "📥 รับเรื่องตรวจเอกสาร Affiliate แล้วค่ะ เดี๋ยวตรวจให้เลยนะคะ 🔎",
+      "📎 กำลังอ่านเอกสารที่แนบ...",
+      "🗂️ กำลังเทียบกับชีตลูกค้า AFF...",
+      "🧮 กำลังตรวจยอดเงินและความถูกต้อง...",
+      "🖼️ กำลังทำภาพยืนยัน...",
+      "⏳ ใกล้เสร็จแล้วค่ะ...",
+    ],
+    {
+      situation: "เพิ่งได้เอกสาร Affiliate มาให้ตรวจ กำลังจะลงมือตรวจให้",
+      facts: [
+        `ไฟล์ที่ได้มา ${files.length} ไฟล์`,
+        "ขั้นตอนจริง: อ่านเอกสาร → เทียบกับชีตลูกค้า AFF → ตรวจยอดเงิน → ทำภาพยืนยัน → สรุปผล",
+      ],
+      speaker: from?.name || "",
+    },
+  );
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-aff-"));
   const saved = [];
   for (const f of files) {
     if (!/\.pdf$/i.test(f.file_name || "")) continue;
     try { const s = await downloadFile(f.file_id, dir, f.file_name); if (s) saved.push(s); } catch { /* skip */ }
   }
-  if (saved.length === 0) { await status.finishText("ขอไฟล์เอกสาร PDF ที่จะให้ตรวจด้วยนะคะ"); return; }
+  if (saved.length === 0) {
+    await status.finishText(
+      await line(chatId, {
+        situation: "จะตรวจเอกสาร Affiliate ให้ แต่ในสิ่งที่ส่งมาไม่มีไฟล์ PDF เลย ต้องขอไฟล์ก่อน",
+        facts: ["ต้องเป็นไฟล์ PDF ถึงจะอ่านตรวจได้"],
+        speaker: from?.name || "",
+        fallback: "ขอไฟล์เอกสาร PDF ที่จะให้ตรวจด้วยนะคะ",
+      }),
+    );
+    return;
+  }
   let data;
   try {
     const r = await fetch(APP_URL + "/api/telegram/aff-check", {
@@ -268,10 +414,17 @@ async function doAffCheck(chatId, text, files, from, isGroup, msgId, threadId, r
       body: JSON.stringify({ chatId: String(chatId), fromId: String(from?.id || ""), isGroup: !!isGroup, rawText: text, files: saved, replyText: replyText || "" }),
     });
     data = await r.json();
-  } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+  } catch { await status.finishText(await sayFailed(chatId, "ตรวจเอกสาร Affiliate", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
   if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-  if (!data.ok) { await status.finishText("ตรวจเอกสารไม่สำเร็จค่ะ: " + (data.error || "")); return; }
-  await status.finishDone("✅ ตรวจเอกสารเสร็จแล้วค่ะ สรุปให้เลยนะคะ");
+  if (!data.ok) { await status.finishText(await sayFailed(chatId, "ตรวจเอกสาร Affiliate", data.error || "ไม่ทราบสาเหตุ", from)); return; }
+  await status.finishDone(
+    await line(chatId, {
+      situation: "ตรวจเอกสาร Affiliate เสร็จแล้ว กำลังจะส่งสรุปผลกับภาพยืนยันตามมา",
+      facts: [data.passed ? "ผลออกมาว่าข้อมูลถูกต้องครบ" : "ผลออกมาว่ามีจุดที่ไม่ตรง ต้องให้แอดมินดู"],
+      speaker: from?.name || "",
+      fallback: "✅ ตรวจเอกสารเสร็จแล้วค่ะ สรุปให้เลยนะคะ",
+    }),
+  );
   await sendResultSends(chatId, data.sends || [], threadId);
   await reactMsg(chatId, msgId, data.passed ? "✅" : "⚠️");
   // ตรวจเสร็จ → reply ข้อความแอดมินที่ส่งมา + แท็ก
@@ -280,13 +433,23 @@ async function doAffCheck(chatId, text, files, from, isGroup, msgId, threadId, r
   {
     const tagPerson = data.passed ? data.tagTarget : from;
     const mn = buildMention(tagPerson);
-    const base = data.passed
-      ? "✅ ตรวจเอกสารเรียบร้อย ข้อมูลถูกต้องครบถ้วน ใช้ดำเนินการต่อได้เลยค่ะ"
-      : "⚠️ ตรวจเอกสารแล้ว พบข้อมูลบางจุดไม่ตรง รบกวนตรวจสอบและแก้ไขอีกครั้งนะคะ (ดูจุดที่มี ❌ ในสรุปด้านบน)";
+    const base = await line(chatId, {
+      situation: data.passed
+        ? "ตรวจเอกสาร Affiliate แล้วผ่าน กำลังบอกคนที่รับช่วงต่อ (ถูกแท็กไว้หน้าข้อความนี้แล้ว) ว่าใช้ข้อมูลนี้ทำงานต่อได้เลย"
+        : "ตรวจเอกสาร Affiliate แล้วมีจุดไม่ตรง กำลังบอกแอดมินคนที่ส่งเอกสารมา (ถูกแท็กไว้หน้าข้อความนี้แล้ว) ให้กลับไปตรวจแก้",
+      facts: data.passed
+        ? ["สรุปผลการตรวจอยู่ในข้อความด้านบน", "ข้อมูลถูกต้องครบถ้วน"]
+        : ["จุดที่ไม่ตรงติดเครื่องหมาย ❌ ไว้ในสรุปด้านบน", "ให้แก้แล้วส่งกลับมาตรวจใหม่ได้"],
+      speaker: tagPerson?.name || "",
+      fallback: data.passed
+        ? "✅ ตรวจเอกสารเรียบร้อย ข้อมูลถูกต้องครบถ้วน ใช้ดำเนินการต่อได้เลยค่ะ"
+        : "⚠️ ตรวจเอกสารแล้ว พบข้อมูลบางจุดไม่ตรง รบกวนตรวจสอบและแก้ไขอีกครั้งนะคะ (ดูจุดที่มี ❌ ในสรุปด้านบน)",
+    });
     const extra = { ...sendOpts(threadId), reply_to_message_id: msgId };
     let outText = base;
     if (mn) { outText = `${mn.prefix} ${base}`; if (mn.entity) extra.entities = [mn.entity]; }
     await tg("sendMessage", { chat_id: chatId, text: outText, ...extra }).catch(() => {});
+    noteSpoken(chatId, base);
   }
 }
 
@@ -304,7 +467,14 @@ async function doAffMake(chatId, notiText, from, isGroup, msgId, threadId, editI
   if (!data.ok || data.skip) return; // ไม่ใช่กลุ่ม aff / อ่าน noti ไม่ได้ → เงียบ
 
   // สถานะ: กำลังจัดทำ (แจ้งสั้น ๆ ในกลุ่ม แล้วลบทีหลัง)
-  const wip = await tg("sendMessage", { chat_id: chatId, text: "🧾 กำลังจัดทำใบสำคัญรับเงินให้อัตโนมัติค่ะ...", ...sendOpts(threadId) }).catch(() => null);
+  const wipText = await line(chatId, {
+    situation:
+      "บอทระบบเพิ่งแจ้งรายการถอนเงิน Affiliate ที่รออนุมัติเข้ามาในห้อง เรากำลังลงมือจัดทำใบสำคัญรับเงินให้เองโดยไม่ต้องมีใครสั่ง — บอกในห้องสั้น ๆ ว่ากำลังทำอยู่",
+    facts: ["ทำเสร็จจะส่งเอกสารกับสรุปให้ในห้องนี้", editInstruction ? `รอบนี้เป็นการแก้ตามที่สั่ง: ${String(editInstruction).slice(0, 200)}` : "ทำให้อัตโนมัติจากข้อมูลในแจ้งเตือน"],
+    fallback: "🧾 กำลังจัดทำใบสำคัญรับเงินให้อัตโนมัติค่ะ...",
+    timeoutMs: 6000,
+  });
+  const wip = await tg("sendMessage", { chat_id: chatId, text: wipText, ...sendOpts(threadId) }).catch(() => null);
   await sendResultSends(chatId, data.sends || [], threadId);
   if (wip?.result?.message_id) await tg("deleteMessage", { chat_id: chatId, message_id: wip.result.message_id }).catch(() => {});
 
@@ -313,9 +483,19 @@ async function doAffMake(chatId, notiText, from, isGroup, msgId, threadId, editI
   // สรุป (แบบ Image#42) + แท็กเจ้าของ + ปุ่ม อนุมัติ/แก้ไข (เฉพาะเคสที่ทำเอกสารได้)
   if ((data.status === "ok" || data.status === "amount_mismatch") && data.summaryCaption) {
     const mn = buildMention(data.tagTarget);
-    const head = data.allOk
-      ? "✅ จัดทำและตรวจเอกสารเรียบร้อย พร้อมอนุมัติค่ะ"
-      : "⚠️ จัดทำเอกสารแล้ว แต่มีจุดที่ต้องตรวจ (ดูรายงานด้านบน) ค่ะ";
+    const head = await line(chatId, {
+      situation: data.allOk
+        ? "จัดทำใบสำคัญรับเงิน Affiliate เองเสร็จ ตรวจแล้วผ่านหมด กำลังส่งให้คนที่ดูแล (แท็กไว้แล้ว) กดอนุมัติ"
+        : "จัดทำใบสำคัญรับเงิน Affiliate เองเสร็จ แต่ตรวจแล้วมีจุดที่ต้องดูก่อน กำลังส่งให้คนที่ดูแล (แท็กไว้แล้ว) ตรวจ",
+      facts: [
+        "มีปุ่ม “อนุมัติ” กับ “แก้ไข” ให้กดใต้ข้อความนี้",
+        "สรุปรายละเอียดเอกสารอยู่ต่อจากข้อความนี้",
+        ...(data.allOk ? [] : ["จุดที่ต้องดูอยู่ในรายงานด้านบน"]),
+      ],
+      fallback: data.allOk
+        ? "✅ จัดทำและตรวจเอกสารเรียบร้อย พร้อมอนุมัติค่ะ"
+        : "⚠️ จัดทำเอกสารแล้ว แต่มีจุดที่ต้องตรวจ (ดูรายงานด้านบน) ค่ะ",
+    });
     const extra = { ...sendOpts(threadId), reply_markup: keyboardFromButtons([{ text: "อนุมัติ ✅", data: "aff:ok" }, { text: "แก้ไข", data: "aff:edit" }]) };
     let text = `${head}\n\n${data.summaryCaption}`;
     if (mn) { text = `${mn.prefix}\n${text}`; if (mn.entity) extra.entities = [mn.entity]; }
@@ -339,14 +519,26 @@ async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId, menti
   if (memoInFlight.has(String(chatId))) return;
   memoInFlight.add(String(chatId));
   try {
-    const status = await startStatus(chatId, [
-      "📥 รับเรื่องทำสไลด์จากไฟล์แล้วค่ะ เดี๋ยวจัดให้เลยนะคะ 🚀",
-      "📎 กำลังอ่านเนื้อหาในไฟล์...",
-      "🔍 กำลังสรุปประเด็นและตัวเลขจากเอกสาร...",
-      "📊 กำลังจัดสไลด์และกราฟ...",
-      "🖼️ กำลังตกแต่งให้สวยและมืออาชีพ...",
-      "⏳ ใกล้เสร็จแล้วค่ะ...",
-    ]);
+    const status = await startStatus(
+      chatId,
+      [
+        "📥 รับเรื่องทำสไลด์จากไฟล์แล้วค่ะ เดี๋ยวจัดให้เลยนะคะ 🚀",
+        "📎 กำลังอ่านเนื้อหาในไฟล์...",
+        "🔍 กำลังสรุปประเด็นและตัวเลขจากเอกสาร...",
+        "📊 กำลังจัดสไลด์และกราฟ...",
+        "🖼️ กำลังตกแต่งให้สวยและมืออาชีพ...",
+        "⏳ ใกล้เสร็จแล้วค่ะ...",
+      ],
+      {
+        situation: "เพิ่งถูกสั่งให้ทำสไลด์จากไฟล์ที่แนบมา กำลังจะลงมือทำ",
+        facts: [
+          `โจทย์ที่สั่ง: ${String(text || "ทำสไลด์จากเอกสาร").slice(0, 200)}`,
+          `ไฟล์ที่ได้มา ${files.length} ไฟล์`,
+          "ขั้นตอนจริง: อ่านเนื้อหาไฟล์ → สรุปประเด็นและตัวเลข → จัดสไลด์และกราฟ → ตกแต่ง → ส่งพรีวิวทุกหน้ากับไฟล์",
+        ],
+        speaker: from?.name || "",
+      },
+    );
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-slide-"));
     const saved = [];
     for (const f of files) {
@@ -359,10 +551,17 @@ async function doSlideFromFiles(chatId, text, files, from, isGroup, msgId, menti
         body: JSON.stringify({ topic: text || "ทำสไลด์จากเอกสาร", files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
       });
       data = await r.json();
-    } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    } catch { await status.finishText(await sayFailed(chatId, "ทำสไลด์จากไฟล์", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
     if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-    if (!data.ok) { await status.finishText("ทำสไลด์จากไฟล์ไม่สำเร็จค่ะ: " + (data.error || "")); return; }
-    await status.finishDone(`✅ ทำสไลด์ "${data.title}" (${data.slideCount} สไลด์) จากไฟล์ให้แล้วค่ะ ส่งพรีวิวทีละหน้า แล้วปิดท้ายด้วยไฟล์ให้เลยนะคะ`);
+    if (!data.ok) { await status.finishText(await sayFailed(chatId, "ทำสไลด์จากไฟล์", data.error || "ไม่ทราบสาเหตุ", from)); return; }
+    await status.finishDone(
+      await line(chatId, {
+        situation: "ทำสไลด์จากไฟล์เสร็จแล้ว กำลังจะทยอยส่งพรีวิวทีละหน้าแล้วปิดท้ายด้วยไฟล์",
+        facts: [`ชื่อเด็ค: ${data.title}`, `จำนวน ${data.slideCount} สไลด์`, "ส่งพรีวิวทุกหน้า แล้วตามด้วยไฟล์ PDF กับ HTML"],
+        speaker: from?.name || "",
+        fallback: `✅ ทำสไลด์ "${data.title}" (${data.slideCount} สไลด์) จากไฟล์ให้แล้วค่ะ ส่งพรีวิวทีละหน้า แล้วปิดท้ายด้วยไฟล์ให้เลยนะคะ`,
+      }),
+    );
     registerDeckMsgs(chatId, data.id, await sendResultSends(chatId, buildDeckSends(data)));
     await reactMsg(chatId, msgId, "✅");
     await notifyDelivery(chatId, isGroup, from, text, mentions, `สไลด์ "${data.title}"`);
@@ -391,12 +590,24 @@ async function doKnowledgeSave(chatId, text, files, from, isGroup, msgId, thread
   if (memoInFlight.has(String(chatId))) return;
   memoInFlight.add(String(chatId));
   try {
-    const status = await startStatus(chatId, [
-      "📥 รับเรื่องเก็บเข้าคลังความรู้แล้วค่ะ 🚀",
-      "📎 กำลังอ่านเนื้อหาไฟล์/ลิงก์...",
-      "🧠 กำลังสรุปและจัดโครงสร้างเป็นโน้ต...",
-      "🗂️ กำลังบันทึกลงคลังความรู้ (Obsidian)...",
-    ]);
+    const status = await startStatus(
+      chatId,
+      [
+        "📥 รับเรื่องเก็บเข้าคลังความรู้แล้วค่ะ 🚀",
+        "📎 กำลังอ่านเนื้อหาไฟล์/ลิงก์...",
+        "🧠 กำลังสรุปและจัดโครงสร้างเป็นโน้ต...",
+        "🗂️ กำลังบันทึกลงคลังความรู้ (Obsidian)...",
+      ],
+      {
+        situation: "เพิ่งได้ไฟล์หรือลิงก์มาให้เก็บเข้าคลังความรู้ กำลังจะอ่านแล้วจัดเป็นโน้ตเก็บไว้",
+        facts: [
+          `สิ่งที่สั่งมา: ${String(text || "").slice(0, 200)}`,
+          `ไฟล์ที่ได้มา ${(files || []).length} ไฟล์`,
+          "ขั้นตอนจริง: อ่านเนื้อหา → สรุปจัดโครงสร้างเป็นโน้ต → บันทึกลงคลังความรู้",
+        ],
+        speaker: from?.name || "",
+      },
+    );
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-know-"));
     const saved = [];
     for (const f of files || []) {
@@ -409,11 +620,14 @@ async function doKnowledgeSave(chatId, text, files, from, isGroup, msgId, thread
         body: JSON.stringify({ text: text || "", files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
       });
       data = await r.json();
-    } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    } catch { await status.finishText(await sayFailed(chatId, "เก็บเข้าคลังความรู้", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
     if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
     status.stop();
     if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {});
-    await sendResultSends(chatId, data.sends || [{ kind: "text", text: "เก็บเข้าคลังให้แล้วค่ะ" }], threadId || "");
+    const savedSends = (data.sends || []).length
+      ? data.sends
+      : [{ kind: "text", text: await line(chatId, { situation: "เก็บของที่ให้มาเข้าคลังความรู้เรียบร้อยแล้ว บอกสั้น ๆ ว่าเก็บให้แล้ว ค้นเจอทีหลังได้", fallback: "เก็บเข้าคลังให้แล้วค่ะ", speaker: from?.name || "" }) }];
+    await sendResultSends(chatId, savedSends, threadId || "");
     await reactMsg(chatId, msgId, "✅");
   } finally {
     memoInFlight.delete(String(chatId));
@@ -430,9 +644,25 @@ async function doKnowledgeFetch(chatId, query, from, isGroup, msgId, threadId) {
       body: JSON.stringify({ mode: "find", query, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
     });
     data = await r.json();
-  } catch { await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ" }); return; }
+  } catch {
+    const t = await sayFailed(chatId, "ค้นไฟล์ในคลังความรู้", "ต่อระบบหลังบ้านไม่ได้", from);
+    await tg("sendMessage", { chat_id: chatId, text: t, ...sendOpts(threadId || "") });
+    noteSpoken(chatId, t);
+    return;
+  }
   if (data.error === "unauthorized") return;
-  await sendResultSends(chatId, data.sends || [{ kind: "text", text: "ไม่เจอไฟล์ในคลังค่ะ" }], threadId || "");
+  const foundSends = (data.sends || []).length
+    ? data.sends
+    : [{
+        kind: "text",
+        text: await line(chatId, {
+          situation: "ค้นในคลังความรู้ตามที่ขอแล้วแต่ไม่เจอไฟล์ที่ตรง — บอกตามตรงว่าไม่เจอ แล้วเสนอทางต่อ เช่น ให้บอกชื่อ/คำใกล้เคียงเพิ่ม หรือส่งไฟล์มาเก็บไว้ก่อน",
+          facts: [`สิ่งที่ขอมา: ${String(query || "").slice(0, 200)}`],
+          speaker: from?.name || "",
+          fallback: "ไม่เจอไฟล์ในคลังค่ะ",
+        }),
+      }];
+  await sendResultSends(chatId, foundSends, threadId || "");
   await reactMsg(chatId, msgId, "✅");
 }
 
@@ -441,13 +671,25 @@ async function doSlideRevise(chatId, deckId, instruction, addFiles, from, isGrou
   if (memoInFlight.has(String(chatId))) return;
   memoInFlight.add(String(chatId));
   try {
-    const status = await startStatus(chatId, [
-      "📥 รับเรื่องแก้สไลด์แล้วค่ะ เดี๋ยวจัดให้นะคะ ✏️",
-      "🔎 กำลังทบทวนเด็คเดิม + ข้อมูลที่เพิ่ม...",
-      "📊 กำลังปรับสไลด์และกราฟ...",
-      "🖼️ กำลังเรนเดอร์หน้าใหม่...",
-      "⏳ ใกล้เสร็จแล้วค่ะ...",
-    ]);
+    const status = await startStatus(
+      chatId,
+      [
+        "📥 รับเรื่องแก้สไลด์แล้วค่ะ เดี๋ยวจัดให้นะคะ ✏️",
+        "🔎 กำลังทบทวนเด็คเดิม + ข้อมูลที่เพิ่ม...",
+        "📊 กำลังปรับสไลด์และกราฟ...",
+        "🖼️ กำลังเรนเดอร์หน้าใหม่...",
+        "⏳ ใกล้เสร็จแล้วค่ะ...",
+      ],
+      {
+        situation: "เพิ่งถูกสั่งให้แก้/ต่อยอดสไลด์ชุดที่ทำไปก่อนหน้า กำลังจะปรับให้",
+        facts: [
+          `สิ่งที่ให้แก้: ${String(instruction || "").slice(0, 250)}`,
+          `${(addFiles || []).length ? `มีไฟล์ข้อมูลเพิ่มมา ${(addFiles || []).length} ไฟล์` : "ไม่มีไฟล์เพิ่ม ใช้ข้อมูลเดิมของเด็ค"}`,
+          "ขั้นตอนจริง: ทบทวนเด็คเดิม → ปรับสไลด์และกราฟ → เรนเดอร์หน้าใหม่ → ส่งพรีวิวกับไฟล์",
+        ],
+        speaker: from?.name || "",
+      },
+    );
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-slide-"));
     const saved = [];
     for (const f of addFiles || []) {
@@ -460,10 +702,17 @@ async function doSlideRevise(chatId, deckId, instruction, addFiles, from, isGrou
         body: JSON.stringify({ instruction: instruction || "", files: saved, fromId: String(from?.id || ""), chatId: String(chatId), isGroup: !!isGroup }),
       });
       data = await r.json();
-    } catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    } catch { await status.finishText(await sayFailed(chatId, "แก้สไลด์", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
     if (data.error === "unauthorized") { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-    if (!data.ok) { await status.finishText("แก้สไลด์ไม่สำเร็จค่ะ: " + (data.error || "")); return; }
-    await status.finishDone(`✅ แก้สไลด์ "${data.title}" ให้แล้วค่ะ (${data.slideCount} สไลด์) ส่งพรีวิวใหม่ทีละหน้า แล้วปิดท้ายด้วยไฟล์นะคะ`);
+    if (!data.ok) { await status.finishText(await sayFailed(chatId, "แก้สไลด์", data.error || "ไม่ทราบสาเหตุ", from)); return; }
+    await status.finishDone(
+      await line(chatId, {
+        situation: "แก้สไลด์ตามที่สั่งเสร็จแล้ว กำลังจะส่งพรีวิวใหม่ทีละหน้าแล้วปิดท้ายด้วยไฟล์",
+        facts: [`ชื่อเด็ค: ${data.title}`, `ตอนนี้มี ${data.slideCount} สไลด์`, `สิ่งที่แก้ไป: ${String(instruction || "").slice(0, 200)}`],
+        speaker: from?.name || "",
+        fallback: `✅ แก้สไลด์ "${data.title}" ให้แล้วค่ะ (${data.slideCount} สไลด์) ส่งพรีวิวใหม่ทีละหน้า แล้วปิดท้ายด้วยไฟล์นะคะ`,
+      }),
+    );
     registerDeckMsgs(chatId, data.id, await sendResultSends(chatId, buildDeckSends(data)));
     await reactMsg(chatId, msgId, "✅");
     await notifyDelivery(chatId, isGroup, from, instruction || "แก้สไลด์", mentions, `แก้สไลด์ "${data.title}"`);
@@ -475,11 +724,19 @@ async function doSlideRevise(chatId, deckId, instruction, addFiles, from, isGrou
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ===== สถานะสด: วิเคราะห์แป๊บ (พิมพ์อยู่ 2-3 วิ) → ตอบรับ → อัปเดตว่ายังทำอยู่ =====
-async function startStatus(chatId, steps) {
+// steps = ชุดสำรอง · voice = {situation, facts, speaker} → ให้แต่งข้อความสถานะสดแทน (ทำระหว่าง "คิด" 2-3 วิ)
+async function startStatus(chatId, steps, voice) {
   // ทำเหมือนกำลังอ่าน/คิดก่อน 2-3 วิ แล้วค่อยตอบรับ (ไม่รีบตอบทันที)
   await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
-  await sleep(2200 + Math.floor(Math.random() * 800));
+  const think = sleep(2200 + Math.floor(Math.random() * 800));
+  if (voice) {
+    // รอคำที่แต่งสดไม่เกิน 4.5 วิ (ทับกับเวลาคิดอยู่แล้ว) ไม่ทันก็ใช้ชุดสำรอง — ห้ามให้คนรอนาน
+    const got = await Promise.race([voiceSteps(chatId, { ...voice, fallback: steps }), sleep(4500).then(() => null)]);
+    if (Array.isArray(got) && got.length >= 2) steps = got;
+  }
+  await think;
   const m = await tg("sendMessage", { chat_id: chatId, text: steps[0] });
+  noteSpoken(chatId, steps[0]);
   const msgId = m.result?.message_id;
   const t0 = Date.now();
   let i = 0;
@@ -492,8 +749,8 @@ async function startStatus(chatId, steps) {
   }, 6000);
   return {
     msgId,
-    async finishText(text) { clearInterval(timer); if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text }).catch(() => {}); },
-    async finishDone(text) { clearInterval(timer); if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text: text || "เรียบร้อยค่ะ" }).catch(() => {}); },
+    async finishText(text) { clearInterval(timer); noteSpoken(chatId, text); if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text }).catch(() => {}); },
+    async finishDone(text) { clearInterval(timer); noteSpoken(chatId, text || "เรียบร้อยค่ะ"); if (msgId) await tg("editMessageText", { chat_id: chatId, message_id: msgId, text: text || "เรียบร้อยค่ะ" }).catch(() => {}); },
     stop() { clearInterval(timer); },
   };
 }
@@ -623,16 +880,34 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
 
   // งานสไลด์ = ใช้เวลานาน → แสดงสถานะเต็ม
   if (isSlide) {
-    const status = await startStatus(chatId, [
-      "📥 โอเคค่ะ รับเรื่องทำสไลด์แล้ว เดี๋ยวจัดให้เลยนะคะ 🚀",
-      "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
-    ]);
+    const status = await startStatus(
+      chatId,
+      [
+        "📥 โอเคค่ะ รับเรื่องทำสไลด์แล้ว เดี๋ยวจัดให้เลยนะคะ 🚀",
+        "🔎 กำลังดึงข้อมูลจริง...", "📊 กำลังจัดสไลด์และกราฟ...", "🖼️ กำลังตกแต่งให้สวย...", "⏳ ใกล้เสร็จแล้วค่ะ...",
+      ],
+      {
+        situation: "เพิ่งถูกสั่งให้ทำสไลด์ กำลังจะไปดึงข้อมูลจริงมาทำให้",
+        facts: [
+          `โจทย์ที่สั่ง: ${String(text || "").slice(0, 250)}`,
+          "ขั้นตอนจริง: ดึงข้อมูลจริง → จัดสไลด์และกราฟ → ตกแต่ง → ส่งพรีวิวกับไฟล์ให้",
+        ],
+        speaker: from?.name || "",
+      },
+    );
     let data;
     try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle, addressed); }
-    catch { await status.finishText("ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ"); return; }
+    catch { await status.finishText(await sayFailed(chatId, "ทำสไลด์", "ต่อระบบหลังบ้านไม่ได้", from)); return; }
     const sends = data.sends || [];
     if (sends.length === 0) { status.stop(); if (status.msgId) await tg("deleteMessage", { chat_id: chatId, message_id: status.msgId }).catch(() => {}); return; }
-    await status.finishDone("✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ");
+    await status.finishDone(
+      await line(chatId, {
+        situation: "ทำสไลด์เสร็จแล้ว กำลังจะส่งพรีวิวกับไฟล์ให้ในข้อความถัดไป",
+        facts: [`โจทย์ที่สั่ง: ${String(text || "").slice(0, 200)}`],
+        speaker: from?.name || "",
+        fallback: "✅ ทำสไลด์เสร็จแล้วค่ะ ส่งให้เลยนะคะ",
+      }),
+    );
     const dref = sends.map((s) => s.caption || "").join(" ").match(/#deck:([a-f0-9]{8})/);
     const sentIds = await sendResultSends(chatId, sends, threadId);
     if (dref) registerDeckMsgs(chatId, dref[1], sentIds);
@@ -646,7 +921,14 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   const typingTimer = setInterval(() => tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {}), 4000);
   let softId = null;
   const softTimer = setTimeout(async () => {
-    const m = await tg("sendMessage", { chat_id: chatId, text: "🔎 กำลังหาข้อมูลให้อยู่แป๊บนะคะ...", ...sendOpts(threadId) }).catch(() => null);
+    const t = await line(chatId, {
+      situation: `กำลังหาคำตอบให้อยู่แต่ใช้เวลานานกว่าปกติ (เกิน 7 วินาที) — บอกสั้น ๆ ว่ายังหาอยู่ ให้รอแป๊บ ให้ตรงกับเรื่องที่เขาเพิ่งถาม`,
+      facts: [`สิ่งที่เขาถามมา: ${String(text || "").slice(0, 250)}`],
+      speaker: from?.name || "",
+      fallback: "🔎 กำลังหาข้อมูลให้อยู่แป๊บนะคะ...",
+      timeoutMs: 6000,
+    });
+    const m = await tg("sendMessage", { chat_id: chatId, text: t, ...sendOpts(threadId) }).catch(() => null);
     softId = m?.result?.message_id || null;
   }, 7000);
 
@@ -654,9 +936,10 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
   try { data = await postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imagePaths, threadId, chatTitle, addressed); }
   catch {
     clearInterval(typingTimer); clearTimeout(softTimer);
-    const t = "ระบบหลังบ้านยังไม่พร้อมค่ะ ลองใหม่อีกครั้งนะคะ";
+    const t = await sayFailed(chatId, "หาคำตอบให้", "ต่อระบบหลังบ้านไม่ได้", from);
     if (softId) await tg("editMessageText", { chat_id: chatId, message_id: softId, text: t }).catch(() => {});
-    else await tg("sendMessage", { chat_id: chatId, text: t });
+    else await tg("sendMessage", { chat_id: chatId, text: t, ...sendOpts(threadId) });
+    noteSpoken(chatId, t);
     return;
   }
   clearInterval(typingTimer); clearTimeout(softTimer);
@@ -695,10 +978,13 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
         Object.assign(extra, pm);
       }
       await tg("sendMessage", { chat_id: chatId, text: outText, ...extra });
+      noteSpoken(chatId, body);
     } else if (softId) {
       await tg("editMessageText", { chat_id: chatId, message_id: softId, text: texts[0].text, ...pm, ...kbExtra }).catch(() => {});
+      noteSpoken(chatId, texts[0].text);
     } else {
       await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...sendOpts(threadId, { ...pm, ...kbExtra }) });
+      noteSpoken(chatId, texts[0].text);
     }
     return;
   }
@@ -745,16 +1031,30 @@ async function notifyDelivery(chatId, isGroup, from, text, mentions, label, forc
       findRosterRecipient(text, from?.id);
     if (isGroup && recip) {
       const mn = buildMention(recip);
-      const body = `นี่${label}ที่ฝากให้ส่งค่ะ ไฟล์อยู่ด้านบนเลยนะคะ`;
+      const body = await line(chatId, {
+        situation:
+          `ทำ${label}เสร็จและส่งไฟล์เข้าห้องไปแล้ว ตอนนี้กำลังส่งต่อให้คนที่เจ้าของสั่งให้ส่งถึง (ถูกแท็กไว้หน้าข้อความนี้แล้ว) — บอกสั้น ๆ ว่านี่คือของที่ฝากมาให้`,
+        facts: [`งานที่ทำ: ${label}`, "ไฟล์อยู่ในข้อความก่อนหน้า", `คนที่สั่งให้ส่ง: ${from?.name || "ในห้อง"}`],
+        speaker: recip.name || recip.username || "",
+        fallback: `นี่${label}ที่ฝากให้ส่งค่ะ ไฟล์อยู่ด้านบนเลยนะคะ`,
+      });
       const extra = {};
       let outText = body;
       if (mn) { outText = `${mn.prefix} ${body}`; if (mn.entity) extra.entities = [mn.entity]; }
       await tg("sendMessage", { chat_id: chatId, text: outText, ...extra });
+      noteSpoken(chatId, body);
     }
     // แจ้งเจ้าของทางแชทส่วนตัว (เฉพาะงานที่ทำในกลุ่ม)
     if (isGroup && OWNER_CHAT_ID && String(chatId) !== String(OWNER_CHAT_ID)) {
-      const to = recip ? ` และส่งให้ ${recip.name || recip.username || "ทีม"} แล้ว` : "";
-      await tg("sendMessage", { chat_id: OWNER_CHAT_ID, text: `รายงานค่ะ ทำ${label}ในกลุ่มเสร็จเรียบร้อยแล้ว${to}ค่ะ 👀` });
+      await say(OWNER_CHAT_ID, {
+        situation: "รายงานเจ้าของทางแชทส่วนตัวว่าเพิ่งทำงานในกลุ่มเสร็จไปชิ้นหนึ่ง",
+        facts: [
+          `งานที่ทำ: ${label}`,
+          `ห้องที่ทำ: ${chatMeta[chatId]?.title || "กลุ่มงาน"}`,
+          recip ? `ส่งต่อให้ ${recip.name || recip.username || "ทีม"} เรียบร้อย` : "ส่งไว้ในห้องแล้ว ไม่ได้ระบุคนรับ",
+        ],
+        fallback: `รายงานค่ะ ทำ${label}ในกลุ่มเสร็จเรียบร้อยแล้ว${recip ? ` และส่งให้ ${recip.name || recip.username || "ทีม"} แล้ว` : ""}ค่ะ 👀`,
+      });
     }
   } catch { /* แจ้งเตือนพลาดไม่เป็นไร ไม่ให้กระทบงานหลัก */ }
 }
@@ -785,6 +1085,7 @@ async function processBatch(chatId, msgs) {
   const threadId = msgs[0]?.message_thread_id ? String(msgs[0].message_thread_id) : "";
   const chatTitle = msgs[0]?.chat?.title || "";
   const from = personOf(msgs[0]?.from);
+  chatMeta[chatId] = { isGroup, title: chatTitle };
 
   // แชทส่วนตัว: ใช้ได้เฉพาะเจ้าของ (โด้) เท่านั้น — คนอื่น DM มา บอทไม่ตอบ (แจ้งปฏิเสธครั้งเดียว)
   // fail-open ถ้ายังโหลด OWNER_CHAT_ID ไม่ได้ กันล็อกเจ้าของออกเอง
@@ -803,6 +1104,8 @@ async function processBatch(chatId, msgs) {
   const triggerMsgId = msgs[msgs.length - 1]?.message_id;
   let text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
   const files = msgs.map(extractFile).filter(Boolean);
+  // จำบทสนทนาในห้อง (ทุกข้อความ แม้ไม่ได้เรียกวาน) — ไว้ให้รู้ว่าตอนนี้กำลังคุยเรื่องอะไรก่อนจะพูด
+  noteConvo(chatId, from?.name || "สมาชิก", text || (files.length ? `(ส่งไฟล์ ${files.map((f) => f.file_name).join(", ")})` : ""));
   // ถ้า reply ไปที่ข้อความที่มีไฟล์ (เช่น reply PDF เก่าแล้วสั่งทำสไลด์) → ดึงไฟล์นั้นมาด้วยเสมอ
   // ไม่ต้องพึ่งบัฟเฟอร์เวลา ทำให้ "reply ไฟล์ไหน = อ่านไฟล์นั้น" ได้แม้ไฟล์ส่งมานานแล้ว
   const replyFile = replyMsg ? extractFile(replyMsg) : null;
@@ -925,7 +1228,19 @@ async function processBatch(chatId, msgs) {
     const bufferedNow = (recentFiles[chatId] || []).filter((f) => !seenNow.has(f.file_id) && seenNow.add(f.file_id));
     if (triggered && text.length < 2 && bufferedNow.length === 0) {
       armedUntil[chatId] = now + 90000;
-      await tg("sendMessage", { chat_id: chatId, text: "ค่ะ ว่ามาได้เลยค่ะ 👀 พิมพ์ แนบไฟล์ หรือฟอร์เวิร์ดข้อความมาได้เลยนะคะ" });
+      await say(
+        chatId,
+        {
+          situation:
+            "มีคนเรียกชื่อเราหรือแท็กเราในห้องเฉย ๆ ยังไม่ได้บอกว่าจะให้ทำอะไร และไม่ได้แนบไฟล์มาด้วย " +
+            "ให้ตอบรับสั้น ๆ ว่ากำลังฟังอยู่ ถ้าดูจากบทสนทนาล่าสุดแล้วพอเดาได้ว่าน่าจะให้ช่วยเรื่องอะไร " +
+            "ให้ทักไปเลยว่าเรื่องนั้นใช่ไหม (เช่น เรื่องที่ค้างอยู่ก่อนหน้า) ถ้าเดาไม่ออกค่อยถามกว้าง ๆ ว่าให้ช่วยอะไร",
+          facts: ["รับได้ทั้งข้อความที่พิมพ์ ไฟล์ที่แนบ และข้อความที่ฟอร์เวิร์ดมา"],
+          speaker: from?.name || "",
+          fallback: "ค่ะ ว่ามาได้เลยค่ะ 👀 พิมพ์ แนบไฟล์ หรือฟอร์เวิร์ดข้อความมาได้เลยนะคะ",
+        },
+        sendOpts(threadId, { reply_to_message_id: triggerMsgId }),
+      );
       return;
     }
     if (!text) text = "สวัสดี";
@@ -986,7 +1301,18 @@ async function processBatch(chatId, msgs) {
     affPending[chatId] = now + BUFFER_TTL;
     armedUntil[chatId] = now + BUFFER_TTL;
     await reactMsg(chatId, triggerMsgId, "👀");
-    await tg("sendMessage", { chat_id: chatId, text: "รับเรื่องตรวจเอกสาร AFF ค่ะ ส่งไฟล์เอกสาร (PDF) + รายละเอียดของรายการมาได้เลยนะคะ" });
+    await say(
+      chatId,
+      {
+        situation:
+          "มีคนสั่งให้ตรวจเอกสาร Affiliate แต่ยังไม่ได้แนบไฟล์มา — รับเรื่องไว้ก่อนแล้วขอไฟล์กับรายละเอียดของรายการ " +
+          "ถ้าในบทสนทนามีบอกยูสเซอร์/ยอด/ชื่อร้านไว้แล้ว ให้พูดถึงเคสนั้นด้วยจะได้รู้ว่าเข้าใจตรงกัน",
+        facts: ["ต้องใช้ไฟล์เอกสารเป็น PDF", "ขอรายละเอียดของรายการที่จะให้ตรวจมาด้วย", "รอไฟล์ได้ 3 นาที"],
+        speaker: from?.name || "",
+        fallback: "รับเรื่องตรวจเอกสาร AFF ค่ะ ส่งไฟล์เอกสาร (PDF) + รายละเอียดของรายการมาได้เลยนะคะ",
+      },
+      sendOpts(threadId, { reply_to_message_id: triggerMsgId }),
+    );
     return;
   }
 
@@ -1021,7 +1347,18 @@ async function processBatch(chatId, msgs) {
     knowledgePending[chatId] = now + BUFFER_TTL;
     armedUntil[chatId] = now + BUFFER_TTL;
     await reactMsg(chatId, triggerMsgId, "👀");
-    await tg("sendMessage", { chat_id: chatId, text: "รับเรื่องเก็บเข้าคลังความรู้ค่ะ ส่งไฟล์ (PDF/Word/รูป/ข้อความ) หรือวางลิงก์มาได้เลยนะคะ" });
+    await say(
+      chatId,
+      {
+        situation:
+          "มีคนสั่งให้เก็บของเข้าคลังความรู้ แต่ยังไม่มีไฟล์หรือลิงก์มาด้วย — รับเรื่องไว้แล้วขอตัวเนื้อหาที่จะเก็บ " +
+          "ถ้าบทสนทนาบอกใบ้ว่าจะเก็บเรื่องอะไร ให้พูดถึงเรื่องนั้นด้วย",
+        facts: ["รับได้ทั้งไฟล์ PDF / Word / รูป / ข้อความ หรือวางลิงก์มาก็ได้", "รอไฟล์ได้ 3 นาที"],
+        speaker: from?.name || "",
+        fallback: "รับเรื่องเก็บเข้าคลังความรู้ค่ะ ส่งไฟล์ (PDF/Word/รูป/ข้อความ) หรือวางลิงก์มาได้เลยนะคะ",
+      },
+      sendOpts(threadId, { reply_to_message_id: triggerMsgId }),
+    );
     return;
   }
 
@@ -1095,6 +1432,11 @@ async function handleMessage(msg) {
 async function handleCallback(cb) {
   const chatId = cb.message?.chat?.id;
   if (!chatId) return;
+  // เผื่อบอทเพิ่งรีสตาร์ทแล้วมีคนกดปุ่มเก่า — ให้รู้ว่าห้องนี้เป็นกลุ่มหรือแชทส่วนตัวก่อนจะพูด
+  if (!chatMeta[chatId]) {
+    const ct = cb.message?.chat?.type || "group";
+    chatMeta[chatId] = { isGroup: ct === "group" || ct === "supergroup", title: cb.message?.chat?.title || "" };
+  }
   // กดปุ่มเลือก "หน้าที่กลุ่ม" (gfunc:<id>[:<targetChatId>]) — เจ้าของเท่านั้น
   const gf = String(cb.data || "").match(/^gfunc:[a-z_]+/);
   if (gf) {
@@ -1200,7 +1542,15 @@ async function handleCallback(cb) {
         editingAff[chatId] = { notiText: d.notiText, notiMsgId: d.notiMsgId, threadId: d.threadId, until: Date.now() + EDIT_TTL };
         armedUntil[chatId] = Date.now() + EDIT_TTL;
       }
-      await tg("sendMessage", { chat_id: chatId, text: "รับทราบค่ะ อยากให้แก้ตรงไหน พิมพ์บอกได้เลยนะคะ\n(เช่น \"วันที่ 7/07/69\" · \"ยอด 1420\" · \"ธนาคาร: กสิกรไทย เลขบัญชี: 1234567890\" · \"ที่อยู่ บ้านเลขที่ 12 หมู่ 3 ต.X อ.Y จ.Z\")", ...sendOpts(thr), reply_to_message_id: cb.message.message_id }).catch(() => {});
+      const askText =
+        (await line(chatId, {
+          situation: "มีคนกดปุ่ม “แก้ไข” ใบสำคัญรับเงินที่เพิ่งทำไป — ถามสั้น ๆ ว่าอยากให้แก้ตรงไหน ให้พิมพ์บอกมาได้เลย",
+          facts: ["แก้ได้ทีละจุด พิมพ์บอกเป็นข้อความธรรมดาได้เลย", "แก้เสร็จจะทำเอกสารใหม่ให้ตรวจอีกรอบ"],
+          speaker: [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || "",
+          fallback: "รับทราบค่ะ อยากให้แก้ตรงไหน พิมพ์บอกได้เลยนะคะ",
+        })) + "\n(เช่น \"วันที่ 7/07/69\" · \"ยอด 1420\" · \"ธนาคาร: กสิกรไทย เลขบัญชี: 1234567890\" · \"ที่อยู่ บ้านเลขที่ 12 หมู่ 3 ต.X อ.Y จ.Z\")";
+      await tg("sendMessage", { chat_id: chatId, text: askText, ...sendOpts(thr), reply_to_message_id: cb.message.message_id }).catch(() => {});
+      noteSpoken(chatId, askText);
       return;
     }
     // อนุมัติ: Reply เข้าข้อความ noti บอทระบบ + แนบไฟล์ + สรุป (ชุด reply เดียว) แล้ว "อนุมัติแล้วค่ะ✅ + แท็ก"
@@ -1214,12 +1564,29 @@ async function handleCallback(cb) {
       await fetch(API("sendDocument"), { method: "POST", body: form }).catch(() => {});
       const mn = buildMention(d.tag);
       const extra = { ...sendOpts(d.threadId), reply_to_message_id: Number(d.notiMsgId) };
-      let text = "อนุมัติแล้วค่ะ✅";
-      if (mn) { text = `${mn.prefix} ${text}`; if (mn.entity) extra.entities = [{ ...mn.entity, offset: 0 }]; }
+      const body = await line(d.chatId, {
+        situation:
+          "เจ้าของกดอนุมัติใบสำคัญรับเงินแล้ว เพิ่งแนบไฟล์ตัวจริงตอบกลับเข้าไปที่แจ้งเตือนของรายการนี้ — บอกคนที่รับช่วงต่อ (แท็กไว้หน้าข้อความนี้แล้ว) ว่าอนุมัติแล้ว เอาไปใช้ต่อได้",
+        facts: ["ไฟล์เอกสารแนบไปในข้อความก่อนหน้าแล้ว", "ผ่านการตรวจและอนุมัติเรียบร้อย"],
+        speaker: d.tag?.name || "",
+        fallback: "อนุมัติแล้วค่ะ✅",
+      });
+      let text = body;
+      if (mn) { text = `${mn.prefix} ${body}`; if (mn.entity) extra.entities = [{ ...mn.entity, offset: 0 }]; }
       await tg("sendMessage", { chat_id: d.chatId, text, ...extra }).catch(() => {});
+      noteSpoken(d.chatId, body);
       delete affDrafts[cb.message.message_id];
     } else {
-      await tg("sendMessage", { chat_id: chatId, text: "✅ อนุมัติแล้วค่ะ เอกสารพร้อมนำไปใช้ได้เลย", ...sendOpts(thr), reply_to_message_id: cb.message.message_id }).catch(() => {});
+      await say(
+        chatId,
+        {
+          situation: "มีคนกดปุ่มอนุมัติเอกสารที่ทำไว้ — ตอบรับสั้น ๆ ว่าอนุมัติแล้ว เอาไปใช้ได้เลย",
+          facts: ["เอกสารผ่านการอนุมัติแล้ว"],
+          speaker: [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || "",
+          fallback: "✅ อนุมัติแล้วค่ะ เอกสารพร้อมนำไปใช้ได้เลย",
+        },
+        { ...sendOpts(thr), reply_to_message_id: cb.message.message_id },
+      );
     }
     return;
   }

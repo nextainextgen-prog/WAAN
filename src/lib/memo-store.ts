@@ -90,6 +90,7 @@ export async function reviseMemo(
     date: rec.data.date,
     docNo: rec.data.docNo,
     editInstruction: instruction,
+    prev: rec.data, // คงผู้ลงนาม/วันที่ที่เคยสั่งแก้ไว้ ไม่ให้เด้งกลับค่าเริ่มต้นทุกครั้งที่แก้เรื่องอื่น
   });
   await ensureDir();
   const next: MemoRecord = { ...rec, data: { ...res.data, signed: false }, signed: false, rawText: rec.rawText };

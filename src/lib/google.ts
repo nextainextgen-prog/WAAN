@@ -27,3 +27,19 @@ export async function downloadDriveFile(fileId: string): Promise<Buffer> {
   );
   return Buffer.from(res.data as ArrayBuffer);
 }
+
+/**
+ * โหลด "Google Sheet ตัวจริง" (mimeType = application/vnd.google-apps.spreadsheet) มาเป็น .xlsx
+ *
+ * ทำไมต้องแยกจาก downloadDriveFile: ไฟล์ Google Docs/Sheets ไม่มีไบต์ให้ดาวน์โหลดตรง ๆ
+ * เรียก alt=media กับมันจะได้ 403 fileNotDownloadable — ต้อง export ออกมาเป็นฟอร์แมตอื่นเท่านั้น
+ * (ต่างจากชีต AFF ที่เป็นไฟล์ .xlsx อัปโหลดไว้ ใช้ alt=media ได้ปกติ)
+ */
+export async function exportDriveSheet(fileId: string): Promise<Buffer> {
+  const drive = google.drive({ version: "v3", auth: getOAuthClient() });
+  const res = await drive.files.export(
+    { fileId, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    { responseType: "arraybuffer" },
+  );
+  return Buffer.from(res.data as ArrayBuffer);
+}

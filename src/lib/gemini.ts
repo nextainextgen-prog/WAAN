@@ -11,6 +11,10 @@ export interface GeminiOptions {
   system?: string;
   timeoutMs?: number;
   model?: string;
+  // โหมดเร็ว: ปิด "thinking" ของ 2.5-flash (ตอบใน ~1 วิ แทน ~3-4 วิ) — ใช้กับข้อความสั้นในแชทที่ต้องตอบทันที
+  fast?: boolean;
+  maxOutputTokens?: number;
+  temperature?: number;
 }
 
 function geminiCliBinary(): string | null {
@@ -40,6 +44,11 @@ async function askGeminiApi(prompt: string, opts: GeminiOptions): Promise<string
     if (opts.system) {
       body.systemInstruction = { parts: [{ text: opts.system }] };
     }
+    const genCfg: Record<string, unknown> = {};
+    if (opts.fast) genCfg.thinkingConfig = { thinkingBudget: 0 };
+    if (opts.maxOutputTokens) genCfg.maxOutputTokens = opts.maxOutputTokens;
+    if (opts.temperature !== undefined) genCfg.temperature = opts.temperature;
+    if (Object.keys(genCfg).length) body.generationConfig = genCfg;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

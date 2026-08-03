@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 import { downloadDriveFile } from "./google";
-import { writeAiNote } from "./obsidian";
+import { writeAiNote, aiHubFooter } from "./obsidian";
 
 export interface AffRecord {
   idCard: string;      // เลขบัตรประชาชน / เลขผู้เสียภาษี
@@ -97,6 +97,6 @@ export async function cacheAffToObsidian(): Promise<number> {
         `| ${r.username} | ${r.firstName} ${r.lastName} | ${r.idCard} | ${r.bank} | ${r.account} | ${r.address} |`,
     ),
   ];
-  await writeAiNote("aff-customers.md", lines.join("\n"));
+  await writeAiNote("aff-customers.md", lines.join("\n") + aiHubFooter());
   return all.length;
 }

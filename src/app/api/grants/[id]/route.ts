@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
+import { logGrantEvent, statusChangeDetail } from "@/lib/grant-events";
 
 export async function PATCH(
   req: Request,
@@ -22,8 +23,30 @@ export async function PATCH(
   if (body.note !== undefined) data.note = body.note?.trim() || null;
   if (body.nextDeadline !== undefined)
     data.nextDeadline = body.nextDeadline ? new Date(body.nextDeadline) : null;
+  if (body.fiscalYear !== undefined)
+    data.fiscalYear = body.fiscalYear ? Number(body.fiscalYear) : null;
+  if (body.probability !== undefined)
+    data.probability = body.probability === null || body.probability === "" ? null : Number(body.probability);
+  if (body.startDate !== undefined)
+    data.startDate = body.startDate ? new Date(body.startDate) : null;
+  if (body.endDate !== undefined) data.endDate = body.endDate ? new Date(body.endDate) : null;
+
+  // อ่านสถานะเดิมก่อนอัปเดต เพื่อบันทึกประวัติเฉพาะตอนที่ขยับจริง
+  const before =
+    data.status !== undefined
+      ? await db.grant.findUnique({ where: { id }, select: { status: true } })
+      : null;
 
   const grant = await db.grant.update({ where: { id }, data });
+
+  if (before && before.status !== grant.status) {
+    await logGrantEvent(id, "status", statusChangeDetail(before.status, grant.status), {
+      fromStatus: before.status,
+      toStatus: grant.status,
+      actor: user.name,
+    });
+  }
+
   return NextResponse.json({ grant });
 }
 

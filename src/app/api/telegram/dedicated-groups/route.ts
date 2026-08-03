@@ -8,6 +8,12 @@ export const runtime = "nodejs";
 // ไม่ต้องขึ้นต้นด้วย "วาน"/แท็กบอท
 export async function POST(req: Request) {
   if (!isServiceRequest(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const groups = await listGroupsWithFunc("thunder_expiry");
+  // ทุก func ที่เป็น "กลุ่มหน้าที่เดียว" ต้องอยู่ในนี้ ไม่งั้นวานจะเงียบถ้าไม่ถูกแท็ก
+  const lists = await Promise.all([
+    listGroupsWithFunc("thunder_expiry"),
+    listGroupsWithFunc("thunder_refund"),
+    listGroupsWithFunc("tax_invoice"),
+  ]);
+  const groups = [...new Set(lists.flat())];
   return NextResponse.json({ groups });
 }

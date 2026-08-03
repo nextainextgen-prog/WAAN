@@ -26,12 +26,14 @@ export interface ExpiryRow {
   currentExpiry: string;
   status: string;
   expired: boolean;
+  deleted?: boolean; // ร้านถูกลบ (สถานะ Badge = "delete" + มีปุ่มกู้คืน)
 }
 export interface PreviewResult {
   ok: boolean;
   error?: "no_session" | "session_expired" | "not_found" | "no_main_branch" | string;
   username: string;
   mainRows: ExpiryRow[];
+  deletedRows?: ExpiryRow[]; // สาขาของ username ที่ถูกลบ (ให้กู้คืนก่อนขยายวัน) เฟส D
   expiredCount: number;
   otherCount: number;
   // รูปครอป 2 ฝั่งของแถวเป้าหมาย (ซ้าย=ยูสเซอร์/สาขา, ขวา=วันหมดอายุ/สถานะ) ตีกรอบแดง
@@ -43,6 +45,7 @@ export interface ExecuteResult {
   ok: boolean;
   error?: "no_session" | "session_expired" | "not_found" | "no_main_branch" | "expiry_col_not_found" | "no_row_updated" | string;
   updated: number;
+  restored?: number; // เฟส D: จำนวนร้านที่กู้คืน
   updatedRows: { shopName: string; serviceId: string; oldExpiry: string }[];
   otherCount: number;
   shotLeftBase64?: string;
@@ -51,11 +54,18 @@ export interface ExecuteResult {
 
 // สกัด username จากข้อความแอดมิน เช่น "preechapanit101 ปรับวันหมดอายุให้หน่อย"
 export function extractUsername(text: string): string | null {
-  const cleaned = String(text || "").replace(/@\S+/g, " ");
+  const cleaned = String(text || "").replace(/@\S+/g, " ").replace(/ชื่อสาขา.*$/, " "); // ตัดส่วน "ชื่อสาขา ..." ออกก่อนหา username
   const tokens = cleaned.match(/[A-Za-z0-9][A-Za-z0-9._-]{2,}/g) || [];
   const stop = /^(ปรับ|ขยาย|วัน|หมดอายุ|หน่อย|ครับ|ค่ะ|ให้|ตัว)$/i;
   const cand = tokens.find((t) => !stop.test(t) && /[A-Za-z]/.test(t));
   return cand || null;
+}
+
+// สกัด "ชื่อสาขา" ที่แอดมินระบุ เช่น "dark ปรับวันหมดอายุ ชื่อสาขา ห้องซื้อเทพี" → "ห้องซื้อเทพี"
+export function extractShopName(text: string): string | null {
+  const m = String(text || "").match(/(?:ชื่อสาขา|ชื่อร้าน(?:ค้า)?|สาขาชื่อ|ร้านชื่อ)\s*[:：]?\s*(.+?)\s*(?:@\S+\s*)*$/);
+  const name = (m?.[1] || "").trim();
+  return name.length >= 1 ? name : null;
 }
 
 function launch() {
@@ -107,7 +117,34 @@ async function openAndSearch(username: string) {
     await waitResults();
     await page.waitForTimeout(1200);
   }
+  // ตั้งจำนวนแถวต่อหน้า = 100 → เห็นทุกรายการในหน้าเดียว (แก้ปัญหาสาขาหลักอยู่หน้า 2/3 แล้วอ่านไม่เจอ)
+  await setPageSize(page, 100);
   return { browser, page, error: undefined };
+}
+
+// ตั้งจำนวนแถวต่อหน้า (Mantine Select: 5/10/25/50/100) → ครอบทุกรายการในหน้าเดียว ไม่ต้องไล่หน้า
+async function setPageSize(page: Page, size: number) {
+  try {
+    const total = await page.evaluate(() => {
+      const m = document.body.innerText.match(/มีข้อมูล\s*([\d,]+)\s*รายการ/);
+      return m ? Number(m[1].replace(/,/g, "")) : 0;
+    });
+    const shown = await page.locator("table tbody tr").count().catch(() => 0);
+    if (total <= shown || total === 0) return; // อยู่หน้าเดียวอยู่แล้ว ไม่ต้องทำอะไร
+    const sel = page.locator("input[class*=Select-input][readonly]").last();
+    if ((await sel.count().catch(() => 0)) === 0) return;
+    await sel.click().catch(() => {});
+    await page.waitForTimeout(600);
+    // เลือกตัวเลือกที่ใหญ่สุดที่ >= total (ไม่เกิน 100) เพื่อให้ครบในหน้าเดียว
+    const want = total > 50 ? "100" : total > 25 ? "50" : total > 10 ? "25" : "10";
+    const opt = page.locator("[role=option],[class*=Select-option]").filter({ hasText: new RegExp(`^${want}$`) }).first();
+    await opt.click({ timeout: 3000 }).catch(() => {});
+    // รอให้ตารางเรนเดอร์แถวครบตามจำนวน (สูงสุด 8 วิ)
+    await page
+      .waitForFunction((exp) => document.querySelectorAll("table tbody tr").length >= Math.min(exp, 100), Math.min(total, Number(want)), { timeout: 8000, polling: 400 })
+      .catch(() => {});
+    await page.waitForTimeout(800);
+  } catch { /* ตั้งไม่ได้ก็ใช้หน้าแรกไปก่อน */ }
 }
 
 // header → index (Username / ประเภทสาขา / วันที่บอทหมดอายุ)
@@ -121,29 +158,112 @@ async function columnIndexes(page: Page) {
   });
 }
 
-async function readRows(page: Page, username: string, cols: { user: number; branch: number; expiry: number; shop: number; id: number; status: number }) {
+// อ่านแถวเป้าหมายของ username
+//  - ไม่ระบุ shopName → เป้าหมาย = สาขาหลัก (พฤติกรรมเดิม)
+//  - ระบุ shopName → เป้าหมาย = แถวที่ชื่อร้านค้าตรง/ใกล้เคียง (ไม่จำกัดสาขาหลัก) เฟส C
+async function readRows(
+  page: Page,
+  username: string,
+  cols: { user: number; branch: number; expiry: number; shop: number; id: number; status: number },
+  opts: { shopName?: string } = {},
+) {
   return page.evaluate(
-    ({ uname, c }) => {
+    ({ uname, c, shopFilter }) => {
       const clean = (s: string | null) => (s || "").replace(/\s+/g, " ").trim();
+      const norm = (s: string) => clean(s).toLowerCase().replace(/\s+/g, "");
       const rows = [...document.querySelectorAll("table tbody tr")];
       const main: ExpiryRow[] = [];
+      const deleted: ExpiryRow[] = [];
       let other = 0;
+      const wantShop = shopFilter ? norm(shopFilter) : "";
       for (const r of rows) {
         const cells = [...r.querySelectorAll("td")].map((td) => clean(td.textContent));
         const u = c.user >= 0 ? cells[c.user] : "";
         const branch = c.branch >= 0 ? cells[c.branch] : "";
+        const shopName = c.shop >= 0 ? cells[c.shop] : "";
         if (u.toLowerCase() !== uname.toLowerCase()) { other++; continue; }
-        if (!/สาขาหลัก/.test(branch)) { other++; continue; }
         const currentExpiry = c.expiry >= 0 ? cells[c.expiry] : "";
         const status = c.status >= 0 ? cells[c.status] : "";
-        // หมดอายุ = คอลัมน์สถานะขึ้น "หมดอายุ" หรือช่องวันหมดอายุมี "(หมดอายุแล้ว)" (= ตัวแดง) อย่างใดอย่างหนึ่ง
+        // ร้านถูกลบ = สถานะ Badge = "delete" (มีปุ่มกู้คืน svg reload ในช่องสถานะ)
+        const isDeleted = /(^|\b)delete(\b|$)|ถูกลบ|กู้คืน/i.test(status);
         const expired = /หมดอายุ/.test(status) || /หมดอายุแล้ว/.test(currentExpiry);
-        main.push({ serviceId: c.id >= 0 ? cells[c.id] : "", username: u, shopName: c.shop >= 0 ? cells[c.shop] : "", branchType: branch, currentExpiry, status, expired });
+        const row: ExpiryRow = { serviceId: c.id >= 0 ? cells[c.id] : "", username: u, shopName, branchType: branch, currentExpiry, status, expired, deleted: isDeleted };
+        // ระบุชื่อสาขา → เทียบชื่อร้าน · ไม่ระบุ → สาขาหลัก (เฉพาะแถวปกติ)
+        const shopMatch = norm(shopName).includes(wantShop) || wantShop.includes(norm(shopName));
+        if (isDeleted) {
+          // ร้านถูกลบ: ถ้าระบุชื่อสาขา ต้องตรงชื่อด้วย (เลือกเฉพาะร้านที่ต้องการ) ไม่งั้นเก็บทุกร้านถูกลบ
+          if (!wantShop || shopMatch) deleted.push(row);
+          else other++;
+          continue;
+        }
+        const match = wantShop ? shopMatch : /สาขาหลัก/.test(branch);
+        if (!match) { other++; continue; }
+        main.push(row);
       }
-      return { mainRows: main, otherCount: other };
+      return { mainRows: main, deletedRows: deleted, otherCount: other };
     },
-    { uname: username, c: cols },
-  ) as Promise<{ mainRows: ExpiryRow[]; otherCount: number }>;
+    { uname: username, c: cols, shopFilter: opts.shopName || "" },
+  ) as Promise<{ mainRows: ExpiryRow[]; deletedRows: ExpiryRow[]; otherCount: number }>;
+}
+
+// กู้คืนร้านที่ถูกลบ: หาแถวด้วย serviceId → คลิกไอคอน reload ในช่องสถานะ → กด "ยืนยัน" ใน dialog "กู้คืนร้านค้า"
+async function restoreShopByServiceId(page: Page, serviceId: string, cols: { id: number; status: number }): Promise<boolean> {
+  const rowCount = await page.locator("table tbody tr").count().catch(() => 0);
+  let target: Locator | null = null;
+  for (let i = 0; i < rowCount; i++) {
+    const row = page.locator("table tbody tr").nth(i);
+    const id = (await row.locator("td").nth(cols.id).textContent().catch(() => ""))?.trim() || "";
+    if (id === serviceId) { target = row; break; }
+  }
+  if (!target || cols.status < 0) return false;
+  const statusCell = target.locator("td").nth(cols.status);
+  await statusCell.scrollIntoViewIfNeeded().catch(() => {});
+  // ไอคอนกู้คืน = svg (icon-tabler-reload) หรือปุ่มในช่องสถานะ
+  const restoreBtn = statusCell.locator("svg, button, [class*=reload]").first();
+  await restoreBtn.click({ timeout: 4000 }).catch(() => {});
+  await page.waitForTimeout(900);
+  const dlg = page.locator("[class*=Modal],[role=dialog]").filter({ hasText: /กู้คืนร้านค้า/ }).first();
+  if ((await dlg.count().catch(() => 0)) === 0) return false;
+  await dlg.getByRole("button", { name: /^ยืนยัน$/ }).first().click({ timeout: 4000 }).catch(() => {});
+  await page.waitForTimeout(2500); // รอ save + ตารางรีเฟรช
+  return true;
+}
+
+// แก้วันหมดอายุของแถวที่ระบุด้วย serviceId (หา td ที่มี id ตรง → กดดินสอ → ตั้งวัน/เวลา → บันทึก)
+// หาแถวใหม่ทุกครั้งด้วย serviceId → ทน table re-sort/re-render หลัง save (แก้ปัญหาหลายสาขาหลัก เฟส B)
+async function editRowByServiceId(
+  page: Page,
+  serviceId: string,
+  cols: { expiry: number; id: number },
+  now: Date,
+  hh: string,
+  mm: string,
+): Promise<boolean> {
+  const rowCount = await page.locator("table tbody tr").count().catch(() => 0);
+  let target: import("playwright").Locator | null = null;
+  for (let i = 0; i < rowCount; i++) {
+    const row = page.locator("table tbody tr").nth(i);
+    const id = (await row.locator("td").nth(cols.id).textContent().catch(() => ""))?.trim() || "";
+    if (id === serviceId) { target = row; break; }
+  }
+  if (!target) return false;
+  const cell = target.locator("td").nth(cols.expiry);
+  await cell.scrollIntoViewIfNeeded().catch(() => {});
+  await cell.locator("button").first().click({ timeout: 4000 }).catch(() => {});
+  await page.waitForTimeout(1000);
+  const dlg = page.locator("[class*=Modal],[role=dialog]").filter({ hasText: /แก้ไขวันหมดอายุ/ }).first();
+  if ((await dlg.count().catch(() => 0)) === 0) return false;
+  const dateOk = await pickToday(page, dlg, now);
+  if (!dateOk) {
+    await dlg.getByRole("button", { name: /^ยกเลิก$/ }).first().click({ timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    return false;
+  }
+  await setTime(dlg, hh, mm);
+  await page.waitForTimeout(300);
+  await dlg.getByRole("button", { name: /บันทึกข้อมูล/ }).first().click({ timeout: 4000 }).catch(() => {});
+  await page.waitForTimeout(2500);
+  return true;
 }
 
 // หา index ของแถวสาขาหลัก (username ตรง) ในตาราง — คืน index ของ tbody tr เพื่อใช้ตีกรอบ/แคป/แก้ไข
@@ -250,24 +370,29 @@ async function shotRowsTwoParts(page: Page, rowIdxs: number[]): Promise<{ left?:
 }
 
 // ===== เฟส 1: พรีวิว (ค้นหา + อ่าน + แคปช่องวันหมดอายุปัจจุบัน ให้ยืนยัน) =====
-export async function previewExpiry(username: string): Promise<PreviewResult> {
+// opts.shopName → เป้าหมายเป็นแถวที่ชื่อร้านตรง (เฟส C) แทนสาขาหลัก
+export async function previewExpiry(username: string, opts: { shopName?: string } = {}): Promise<PreviewResult> {
   if (!thunderSessionReady()) return { ok: false, error: "no_session", username, mainRows: [], expiredCount: 0, otherCount: 0 };
   const { browser, page, error } = await openAndSearch(username);
   if (error) return { ok: false, error, username, mainRows: [], expiredCount: 0, otherCount: 0 };
   try {
     const cols = await columnIndexes(page);
-    const { mainRows, otherCount } = await readRows(page, username, cols);
-    if (!mainRows.length) {
-      // แยก "session หมด" ออกจาก "ไม่พบจริง": ถ้า header ไม่มีชื่อบัญชีที่ล็อกอิน = token หมด (SPA เรนเดอร์ shell ได้แต่ดึงข้อมูลไม่ได้ → คืน 0 ทุก user)
+    const { mainRows, deletedRows, otherCount } = await readRows(page, username, cols, { shopName: opts.shopName });
+    // ไม่มีทั้งเป้าหมายปกติและร้านถูกลบ → not_found/no_main_branch/shop_not_found
+    if (!mainRows.length && !deletedRows.length) {
+      // แยก "session หมด" ออกจาก "ไม่พบจริง": ถ้า header ไม่มีชื่อบัญชีที่ล็อกอิน = token หมด
       const authed = await page.evaluate(() => /easycarwash|nining|ออกจากระบบ|logout|โปรไฟล์/i.test(document.body.innerText) && !!document.querySelector("table thead"));
       if (!authed) return { ok: false, error: "session_expired", username, mainRows: [], expiredCount: 0, otherCount: 0 };
       const shot = await page.screenshot({ type: "png" }).catch(() => null);
-      return { ok: false, error: otherCount ? "no_main_branch" : "not_found", username, mainRows: [], expiredCount: 0, otherCount, shotLeftBase64: shot?.toString("base64") };
+      const err = opts.shopName ? "shop_not_found" : otherCount ? "no_main_branch" : "not_found";
+      return { ok: false, error: err, username, mainRows: [], expiredCount: 0, otherCount, shotLeftBase64: shot?.toString("base64") };
     }
-    const rowIdxs = await findMainRowIdxs(page, username, cols);
-    const { left, right } = await shotRowsTwoParts(page, rowIdxs);
+    // แคปทั้งแถวเป้าหมายปกติ + ร้านที่ถูกลบ (ให้แอดมินเห็นทั้งหมด)
+    const allIds = [...mainRows, ...deletedRows].map((r) => r.serviceId);
+    const rowIdxs = await findRowIdxsByServiceIds(page, allIds, cols.id);
+    const { left, right } = await shotRowsTwoParts(page, rowIdxs.length ? rowIdxs : await findMainRowIdxs(page, username, cols));
     const expiredCount = mainRows.filter((r) => r.expired).length;
-    return { ok: true, username, mainRows, expiredCount, otherCount, shotLeftBase64: left, shotRightBase64: right };
+    return { ok: true, username, mainRows, deletedRows, expiredCount, otherCount, shotLeftBase64: left, shotRightBase64: right };
   } finally {
     await browser.close();
   }
@@ -324,66 +449,82 @@ async function setTime(dlg: Locator, hh: string, mm: string) {
   await minF.pressSequentially(mm, { delay: 90 }).catch(() => {});
 }
 
+export interface ExecuteOpts {
+  scope?: ExpiryScope; // expired (ดีฟอลต์) = เฉพาะที่หมดอายุ | all = ทุกแถวเป้าหมาย
+  shopName?: string; // ระบุชื่อสาขา → เป้าหมาย = แถวที่ชื่อร้านตรง (เฟส C)
+  serviceIds?: string[]; // ระบุ serviceId ตรงๆ → ปรับเฉพาะแถวเหล่านี้ (จาก pending ที่พรีวิวไว้)
+  restore?: boolean; // เฟส D: กู้คืนร้านที่ถูกลบก่อน แล้วขยายวัน
+}
+
 // ===== เฟส 2: ลงมือ (ตั้งวัน/เวลาปัจจุบัน + บันทึก) =====
-// scope="expired" (ดีฟอลต์): ปรับเฉพาะแถวสาขาหลักที่ "หมดอายุ" | scope="all": ปรับทุกแถวสาขาหลัก
-export async function executeExpiry(username: string, scope: ExpiryScope = "expired"): Promise<ExecuteResult> {
+// รับ string เดิม (scope) เพื่อ back-compat หรือ options object
+export async function executeExpiry(username: string, opts: ExpiryScope | ExecuteOpts = "expired"): Promise<ExecuteResult> {
+  const o: ExecuteOpts = typeof opts === "string" ? { scope: opts } : opts;
+  const scope: ExpiryScope = o.scope || "expired";
   if (!thunderSessionReady()) return { ok: false, error: "no_session", updated: 0, updatedRows: [], otherCount: 0 };
   const { browser, page, error } = await openAndSearch(username);
   if (error) return { ok: false, error, updated: 0, updatedRows: [], otherCount: 0 };
   try {
     const cols = await columnIndexes(page);
     if (cols.expiry < 0) return { ok: false, error: "expiry_col_not_found", updated: 0, updatedRows: [], otherCount: 0 };
-    // อ่านก่อนว่ามีสาขาหลัก username ตรงเป๊ะไหม (แยก not_found / no_main_branch) + เก็บ oldExpiry/shop
-    const { mainRows, otherCount } = await readRows(page, username, cols);
-    if (!mainRows.length) return { ok: false, error: otherCount ? "no_main_branch" : "not_found", updated: 0, updatedRows: [], otherCount };
+    // อ่านแถวเป้าหมาย (สาขาหลัก หรือ ชื่อสาขาที่ระบุ) + ร้านที่ถูกลบ
+    let { mainRows, deletedRows, otherCount } = await readRows(page, username, cols, { shopName: o.shopName });
+
+    // เฟส D: กู้คืนร้านที่ถูกลบก่อน แล้วอ่านตารางใหม่ (ร้านที่กู้กลับมาจะ active + เข้าเงื่อนไขเป้าหมาย)
+    let restored = 0;
+    if (o.restore && deletedRows.length && cols.status >= 0) {
+      const toRestore = o.serviceIds?.length ? deletedRows.filter((r) => o.serviceIds!.includes(r.serviceId)) : deletedRows;
+      for (const d of toRestore) {
+        if (!d.serviceId) continue;
+        if (await restoreShopByServiceId(page, d.serviceId, cols)) restored++;
+        await page.waitForTimeout(600);
+      }
+      // อ่านตารางใหม่หลังกู้คืน (สถานะเปลี่ยนแล้ว)
+      if (restored) ({ mainRows, deletedRows, otherCount } = await readRows(page, username, cols, { shopName: o.shopName }));
+    }
+
+    if (!mainRows.length) {
+      // ถ้ากู้คืนสำเร็จแต่แถวยังไม่โผล่เป็นเป้าหมาย ก็ยังถือว่าสำเร็จบางส่วน (กู้แล้ว)
+      if (restored) return { ok: true, updated: 0, restored, updatedRows: [], otherCount } as ExecuteResult;
+      return { ok: false, error: otherCount ? "no_main_branch" : "not_found", updated: 0, updatedRows: [], otherCount };
+    }
+
+    // เลือกแถวที่จะปรับจริง
+    let targets = mainRows;
+    if (o.serviceIds?.length) targets = mainRows.filter((r) => o.serviceIds!.includes(r.serviceId));
+    else if (scope === "expired" && !o.shopName && !o.restore) targets = mainRows.filter((r) => r.expired); // ระบุชื่อสาขา/กู้คืน = ปรับตัวนั้นเสมอ
+    if (!targets.length) return { ok: restored > 0, error: restored ? undefined : "no_row_updated", updated: 0, restored, updatedRows: [], otherCount } as ExecuteResult;
+
     const now = new Date();
     const hh = String(now.getHours()).padStart(2, "0");
     const mm = String(now.getMinutes()).padStart(2, "0");
-    let updated = 0;
-    const updatedRowIdxs: number[] = [];
     const updatedRows: { shopName: string; serviceId: string; oldExpiry: string }[] = [];
-    const rowCount = await page.locator("table tbody tr").count();
-    for (let i = 0; i < rowCount; i++) {
-      const row = page.locator("table tbody tr").nth(i);
-      const uCell = (await row.locator("td").nth(cols.user).textContent().catch(() => ""))?.trim() || "";
-      const bCell = (await row.locator("td").nth(cols.branch).textContent().catch(() => ""))?.trim() || "";
-      if (uCell.toLowerCase() !== username.toLowerCase() || !/สาขาหลัก/.test(bCell)) continue;
-      // scope=expired → ข้ามแถวที่ยังไม่หมดอายุ (ดูจากคอลัมน์สถานะเป็นหลัก, ไม่มี→ดูข้อความวันที่)
-      if (scope === "expired") {
-        const statusTxt = cols.status >= 0 ? ((await row.locator("td").nth(cols.status).textContent().catch(() => ""))?.trim() || "") : "";
-        const expiryTxt = (await row.locator("td").nth(cols.expiry).textContent().catch(() => ""))?.trim() || "";
-        const rowExpired = /หมดอายุ/.test(statusTxt) || /หมดอายุแล้ว/.test(expiryTxt);
-        if (!rowExpired) continue;
-      }
-      const oldExpiry = (await row.locator("td").nth(cols.expiry).textContent().catch(() => ""))?.trim() || "";
-      const shopName = cols.shop >= 0 ? ((await row.locator("td").nth(cols.shop).textContent().catch(() => ""))?.trim() || "") : "";
-      const serviceId = cols.id >= 0 ? ((await row.locator("td").nth(cols.id).textContent().catch(() => ""))?.trim() || "") : "";
-      // กดดินสอในคอลัมน์วันหมดอายุ
-      const cell = row.locator("td").nth(cols.expiry);
-      await cell.scrollIntoViewIfNeeded().catch(() => {});
-      await cell.locator("button").first().click({ timeout: 4000 }).catch(() => {});
-      await page.waitForTimeout(1000);
-      const dlg = page.locator("[class*=Modal],[role=dialog]").filter({ hasText: /แก้ไขวันหมดอายุ/ }).first();
-      if ((await dlg.count().catch(() => 0)) === 0) continue;
-      const dateOk = await pickToday(page, dlg, now);
-      if (!dateOk) {
-        // ตั้งวันไม่ถูก → ปิด popup ไม่บันทึก (กันเขียนวันผิดใส่ลูกค้า)
-        await dlg.getByRole("button", { name: /^ยกเลิก$/ }).first().click({ timeout: 3000 }).catch(() => {});
-        await page.waitForTimeout(500);
-        continue;
-      }
-      await setTime(dlg, hh, mm);
-      await page.waitForTimeout(300);
-      await dlg.getByRole("button", { name: /บันทึกข้อมูล/ }).first().click({ timeout: 4000 }).catch(() => {});
-      await page.waitForTimeout(2500); // รอ save เสร็จ (มี spinner)
-      updated++;
-      updatedRowIdxs.push(i);
-      updatedRows.push({ shopName, serviceId, oldExpiry });
+    // ปรับทีละแถวด้วย serviceId → หาแถวใหม่ทุกครั้ง ทน table re-sort หลัง save (เฟส B: หลายสาขาหลัก)
+    for (const t of targets) {
+      if (!t.serviceId) continue;
+      const done = await editRowByServiceId(page, t.serviceId, cols, now, hh, mm);
+      if (done) updatedRows.push({ shopName: t.shopName, serviceId: t.serviceId, oldExpiry: t.currentExpiry });
+      await page.waitForTimeout(500); // ให้ตารางนิ่งก่อนหาแถวถัดไป
     }
-    // แคป 2 ฝั่งของแถวที่ปรับ ตีกรอบแดง (ซ้าย=ยูสเซอร์/สาขา, ขวา=วันหมดอายุ/สถานะ)
-    const { left, right } = await shotRowsTwoParts(page, updatedRowIdxs);
-    return { ok: updated > 0, updated, updatedRows, otherCount, error: updated ? undefined : "no_row_updated", shotLeftBase64: left, shotRightBase64: right };
+    // แคป 2 ฝั่งของแถวที่ปรับ ตีกรอบแดง (หา index จาก serviceId ที่เพิ่งปรับ)
+    const updatedIds = updatedRows.map((r) => r.serviceId);
+    const finalIdxs = await findRowIdxsByServiceIds(page, updatedIds, cols.id);
+    const { left, right } = await shotRowsTwoParts(page, finalIdxs);
+    const okDone = updatedRows.length > 0 || restored > 0;
+    return { ok: okDone, updated: updatedRows.length, restored, updatedRows, otherCount, error: okDone ? undefined : "no_row_updated", shotLeftBase64: left, shotRightBase64: right };
   } finally {
     await browser.close();
   }
+}
+
+// หา index ของแถวจาก serviceId (ไว้ตีกรอบ/แคปหลังปรับ)
+async function findRowIdxsByServiceIds(page: Page, serviceIds: string[], idCol: number): Promise<number[]> {
+  if (!serviceIds.length || idCol < 0) return [];
+  const rowCount = await page.locator("table tbody tr").count().catch(() => 0);
+  const idxs: number[] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const id = (await page.locator("table tbody tr").nth(i).locator("td").nth(idCol).textContent().catch(() => ""))?.trim() || "";
+    if (serviceIds.includes(id)) idxs.push(i);
+  }
+  return idxs;
 }

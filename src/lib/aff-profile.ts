@@ -1,4 +1,4 @@
-import { writeAiNote, writeAiBinary, readAiText, aiFilePath, listAiSubdirs } from "./obsidian";
+import { writeAiNote, writeAiBinary, readAiText, aiFilePath, listAiSubdirs, aiHubFooter, getAiFolder } from "./obsidian";
 import { existsSync } from "node:fs";
 
 /**
@@ -43,7 +43,8 @@ export async function saveProfile(p: AffProfile): Promise<boolean> {
     `- เลขผู้เสียภาษี: ${p.taxId}\n` +
     `- ที่อยู่: ${p.houseNo} หมู่ ${p.moo} ถนน ${p.road || "-"} ต.${p.tambon} อ.${p.amphoe} จ.${p.changwat}\n` +
     (p.bank ? `- ธนาคาร: ${p.bank} ${p.account || ""}\n` : "") +
-    `- เอกสารแนบ: attachment.png\n`;
+    `- เอกสารแนบ: attachment.png\n` +
+    aiHubFooter([`[[${getAiFolder()}/${BASE}/_สารบัญ-ลูกค้า-AFF|ลูกค้า Affiliate]]`]);
   return writeAiNote(`${BASE}/${u}/profile.md`, md);
 }
 

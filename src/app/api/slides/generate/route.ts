@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser, isServiceRequest } from "@/lib/auth";
 import { generateDeck } from "@/lib/deck-generate";
 import { saveDeckFiles } from "@/lib/slide-store";
-import { writeAiNote, getVaultPath } from "@/lib/obsidian";
+import { writeAiNote, getVaultPath, aiHubFooter } from "@/lib/obsidian";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       const outline = deck.slides.map((s, i) => `${i + 1}. [${s.layout}] ${s.title || deck.title}`).join("\n");
       await writeAiNote(
         `slides/${meta.createdAt.slice(0, 10)}-${meta.id}.md`,
-        `# ${deck.title}\n\n${deck.subtitle}\n\nหัวข้อที่สั่ง: ${topic}\n\n## โครงสไลด์\n${outline}\n`,
+        `# ${deck.title}\n\n${deck.subtitle}\n\nหัวข้อที่สั่ง: ${topic}\n\n## โครงสไลด์\n${outline}\n` + aiHubFooter(),
       ).catch(() => {});
     }
 

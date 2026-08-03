@@ -29,6 +29,11 @@ pkill -f "oho-watch.mjs" 2>/dev/null
 nohup npm run oho:watch > .run-logs/oho.log 2>&1 &
 sleep 1
 
+echo "=== เริ่ม Thunder refund watcher (เฝ้าคำขอคืนเครดิต) ==="
+pkill -f "refund-watch.mjs" 2>/dev/null
+nohup npm run refund:watch > .run-logs/refund.log 2>&1 &
+sleep 1
+
 echo ""
 echo "✅ เปิดครบแล้ว — น้องวานพร้อมทำงาน (รันอยู่เบื้องหลัง)"
 echo "   log อยู่ที่โฟลเดอร์ .run-logs/"

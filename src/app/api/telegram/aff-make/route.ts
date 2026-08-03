@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { parseSystemNoti } from "@/lib/aff-notify";
 import { getGroupFunc, resolveAffTag } from "@/lib/roles";
-import { makeAffReceipt, parseEdit } from "@/lib/aff-make";
+import { makeAffReceipt, parseEditSmart } from "@/lib/aff-make";
 import { saveChat } from "@/lib/secretary";
 
 export const runtime = "nodejs";
@@ -50,7 +50,8 @@ export async function POST(req: Request) {
   }
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-affmake-"));
-  const overrides = editInstruction ? parseEdit(editInstruction) : undefined;
+  // ใช้ parseEditSmart (regex + Claude) → ใครพิมพ์คำสั่งแก้แบบไหนก็ตีความได้
+  const overrides = editInstruction ? await parseEditSmart(editInstruction) : undefined;
   let r;
   try {
     r = await makeAffReceipt({ noti, chatId, outDir: dir, overrides });
@@ -59,6 +60,14 @@ export async function POST(req: Request) {
   }
 
   const sends: Send[] = [];
+  // ตอบให้แอดมินเห็นว่าวานตีความคำสั่งแก้เป็นอะไรบ้าง (โปร่งใส กันแก้ผิดเงียบ)
+  if (editInstruction && overrides && Object.keys(overrides).length) {
+    const FL: Record<string, string> = { prefix: "คำนำหน้า", name: "ชื่อ", taxId: "เลขภาษี", houseNo: "บ้านเลขที่", moo: "หมู่", road: "ถนน/ซอย", tambon: "ตำบล/แขวง", amphoe: "อำเภอ/เขต", changwat: "จังหวัด", bank: "ธนาคาร", account: "เลขบัญชี", gross: "ยอด" };
+    const parts = Object.entries(overrides).filter(([, v]) => v != null && v !== "").map(([k, v]) => `${FL[k] || k}: ${v}`);
+    if (parts.length) sends.push({ kind: "text", text: `✏️ รับคำสั่งแก้แล้วค่ะ — จะปรับ:\n${parts.map((p) => `• ${p}`).join("\n")}` });
+  } else if (editInstruction) {
+    sends.push({ kind: "text", text: `⚠️ อ่านคำสั่งแก้แล้วแต่ยังไม่แน่ใจว่าจะแก้ตรงไหนค่ะ ลองพิมพ์ระบุชัดขึ้น เช่น "ที่อยู่ 94 ซ.สวัสดี แขวงดินแดง เขตดินแดง กรุงเทพมหานคร" หรือ "ชื่อ นายสมชาย ใจดี"` });
+  }
   const pushPhoto = (p: string, caption: string) => {
     try { sends.push({ kind: "photo", dataBase64: fs.readFileSync(p).toString("base64"), caption }); } catch { /* skip */ }
   };

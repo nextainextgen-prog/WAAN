@@ -49,7 +49,14 @@ const EXTRACT_SYSTEM = `คุณคือผู้ช่วยฝ่ายบ�
   "overpay": <ยอดชำระเกินที่ต้องคืน ตัวเลข 0 ถ้าไม่มี>,
   "bank": "ธนาคาร เช่น กสิกรไทย",
   "accountNo": "เลขบัญชี",
-  "accountName": "ชื่อบัญชี"
+  "accountName": "ชื่อบัญชี",
+  "docDate": "วันที่บนเอกสาร (ช่องใต้ลายเซ็น) — ใส่เฉพาะเมื่อ [คำสั่งแก้ไขจากผู้ใช้] สั่งเปลี่ยนวันที่เอกสาร ไม่งั้นใส่ ''",
+  "makerName": "ชื่อผู้จัดทำ — ใส่เฉพาะเมื่อมีคำสั่งให้เปลี่ยน ไม่งั้นใส่ ''",
+  "makerPosition": "ตำแหน่งผู้จัดทำ — ใส่เฉพาะเมื่อมีคำสั่งให้เปลี่ยน ไม่งั้นใส่ ''",
+  "reviewerName": "ชื่อผู้ตรวจสอบ — ใส่เฉพาะเมื่อมีคำสั่งให้เปลี่ยน ไม่งั้นใส่ ''",
+  "reviewerPosition": "ตำแหน่งผู้ตรวจสอบ — ใส่เฉพาะเมื่อมีคำสั่งให้เปลี่ยน ไม่งั้นใส่ ''",
+  "approverName": "ชื่อผู้อนุมัติ — ใส่เฉพาะเมื่อมีคำสั่งให้เปลี่ยน ไม่งั้นใส่ ''",
+  "approverPosition": "ตำแหน่งผู้อนุมัติ — ใส่เฉพาะเมื่อมีคำสั่งให้เปลี่ยน ไม่งั้นใส่ ''"
 }
 หมายเหตุ: netPrice = ราคาสุทธิที่ต้องชำระ (มักน้อยกว่ายอดที่ชำระเข้ามา) · ถ้าแอดมินไม่ได้ระบุ netPrice ให้ใส่ 0 ระบบจะคำนวณเอง`;
 
@@ -69,6 +76,14 @@ interface Extracted {
   bank: string;
   accountNo: string;
   accountName: string;
+  // แก้ผู้ลงนาม/วันที่เอกสารผ่านคำสั่งในแชท (ปกติเว้นว่าง)
+  docDate?: string;
+  makerName?: string;
+  makerPosition?: string;
+  reviewerName?: string;
+  reviewerPosition?: string;
+  approverName?: string;
+  approverPosition?: string;
 }
 
 function parseJson(text: string): Extracted {
@@ -125,6 +140,7 @@ export async function generateRefundMemo(input: {
   date: string;
   docNo?: string;
   editInstruction?: string; // ข้อความสั่งแก้ไขจากผู้ใช้ (ตอนกดปุ่ม "แก้ไข")
+  prev?: RefundMemoData; // ฉบับเดิม (ตอนแก้) — ไว้คงผู้ลงนาม/วันที่ที่เคยสั่งแก้ไว้แล้ว
 }): Promise<GeneratedMemo> {
   // ดึงข้อมูลจาก "ข้อความแอดมิน" เท่านั้น (รูปแนบเป็นแค่เอกสารประกอบ ไม่อ่านมาเป็นข้อมูล) + คำสั่งแก้ไข (ถ้ามี)
   let prompt = `ข้อความจากแอดมิน:\n${input.rawText || "(ไม่มีข้อความ)"}`;
@@ -139,11 +155,19 @@ export async function generateRefundMemo(input: {
   const netPrice = ex.netPrice ? round2(ex.netPrice) : round2((ex.amount || 0) - refund);
   const validation = validateMemo(ex, refund);
 
+  // ผู้ลงนาม/วันที่เอกสาร: คำสั่งใหม่ทับก่อน → ไม่มีก็คงของฉบับเดิม → ไม่มีอีกก็ใช้ค่าเริ่มต้น
+  const keep = (now: string | undefined, before: string | undefined) => (now?.trim() ? now.trim() : before || "");
   const data: RefundMemoData = {
     brand: "thunder", // TODO: เลือกตามหัวเรื่องแอดมิน (Thunder/EasySlip) เมื่อทำ Template
     docNo: input.docNo || genDocNo(),
-    date: input.date,
+    date: keep(ex.docDate, input.prev?.date) || input.date,
     subject: "ขอคืนเงินลูกค้า",
+    makerName: keep(ex.makerName, input.prev?.makerName),
+    makerPosition: keep(ex.makerPosition, input.prev?.makerPosition),
+    reviewerName: keep(ex.reviewerName, input.prev?.reviewerName),
+    reviewerPosition: keep(ex.reviewerPosition, input.prev?.reviewerPosition),
+    approverName: keep(ex.approverName, input.prev?.approverName),
+    approverPosition: keep(ex.approverPosition, input.prev?.approverPosition),
     // ---- ตาราง 1-8 ----
     user: ex.user,
     userId: "",
@@ -194,8 +218,16 @@ export function buildRefundDataFromForm(
     brand: form.brand,
     docType: form.docType || "general",
     docNo: opts.docNo,
-    date: opts.date,
+    // วันที่บนเอกสาร: ถ้าสั่งแก้มา (docDate) ใช้ตามนั้น ไม่งั้นใช้วันที่ออกเอกสาร
+    date: form.docDate?.trim() || opts.date,
     subject: "ขอคืนเงินลูกค้า",
+    // ผู้ลงนามรายฉบับ (ว่าง = ใช้ค่าเริ่มต้นของบริษัทตอนเรนเดอร์)
+    makerName: form.makerName || "",
+    makerPosition: form.makerPosition || "",
+    reviewerName: form.reviewerName || "",
+    reviewerPosition: form.reviewerPosition || "",
+    approverName: form.approverName || "",
+    approverPosition: form.approverPosition || "",
     // ย่อหน้าเปิดเรื่อง
     serviceLabel: form.serviceLabel || "",
     reason: form.reason || "",
@@ -252,13 +284,21 @@ const REVISE_FORM_SYSTEM = `คุณคือผู้ช่วยแก้ "�
 ให้ตอบเป็น JSON ที่มี "เฉพาะฟิลด์ที่ต้องแก้/เพิ่ม" เท่านั้น (ฟิลด์ที่ไม่เปลี่ยน ห้ามใส่)
 
 คีย์ฟิลด์ (แมปชื่อไทย → คีย์):
-- user = ยูสเซอร์/อีเมล · userId = ไอดียูสเซอร์ · companyName = ลูกค้าบริษัท/ชื่อบริษัท · serviceLabel = ประเภทบริการ ("BOT" หรือ "API") · reason = เหตุผลขอคืน
+- user = ยูสเซอร์/อีเมล · userId = ไอดียูสเซอร์ · companyName = ลูกค้าบริษัท/ชื่อบริษัท · serviceLabel = ประเภทบริการ ("BOT" / "API" / "BoostSMS" / "CRM" — สองตัวหลังมีเฉพาะเอกสารในนาม EasySlip) · reason = เหตุผลขอคืน
 - topupDate = วันที่เติมเครดิต · amount = จำนวนเงินที่เติมเข้ามา · purchaseDate = วันที่ซื้อบริการ · packageName = แพ็กเกจ · months = จำนวนเดือน
 - netPrice = จำนวนเงินที่ซื้อบริการ/ราคาค่าบริการ · remainingCredit = เครดิตคงเหลือก่อนขอคืน
 - whtAmount = ยอดหักภาษี ณ ที่จ่าย · whtDate = วันที่หักภาษี ณ ที่จ่าย · refund = จำนวนเงินที่ต้องโอนคืนทั้งสิ้น/ยอดโอนคืน
 - bank = ธนาคาร · accountNo = เลขที่บัญชี · accountName = ชื่อบัญชี · brand = "thunder"/"easyslip" · docType = "general"/"wht"
+- ผู้ลงนามท้ายเอกสาร (แก้ได้ทั้งชื่อและตำแหน่ง แยกกันคนละคีย์):
+  · ผู้จัดทำ → makerName / makerPosition
+  · ผู้ตรวจสอบ → reviewerName / reviewerPosition
+  · ผู้อนุมัติ → approverName / approverPosition
+- docDate = วันที่บนเอกสาร (ช่อง "วันที่" ใต้ลายเซ็นทั้ง 3 บล็อก) เช่น "30 กรกฎาคม 2569"
 
 กติกา:
+- ชื่อคนตอบเป็น string ตามที่แอดมินพิมพ์ (เก็บคำนำหน้าไว้ เช่น "นาย สมพร เสริฐศรี") ห้ามใส่วงเล็บครอบ
+- สั่งแก้ผู้ลงนามโดยไม่บอกตำแหน่ง ให้ตอบเฉพาะคีย์ชื่อ (อย่าเดาตำแหน่งเอง) และกลับกัน
+- ถ้าบอกแค่ "เปลี่ยนวันที่" เฉย ๆ โดยไม่ระบุว่าวันที่อะไร ให้ถือว่าเป็น docDate (วันที่บนเอกสาร)
 - ตัวเลขตอบเป็น number ล้วน (ตัด comma/บาท ออก เช่น "5,499.00 บาท" → 5499)
 - วันที่ตอบเป็น string ตามที่แอดมินให้ (เช่น "05/07/2026")
 - ถ้าคำสั่งไม่ชัด/ไม่เกี่ยวกับฟิลด์ไหนเลย ตอบ {} (JSON ว่าง)

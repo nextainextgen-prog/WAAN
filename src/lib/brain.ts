@@ -3,7 +3,7 @@ import { askClaude } from "./claude";
 import { askGemini } from "./gemini";
 import { askHermes, hermesConfigured } from "./hermes";
 import { buildSecretaryContext, getChatHistory } from "./secretary";
-import { readVaultKnowledge, obsidianStatus } from "./obsidian";
+import { readVaultKnowledge, retrieveVaultNotes, obsidianStatus } from "./obsidian";
 import { db } from "./db";
 
 // ประวัติสนทนาล่าสุด → ให้ AI "จำเรื่องที่เพิ่งคุยกัน" ตามเรื่องเดิมต่อได้
@@ -40,13 +40,22 @@ export async function setDefaultModel(model: BrainModel) {
 }
 
 // ประกอบบริบทเต็ม: ข้อมูลระบบ + ความรู้จาก Obsidian
-export async function buildFullContext(): Promise<string> {
-  const [base, vault] = await Promise.all([
+//  - overview: หัวโน้ตทุกไฟล์ (readVaultKnowledge) — ให้เห็นภาพรวมว่ามีความรู้อะไรบ้าง
+//  - deep: ถ้ามีคำถาม → ดึง "เนื้อเต็มไฟล์" ของโน้ตที่เกี่ยวข้อง (retrieveVaultNotes) มาตอบแบบละเอียด
+export async function buildFullContext(message?: string): Promise<string> {
+  const [base, overview, deep] = await Promise.all([
     buildSecretaryContext(),
     readVaultKnowledge().catch(() => ""),
+    message ? retrieveVaultNotes(message).catch(() => "") : Promise.resolve(""),
   ]);
-  if (!vault) return base;
-  return `${base}\n\n=== ความรู้จาก Obsidian (second brain) ===\n${vault}`;
+  let ctx = base;
+  if (overview) ctx += `\n\n=== ความรู้จาก Obsidian (second brain · หัวโน้ตทุกไฟล์) ===\n${overview}`;
+  if (deep) {
+    ctx +=
+      `\n\n=== เอกสารที่เกี่ยวข้องกับคำถามนี้ (อ่านเต็มไฟล์จาก Obsidian) ===\n` +
+      `ใช้เนื้อหาด้านล่างนี้ตอบให้ละเอียดและอ้างอิงได้ ถ้าข้อมูลอยู่ในนี้อย่าบอกว่าไม่รู้:\n${deep}`;
+  }
+  return ctx;
 }
 
 export interface BrainResult {
@@ -78,7 +87,7 @@ export async function askBrain(
   opts: { model?: BrainModel; extraContext?: string } = {},
 ): Promise<BrainResult> {
   const requested = opts.model ?? (await getDefaultModel());
-  let context = await buildFullContext();
+  let context = await buildFullContext(message);
   const convo = await recentConversation();
   if (convo) context += `\n\n${convo}`;
   if (opts.extraContext) context += `\n\n${opts.extraContext}`;

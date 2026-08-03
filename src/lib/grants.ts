@@ -32,7 +32,7 @@ export function statusLabel(key: string): string {
   return STATUS_MAP[key]?.label ?? key;
 }
 
-// สถานะที่ถือว่า "นับเป็นผลงาน OKR" (เงินที่เข้าจริง/ผูกพันแล้ว)
+// สถานะที่ถือว่า "ผูกพันแล้ว" (มีสัญญา/อนุมัติแล้ว) — ใช้แยกท่อออกจากของจริง
 export const OKR_COUNTED_STATUSES: GrantStatus[] = [
   "approved",
   "first_disbursement",
@@ -40,6 +40,9 @@ export const OKR_COUNTED_STATUSES: GrantStatus[] = [
   "reporting",
   "closed",
 ];
+
+// โอกาสได้ทุนเริ่มต้นของทุนที่ยื่นแล้วแต่ยังไม่ได้ระบุ % เอง (ประมาณการอย่างระมัดระวัง)
+export const DEFAULT_PROBABILITY = 40;
 
 const bahtFmt = new Intl.NumberFormat("th-TH", {
   style: "currency",
@@ -52,11 +55,13 @@ export function formatBaht(n: number): string {
 }
 
 // ย่อจำนวนเงินใหญ่ เช่น 5,800,000 -> 5.8 ล้าน
+// ต่ำกว่าล้านแสดงเป็นตัวเลขเต็มมีลูกน้ำ ("900,000" ไม่ใช่ "900 พัน" ซึ่งไม่ใช่ภาษาที่ใช้กับจำนวนเงิน)
 export function formatBahtShort(n: number): string {
   if (!n) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString("th-TH", { maximumFractionDigits: 2 })} ล้าน`;
-  if (n >= 1_000) return `${(n / 1_000).toLocaleString("th-TH", { maximumFractionDigits: 1 })} พัน`;
-  return n.toLocaleString("th-TH");
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000)
+    return `${(n / 1_000_000).toLocaleString("th-TH", { maximumFractionDigits: 2 })} ล้าน`;
+  return Math.round(n).toLocaleString("th-TH");
 }
 
 const dateFmt = new Intl.DateTimeFormat("th-TH", {

@@ -7,6 +7,13 @@ import { Button } from "@/components/ui/Button";
 import { GrantModal, type GrantData } from "./GrantModal";
 import { cn } from "@/lib/cn";
 
+export interface GrantInstallmentBrief {
+  id: string;
+  amount: number;
+  receivedAt: string | null;
+  receivedAmount: number | null;
+}
+
 export interface Grant {
   id: string;
   projectName: string;
@@ -17,6 +24,18 @@ export interface Grant {
   nextDeadline: string | null;
   note: string | null;
   orderIndex: number;
+  fiscalYear?: number | null;
+  probability?: number | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  installments?: GrantInstallmentBrief[];
+}
+
+/** เงินที่รับจริงแล้วของทุนก้อนนี้ */
+function receivedOf(g: Grant): number {
+  return (g.installments ?? [])
+    .filter((i) => i.receivedAt)
+    .reduce((s, i) => s + (i.receivedAmount ?? i.amount ?? 0), 0);
 }
 
 export function KanbanBoard({ initialGrants }: { initialGrants: Grant[] }) {
@@ -91,19 +110,25 @@ export function KanbanBoard({ initialGrants }: { initialGrants: Grant[] }) {
       status: g.status,
       nextDeadline: g.nextDeadline,
       note: g.note,
+      fiscalYear: g.fiscalYear ?? null,
+      probability: g.probability ?? null,
+      startDate: g.startDate ?? null,
+      endDate: g.endDate ?? null,
     });
     setModalOpen(true);
   }
 
   const totalCount = grants.length;
   const totalAmount = grants.reduce((s, g) => s + g.amount, 0);
+  const totalReceived = grants.reduce((s, g) => s + receivedOf(g), 0);
 
   return (
     <>
       <div className="flex items-center justify-between mb-4 gap-3">
         <p className="text-sm text-muted-foreground">
           ทั้งหมด <span className="font-medium text-foreground tnum">{totalCount}</span> ทุน ·
-          มูลค่ารวม <span className="font-medium text-foreground tnum">{formatBahtShort(totalAmount)}</span> บาท
+          มูลค่าสัญญา <span className="font-medium text-foreground tnum">{formatBahtShort(totalAmount)}</span> บาท ·
+          รับจริง <span className="font-medium text-accent tnum">{formatBahtShort(totalReceived)}</span> บาท
         </p>
         <Button onClick={() => openAdd("submitted")}>
           <Plus className="h-4 w-4" />
@@ -152,6 +177,11 @@ export function KanbanBoard({ initialGrants }: { initialGrants: Grant[] }) {
                   const d = daysUntil(g.nextDeadline);
                   const overdue = d !== null && d < 0 && g.status !== "closed";
                   const urgent = d !== null && d >= 0 && d <= 7 && g.status !== "closed";
+                  const got = receivedOf(g);
+                  const gotPct = g.amount > 0 ? Math.min(Math.round((got / g.amount) * 100), 100) : 0;
+                  // ทุนที่ผูกพันแล้วแต่ยังไม่ลงงวด = เงินรับจริงยังนับไม่ได้ ต้องเตือนให้เห็นบนการ์ด
+                  const noInstallments =
+                    col.key !== "submitted" && (g.installments?.length ?? 0) === 0;
                   return (
                     <button
                       key={g.id}
@@ -174,6 +204,30 @@ export function KanbanBoard({ initialGrants }: { initialGrants: Grant[] }) {
                         {formatBahtShort(g.amount)}
                         <span className="text-xs font-normal text-muted-foreground"> บาท</span>
                       </p>
+
+                      {col.key !== "submitted" &&
+                        (noInstallments ? (
+                          <p className="flex items-center gap-1.5 text-xs text-warning mt-1.5">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                            ยังไม่ได้ลงงวดเงิน
+                          </p>
+                        ) : (
+                          <div className="mt-2">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-muted-foreground">รับแล้ว</span>
+                              <span className="text-accent font-medium tnum">
+                                {formatBahtShort(got)} · {gotPct}%
+                              </span>
+                            </div>
+                            <div className="mt-1 h-1 rounded-full bg-border overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-accent"
+                                style={{ width: `${gotPct}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+
                       <div className="mt-2.5 space-y-1.5">
                         {g.ownerName && (
                           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

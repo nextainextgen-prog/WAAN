@@ -48,6 +48,13 @@ export interface RefundMemoData {
 
   // ---- ผู้ลงนาม ----
   signed?: boolean; // ใส่ลายเซ็นผู้จัดทำ (กด "เซ็นเลย")
+  // ชื่อ/ตำแหน่งผู้ลงนาม — ไม่ใส่ = ใช้ค่าเริ่มต้นของบริษัท (SIGNER_DEFAULTS) · แก้รายฉบับได้ผ่านคำสั่งในแชท
+  makerName?: string;
+  makerPosition?: string;
+  reviewerName?: string;
+  reviewerPosition?: string;
+  approverName?: string;
+  approverPosition?: string;
 
   // ---- legacy (ใช้ใน caption/validate/ตั้งชื่อไฟล์) ----
   serviceName: string; // ชื่อลูกค้า/บริษัท (ตั้งชื่อไฟล์)
@@ -75,10 +82,13 @@ const BRANDS: Record<Brand, { logo: string; nameTh: string; nameEn: string; addr
   },
 };
 
-// ผู้ลงนามทั้ง 3 ระดับ (ล็อกชื่อ) — เว้นช่องว่างเหนือ "ลงชื่อ" ไว้เซ็นจริง
-const MAKER = { name: "นาย จิรภัทร์ ภูครองหิน", position: "หัวหน้าฝ่ายบริการลูกค้า" };
-const REVIEWER = { name: "นางสาวศิริลักษณ์ ชอบธรรม", position: "ผู้จัดการฝ่ายบริการลูกค้า" };
-const APPROVER = { name: "นาย สมพร เสริฐศรี", position: "ประธานเจ้าหน้าที่ฝ่ายปฏิบัติการ" };
+// ผู้ลงนามทั้ง 3 ระดับ — ค่าเริ่มต้นของบริษัท (เว้นช่องว่างเหนือ "ลงชื่อ" ไว้เซ็นจริง)
+// แต่ละฉบับเปลี่ยนได้ผ่านคำสั่งในแชท (ฟิลด์ makerName/approverPosition ฯลฯ ใน RefundMemoData)
+export const SIGNER_DEFAULTS = {
+  maker: { name: "นาย จิรภัทร์ ภูครองหิน", position: "หัวหน้าฝ่ายบริการลูกค้า" },
+  reviewer: { name: "นางสาวศิริลักษณ์ ชอบธรรม", position: "ผู้จัดการฝ่ายบริการลูกค้า" },
+  approver: { name: "นาย สมพร เสริฐศรี", position: "ประธานเจ้าหน้าที่ฝ่ายปฏิบัติการ" },
+};
 
 function baht(n: number): string {
   return (n || 0).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -183,7 +193,19 @@ export function buildRefundMemoHtml(d: RefundMemoData): string {
     rows.map((r, i) => `<div class="row"><span class="no">${i + 1}.</span> ${r}</div>`).join("") +
     `<div class="row indent">ชื่อบัญชี ${fv(d.accountName, "300px")}</div>`;
 
-  // ---- บล็อกลงนาม ----
+  // ---- บล็อกลงนาม ---- (ใช้ค่าที่แก้มารายฉบับก่อน ไม่มีค่อยใช้ค่าเริ่มต้นของบริษัท)
+  const MAKER = {
+    name: d.makerName?.trim() || SIGNER_DEFAULTS.maker.name,
+    position: d.makerPosition?.trim() || SIGNER_DEFAULTS.maker.position,
+  };
+  const REVIEWER = {
+    name: d.reviewerName?.trim() || SIGNER_DEFAULTS.reviewer.name,
+    position: d.reviewerPosition?.trim() || SIGNER_DEFAULTS.reviewer.position,
+  };
+  const APPROVER = {
+    name: d.approverName?.trim() || SIGNER_DEFAULTS.approver.name,
+    position: d.approverPosition?.trim() || SIGNER_DEFAULTS.approver.position,
+  };
   const makerBlock = `
     <div class="sig">
       <div class="sig-title">ผู้จัดทำ</div>

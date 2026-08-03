@@ -59,7 +59,8 @@ function toBE(y: number): string {
   return String(y > 2400 ? y : y + 543);
 }
 
-// แปลงข้อความสั่งแก้ → overrides (เดเทอร์มินิสติก)
+// แปลงข้อความสั่งแก้ → overrides (เดเทอร์มินิสติก) — จับตัวเลข/รูปแบบชัดเจน
+// กทม.: แขวง=tambon, เขต=amphoe, กรุงเทพ=changwat · รองรับบ้านเลขที่ที่ไม่มีคำนำ + ซอย
 export function parseEdit(text: string): EditOverrides {
   const o: EditOverrides = {};
   const g = (re: RegExp) => text.match(re)?.[1]?.trim();
@@ -79,14 +80,71 @@ export function parseEdit(text: string): EditOverrides {
   const house = g(/(?:บ้านเลขที่|เลขที่บ้าน)\s*:?\s*(\d+(?:\/\d+)?)/);
   if (house) o.houseNo = house;
   const moo = g(/หมู่(?:ที่)?\s*:?\s*(\d+)/); if (moo) o.moo = moo;
-  const tb = g(/(?:ตำบล|ต\.)\s*([ก-๙]+)/); if (tb) o.tambon = tb;
-  const am = g(/(?:อำเภอ|อ\.)\s*([ก-๙]+)/); if (am) o.amphoe = am;
-  const cw = g(/(?:จังหวัด|จ\.)\s*([ก-๙]+)/); if (cw) o.changwat = cw;
+  // ต./ตำบล/แขวง = tambon · อ./อำเภอ/เขต = amphoe · จ./จังหวัด/กรุงเทพ = changwat
+  const tb = g(/(?:ตำบล|แขวง|ต\.)\s*([ก-๙]+)/); if (tb) o.tambon = tb;
+  const am = g(/(?:อำเภอ|เขต|อ\.)\s*([ก-๙]+)/); if (am) o.amphoe = am;
+  const cw = g(/(?:จังหวัด|จ\.)\s*([ก-๙]+)/) || (/กรุงเทพ(?:มหานคร|ฯ)?/.test(text) ? "กรุงเทพมหานคร" : undefined);
+  if (cw) o.changwat = cw;
   return o;
 }
 
+// แปลงคำสั่งแก้แบบภาษาคน → overrides ด้วย Claude (ใครพิมพ์อะไรก็ได้ ไม่ต้องตรงรูปแบบ)
+// ใช้เมื่อ regex จับที่อยู่/ชื่อไม่ครบ — ตัวเลข (ยอด/บัญชี/ภาษี) ให้ regex ทับเสมอ (ต้องเป๊ะ)
+async function parseEditAI(text: string): Promise<EditOverrides> {
+  const { askClaude } = await import("./claude");
+  const prompt =
+    `แอดมินสั่งแก้ไขเอกสารใบสำคัญรับเงิน พิมพ์คำสั่งแก้มาแบบอิสระ (ไทย) ตีความว่าจะแก้ฟิลด์ไหนเป็นค่าอะไร ตอบเป็น JSON เท่านั้น\n\n` +
+    `คำสั่ง:\n"""${text.slice(0, 800)}"""\n\n` +
+    `ฟิลด์ที่แก้ได้ (ใส่เฉพาะที่สั่งแก้จริง ที่ไม่ได้พูดถึงห้ามใส่):\n` +
+    `- prefix: คำนำหน้า (นาย/นาง/นางสาว/น.ส.)\n- name: ชื่อ-สกุล (ไม่รวมคำนำหน้า)\n` +
+    `- houseNo: บ้านเลขที่ (เช่น "94" หรือ "12/3")\n- moo: หมู่ (ตัวเลข)\n- road: ถ้าเป็นซอยให้เก็บเป็น "ซ.ชื่อซอย" (เช่น "ซ.สวัสดี") · ถ้าเป็นถนนเก็บแค่ชื่อ ตัดคำ "ถนน/ถ." ออก\n` +
+    `- tambon: ตำบล หรือ "แขวง" (กทม.)\n- amphoe: อำเภอ หรือ "เขต" (กทม.)\n- changwat: จังหวัด (กรุงเทพมหานคร ถ้าเป็น กทม.)\n` +
+    `- taxId, bank, account: เลขภาษี/ธนาคาร/เลขบัญชี\n\n` +
+    `สำคัญ: ที่อยู่กรุงเทพให้แยก แขวง→tambon เขต→amphoe กรุงเทพมหานคร→changwat\n` +
+    `ถ้าเป็นที่อยู่เต็มเช่น "94 ซ.สวัสดี แขวงดินแดง เขตดินแดง กรุงเทพมหานคร" → {"houseNo":"94","road":"ซ.สวัสดี","tambon":"ดินแดง","amphoe":"ดินแดง","changwat":"กรุงเทพมหานคร"}\n` +
+    `ตอบ JSON อย่างเดียว ห้ามมีข้อความอื่น`;
+  try {
+    const raw = await askClaude(prompt, { timeoutMs: 45_000 });
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return {};
+    const j = JSON.parse(m[0]) as Record<string, unknown>;
+    const out: EditOverrides = {};
+    const keys: (keyof EditOverrides)[] = ["prefix", "name", "taxId", "houseNo", "moo", "road", "tambon", "amphoe", "changwat", "bank", "account"];
+    for (const k of keys) { const v = j[k]; if (typeof v === "string" && v.trim()) (out as Record<string, string>)[k] = v.trim(); }
+    if (typeof j.gross === "number") out.gross = j.gross;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+// ตัดคำนำหน้าที่ติดมากับค่า (แขวง/เขต/ต./อ./จ./ถนน/ถ.) เพื่อไม่ให้ซ้ำตอนประกอบที่อยู่
+// road: เก็บ ซ./ซอย ไว้ (เป็นซอยจริง) — ตัดแค่ ถนน/ถ.
+function sanitizeAddr(o: EditOverrides): EditOverrides {
+  if (o.road) o.road = o.road.replace(/^(?:ถนน|ถ\.)\s*/, "").trim();
+  if (o.tambon) o.tambon = o.tambon.replace(/^(?:ตำบล|แขวง|ต\.)\s*/, "").trim();
+  if (o.amphoe) o.amphoe = o.amphoe.replace(/^(?:อำเภอ|เขต|อ\.)\s*/, "").trim();
+  if (o.changwat) o.changwat = o.changwat.replace(/^(?:จังหวัด|จ\.)\s*/, "").trim();
+  return o;
+}
+
+// hybrid: regex ก่อน (เร็ว ตัวเลขแม่น) → ถ้าที่อยู่/ชื่อจับไม่ครบ ใช้ Claude เสริม (regex ตัวเลขชนะ)
+export async function parseEditSmart(text: string): Promise<EditOverrides> {
+  const rx = parseEdit(text);
+  const wantsAddr = /ที่อยู่|แขวง|เขต|ตำบล|อำเภอ|จังหวัด|บ้านเลขที่|หมู่|ซอย|ซ\.|ถนน|ถ\.|กรุงเทพ/.test(text);
+  const wantsName = /(?:^|\s)(?:ชื่อ|นาย|นาง|นางสาว|น\.ส\.)/.test(text);
+  const addrIncomplete = !rx.houseNo || !rx.tambon || !rx.amphoe;
+  if ((wantsAddr && addrIncomplete) || (wantsName && !rx.name)) {
+    const ai = await parseEditAI(text);
+    return sanitizeAddr({ ...ai, ...rx }); // regex ทับ AI สำหรับ key ที่ regex จับได้ (ตัวเลขแม่นกว่า)
+  }
+  return sanitizeAddr(rx);
+}
+
 function addrLine(p: AffProfile): string {
-  return `${p.houseNo}${p.moo ? ` หมู่ ${p.moo}` : ""}${p.road && p.road !== "-" ? ` ถนน ${p.road}` : ""} ต.${p.tambon} อ.${p.amphoe} จ.${p.changwat}`;
+  // ถ้า road ขึ้นต้นด้วย ซ./ซอย/ถ./ถนน อยู่แล้ว → ไม่เติม "ถนน" ซ้ำ (เช่น ซอยไม่ควรเป็น "ถนน ซ.สวัสดี")
+  const roadPart = p.road && p.road !== "-" ? (/^(?:ซ\.|ซอย|ถ\.|ถนน)/.test(p.road) ? ` ${p.road}` : ` ถนน ${p.road}`) : "";
+  return `${p.houseNo}${p.moo ? ` หมู่ ${p.moo}` : ""}${roadPart} ต.${p.tambon} อ.${p.amphoe} จ.${p.changwat}`;
 }
 
 // แยกที่อยู่ (string เดียวจากชีต) → ส่วนประกอบสำหรับกรอกใบเสร็จ
