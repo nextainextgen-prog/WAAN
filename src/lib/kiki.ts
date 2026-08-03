@@ -110,14 +110,15 @@ export async function addKikiChatId(chatId: string): Promise<void> {
 
 // ===== ประวัติแชทของ kiki (แยกจากวาน) =====
 
-export async function saveKikiChat(role: "user" | "assistant", content: string): Promise<void> {
+export async function saveKikiChat(role: "user" | "assistant", content: string, scope = "owner"): Promise<void> {
   const c = String(content || "").trim();
   if (!c) return;
-  await db.kikiChat.create({ data: { role, content: c.slice(0, 6000) } });
+  await db.kikiChat.create({ data: { role, content: c.slice(0, 6000), scope } });
 }
 
+// เฉพาะ scope owner — แชทกลุ่มเทรนเนอร์ของอั๋น (scope aun) ห้ามรั่วเข้าบริบทเจ้าของ และกลับกัน
 export async function kikiConversation(limit = 18): Promise<string> {
-  const rows = await db.kikiChat.findMany({ orderBy: { createdAt: "desc" }, take: limit });
+  const rows = await db.kikiChat.findMany({ where: { scope: "owner" }, orderBy: { createdAt: "desc" }, take: limit });
   if (!rows.length) return "";
   const lines = rows
     .reverse()

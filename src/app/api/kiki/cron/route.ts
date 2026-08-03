@@ -301,6 +301,19 @@ export async function POST(req: Request) {
     }
   } catch { /* พรุ่งนี้ค่อยเช็ค */ }
 
+  // ===== G3.5) เทรนเนอร์อั๋น — เช็คอินทุกเย็น 19:00 ในกลุ่มเทรนเนอร์ =====
+  try {
+    const { getAunChatId, askTrainer } = await import("@/lib/kiki-aun");
+    const aunChat = await getAunChatId();
+    if (aunChat && now.getHours() >= 19 && (await getSetting("kiki_last_aun_checkin")) !== today) {
+      await setSetting("kiki_last_aun_checkin", today);
+      const t = await askTrainer(
+        `[เช็คอินประจำเย็น] ทักอั๋นในกลุ่ม: ถามว่าวันนี้ได้ขยับตัว/กินตามแผนไหม ชวนรายงานน้ำหนักถ้ายังไม่ได้ชั่งสัปดาห์นี้ อิงเป้าเดือนปัจจุบันจากแผนจริง สั้น กระชับ ให้กำลังใจ`,
+      ).catch(() => "");
+      if (t) sends.push({ chatId: aunChat, kind: "text", text: t });
+    }
+  } catch { /* พรุ่งนี้ค่อยทัก */ }
+
   // ===== G4) จำเองไม่ต้องสั่ง — สกัดข้อเท็จจริงใหม่จากบทสนทนาของวัน (21:00) =====
   try {
     if (mainChat && now.getHours() >= 21 && (await getSetting("kiki_last_autofact")) !== today) {

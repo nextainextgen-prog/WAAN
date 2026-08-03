@@ -186,6 +186,34 @@ export async function POST(req: Request) {
     }
   }
 
+  // ===== กลุ่มเทรนเนอร์ของอั๋น — โหมดแยก มาก่อน owner gate (อั๋นไม่ใช่ owner แต่ต้องคุยได้) =====
+  {
+    const { getAunChatId, handleTrainerChat, AUN_USER_KEY } = await import("@/lib/kiki-aun");
+    const aunChat = await getAunChatId();
+    if (aunChat && chatId === aunChat && (text || audioFiles.length)) {
+      const ownId = await getKikiOwnerId();
+      const isOwner = fromId === ownId;
+      // จำ Telegram id ของอั๋นจากคนแรกที่ไม่ใช่เจ้าของ (ไว้กันคนนอกถ้าโดนดึงเข้ากลุ่ม)
+      const aunId = await getSetting(AUN_USER_KEY);
+      if (!isOwner && !aunId && fromId) await setSetting(AUN_USER_KEY, fromId);
+      else if (!isOwner && aunId && fromId !== aunId) return ok([]); // คนที่สามในกลุ่ม = เงียบ
+      // เตือนประจำของอั๋น (ใช้ระบบ Recurring เดิม ผูกกับ chatId กลุ่มนี้ — cron ส่งเข้ากลุ่มนี้เอง)
+      if (RECUR_RE.test(text)) {
+        const t = await handleRecurring(text, chatId);
+        const { saveKikiChat: saveAun } = await import("@/lib/kiki");
+        await saveAun("assistant", t, "aun");
+        return ok([{ kind: "text", text: t, replyTo: msgId }]);
+      }
+      const r = await handleTrainerChat(text, fromName, isOwner);
+      // ซอยบับเบิล + sanitize เหมือนโหมดหลัก
+      const sends: Send[] = [{ kind: "text", text: r.text, replyTo: msgId }];
+      return ok(sends.flatMap((s) => {
+        if (s.kind !== "text" || !s.text) return [s];
+        return s.text.split(/\n{2,}/).map((p, i) => ({ kind: "text" as const, text: p.trim(), ...(i === 0 ? { replyTo: s.replyTo } : {}) })).filter((x) => x.text);
+      }));
+    }
+  }
+
   // ===== ผูกเจ้าของ: คนแรกที่คุยกับ Vex = เจ้าของถาวร · คนอื่นเงียบสนิท =====
   let ownerId = await getKikiOwnerId();
   let justBound = false;

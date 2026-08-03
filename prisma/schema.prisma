@@ -427,6 +427,9 @@ model KikiChat {
   createdAt DateTime @default(now())
   role      String                        // user | assistant
   content   String
+  scope     String   @default("owner")    // owner = แชทเจ้าของ · aun = กลุ่มเทรนเนอร์อั๋น (ห้ามปนกัน — privacy สองทาง)
+
+  @@index([scope, createdAt])
 }
 
 // ของที่อยากได้ (wishlist) — Vex วิเคราะห์จากเงินจริงว่าซื้อไหวไหม/ออมกี่วัน
