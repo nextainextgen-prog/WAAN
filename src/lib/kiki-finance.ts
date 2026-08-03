@@ -157,6 +157,7 @@ export interface FinanceSnapshot {
   projectedExpense: number | null; // ทำนายยอดจ่ายสิ้นเดือนจาก pace จริง (ต้องผ่านมา >= 3 วัน)
   daily14: { label: string; amount: number }[];
   txnCount: number;
+  todayItems: { time: string; type: string; amount: number; category: string; note: string | null }[]; // รายการวันนี้รายตัว
 }
 
 export async function financeSnapshot(now = new Date()): Promise<FinanceSnapshot> {
@@ -176,7 +177,9 @@ export async function financeSnapshot(now = new Date()): Promise<FinanceSnapshot
   const monthExpRows = monthRows.filter((r) => r.type === "expense");
   const monthExpense = monthExpRows.reduce((s, r) => s + r.amount, 0);
   const monthIncome = monthRows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
-  const todayExpense = monthExpRows.filter((r) => r.occurredAt >= tStart).reduce((s, r) => s + r.amount, 0);
+  // ขอบบนจำเป็น: recordTxns ยอมรับ occurredAt ถึง "พรุ่งนี้" — ไม่กันไว้รายการวันหน้าจะโผล่ปนใน "วันนี้"
+  const tEnd = new Date(tStart.getTime() + 86400_000);
+  const todayExpense = monthExpRows.filter((r) => r.occurredAt >= tStart && r.occurredAt < tEnd).reduce((s, r) => s + r.amount, 0);
   const prevMonthExpense = prevRows.reduce((s, r) => s + r.amount, 0);
 
   const catMap = new Map<string, number>();
@@ -201,10 +204,21 @@ export async function financeSnapshot(now = new Date()): Promise<FinanceSnapshot
     daily14.push({ label: `${d0.getDate()}`, amount: amt });
   }
 
+  const todayItems = monthRows
+    .filter((r) => r.occurredAt >= tStart && r.occurredAt < tEnd)
+    .sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime())
+    .map((r) => ({
+      time: r.occurredAt.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }),
+      type: r.type,
+      amount: r.amount,
+      category: r.category,
+      note: r.note,
+    }));
+
   return {
     now, todayExpense, monthExpense, monthIncome, prevMonthExpense,
     byCategory, prevByCategory, budgets, totalBudget, daysLeft, safePerDay, projectedExpense, daily14,
-    txnCount: monthRows.length,
+    txnCount: monthRows.length, todayItems,
   };
 }
 
@@ -231,6 +245,9 @@ export function snapshotFacts(s: FinanceSnapshot): string[] {
   }
   if (s.byCategory.length) {
     facts.push(`หมวดที่ใช้เยอะสุดเดือนนี้: ${s.byCategory.slice(0, 3).map((c) => `${c.category} ${fmtBaht(c.amount)} บาท`).join(" · ")}`);
+  }
+  if (s.todayItems.length) {
+    facts.push(`รายการวันนี้: ${s.todayItems.slice(-8).map((t) => `${t.type === "income" ? "+" : "−"}${fmtBaht(t.amount)}฿ ${t.note || t.category}`).join(" · ")}`);
   }
   for (const b of s.budgets) {
     if (b.category === TOTAL_BUDGET_KEY) continue;
@@ -310,6 +327,22 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     })
     .join("");
 
+  // รายการวันนี้รายตัว — เจ้าของอยากเห็นว่า "จ่ายไปกับอะไรบ้าง" ไม่ใช่แค่ยอดรวมรายหมวด
+  const itemsToday = s.todayItems.slice(-12);
+  const itemsHtml = itemsToday.length
+    ? `<div class="sect">รายการวันนี้</div><div class="items">${itemsToday
+        .map((t) => {
+          const inc = t.type === "income";
+          return `<div class="item">
+            <span class="itime">${esc(t.time)}</span>
+            <span class="iname">${esc(t.note || t.category)}</span>
+            <span class="icat">${esc(t.category)}</span>
+            <span class="iamt ${inc ? "green" : "red"}">${inc ? "+" : "−"}${fmtBaht(t.amount)} ฿</span>
+          </div>`;
+        })
+        .join("")}</div>`
+    : "";
+
   const totalBar = pctTotal !== null
     ? `<div class="row big">
         <div class="wlabel">งบเดือนนี้</div>
@@ -358,6 +391,12 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     .blab { font-size:10.5px; color:#6e7681; }
     .blab.now { color:#f0b429; font-weight:700; }
     .added { font-size:14px; margin:3px 0; }
+    .items { display:flex; flex-direction:column; gap:4px; }
+    .item { display:flex; align-items:center; gap:10px; background:#1b2129; border-radius:8px; padding:7px 12px; font-size:13.5px; }
+    .itime { flex:0 0 44px; color:#6e7681; font-size:12px; font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+    .iname { flex:1; color:#e6edf3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .icat { flex:0 0 auto; color:#8b949e; font-size:11.5px; background:#21262d; border-radius:5px; padding:2px 7px; }
+    .iamt { flex:0 0 auto; min-width:74px; text-align:right; font-weight:700; }
     .foot { border-top:1px solid #2d333b; margin-top:16px; padding-top:12px; font-size:12px; color:#6e7681; }
   </style></head>
   <body>
@@ -373,11 +412,46 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
     </div>
     ${totalBar}
     ${safe}
+    ${itemsHtml}
     ${rowHtml ? `<div class="sect">รายหมวด · เดือนนี้</div>${rowHtml}` : ""}
     <div class="sect">รายจ่ายรายวัน · 14 วันล่าสุด</div>
     ${chart}
     <div class="foot">${esc(s.now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "short", timeStyle: "short" }))} · Vex</div>
   </body></html>`;
+}
+
+// ===== "ซื้ออะไรไปบ้าง" — ลิสต์รายการรายตัวจาก DB ตรง ๆ (ไม่ผ่าน LLM ตัวเลขไม่มีทางเพี้ยน) =====
+
+export type ItemizedPeriod = "today" | "yesterday" | "week" | "month";
+
+export async function itemizedText(period: ItemizedPeriod, now = new Date()): Promise<string> {
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let from: Date, to: Date, label: string;
+  if (period === "yesterday") {
+    from = new Date(t0.getTime() - 86400_000); to = t0; label = "เมื่อวาน";
+  } else if (period === "week") {
+    from = new Date(t0.getTime() - ((now.getDay() + 6) % 7) * 86400_000); to = new Date(t0.getTime() + 86400_000); label = "สัปดาห์นี้";
+  } else if (period === "month") {
+    from = new Date(now.getFullYear(), now.getMonth(), 1); to = new Date(now.getFullYear(), now.getMonth() + 1, 1); label = "เดือนนี้";
+  } else {
+    from = t0; to = new Date(t0.getTime() + 86400_000); label = "วันนี้";
+  }
+  const rows = await db.financeTxn.findMany({ where: { occurredAt: { gte: from, lt: to } }, orderBy: { occurredAt: "asc" } });
+  if (!rows.length) return `${label}ยังไม่มีรายการเลยครับ`;
+  const exp = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+  const inc = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
+  const lines: string[] = [`รายการ${label} (${rows.length} รายการ · จ่าย ${fmtBaht(exp)} ฿${inc ? ` · รับ ${fmtBaht(inc)} ฿` : ""})`];
+  const multiDay = period === "week" || period === "month";
+  let lastDay = "";
+  for (const r of rows) {
+    if (multiDay) {
+      const d = r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { weekday: "short", day: "numeric", month: "short" });
+      if (d !== lastDay) { lines.push(`\n${d}`); lastDay = d; }
+    }
+    const time = r.occurredAt.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+    lines.push(`• ${time} ${r.type === "income" ? "+" : "−"}${fmtBaht(r.amount)} ฿ ${r.note || r.category}${r.note ? ` (${r.category})` : ""}`);
+  }
+  return lines.join("\n");
 }
 
 // ===== สมุดบัญชีใน Obsidian (AI-Personal/finance/YYYY-MM.md) =====

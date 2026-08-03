@@ -10,7 +10,6 @@ import { WISH_RE, handleWish, DEBT_RE, handleDebt, RECUR_RE, handleRecurring, FI
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
 import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm, listDialogs, setAlias, getAliases, type PeerHit } from "@/lib/kiki-userbot";
-import { socialReady, grabFeeds, grabFeedPosts } from "@/lib/kiki-social";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
 import {
   askKiki,
@@ -37,6 +36,7 @@ import {
   getSetting,
   ttsOgg,
   webResearch,
+  isShoppingQuery,
 } from "@/lib/kiki";
 import {
   extractFinance,
@@ -50,6 +50,8 @@ import {
   fmtBaht,
   TOTAL_BUDGET_KEY,
   EXPENSE_CATS,
+  itemizedText,
+  type ItemizedPeriod,
   type TxnRecord,
 } from "@/lib/kiki-finance";
 
@@ -293,6 +295,16 @@ export async function POST(req: Request) {
       }
     }
 
+    // ===== "ซื้อ/ใช้อะไรไปบ้าง" — ลิสต์รายการรายตัว (ตัวเลขจาก DB ตรง ๆ) =====
+    if (/(ซื้อ|ใช้(จ่าย|เงิน)?|จ่าย)(ไป(กับ)?)?อะไร(ไป)?บ้าง|อะไรบ้างที่(ซื้อ|จ่าย)|รายการ(รายจ่าย|ใช้จ่าย|ที่ซื้อ|ที่จ่าย|วันนี้|เมื่อวาน)|ขอ(ดู)?รายการ/i.test(text) && !/สรุป.{0,20}(html|ไฟล์|เอกสาร)/i.test(text)) {
+      const period: ItemizedPeriod = /เมื่อวาน/.test(text) ? "yesterday"
+        : /สัปดาห์|อาทิตย์(นี้|ที่ผ่าน)/.test(text) ? "week"
+        : /เดือนนี้|ทั้งเดือน/.test(text) ? "month"
+        : "today";
+      const t = await itemizedText(period);
+      return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
     // ===== ถามสถานะการเงิน =====
     if (FINANCE_QUERY_RE.test(text) && !/สรุป.{0,20}(html|ไฟล์|เอกสาร|ละเอียด)/i.test(text)) {
       const { png, snapFacts } = await financeCardPng();
@@ -442,32 +454,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // ===== สรุปฟีด Facebook/X (เจ้าของสั่ง 31 ก.ค.: อ่านฟีดทุกครั้ง = แคปภาพโพสต์แนบมาเสมอ) =====
-    if (/สรุปฟีด|อ่านฟีด|ไล่ฟีด|เช็ค?ฟีด|ฟีด(วันนี้|มีอะไร)|แคป.{0,14}โพสต์|โพสต์.{0,14}แคป|(เฟส|facebook|ทวิต).{0,16}(มีอะไร|สรุป|ข่าว|อัปเดต|แคป)/i.test(text)) {
-      if (!socialReady()) return reply([{ kind: "text", text: `ยังไม่ได้ล็อกอินเฟส/X ให้ผมครับ ⚠️ รันในเทอร์มินัล: npm run kiki:social-auth (ครั้งเดียว)`, replyTo: msgId }]);
-      const { posts, issues } = await grabFeedPosts(4);
-      if (posts.length) {
-        const numbered = posts.map((p, i) => `[${p.source} #${i + 1}]\n${p.text}`).join("\n\n---\n\n");
-        const answer = await askKiki(
-          "สรุปโพสต์จากฟีดของเจ้าของ: เล่าทีละโพสต์สั้น ๆ โดยอ้างหมายเลข [เฟส #1] [X #2] ตามที่ให้ (ภาพแคปโพสต์จริงถูกส่งไปพร้อมกันแล้ว ให้เจ้าของดูเทียบได้) ปิดท้ายชี้โพสต์ที่น่าสนใจสุด",
-          `=== โพสต์ที่เก็บมา (พร้อมภาพแคป) ===\n${numbered.slice(0, 12_000)}${issues.length ? `\nหมายเหตุ: ${issues.join(" · ")}` : ""}`,
-        );
-        const sends: Send[] = posts
-          .filter((p) => p.shotBase64)
-          .slice(0, 8)
-          .map((p) => ({ kind: "photo" as const, dataBase64: p.shotBase64!, filename: `post.png`, caption: `${p.source} #${posts.indexOf(p) + 1}` }));
-        sends.push({ kind: "text", text: answer.slice(0, 3900), replyTo: msgId });
-        return reply(sends);
-      }
-      // เก็บโพสต์รายอันไม่ได้ → ถอยไปสรุปจากข้อความฟีดล้วน (ดีกว่าเงียบ)
-      const g = await grabFeeds();
-      if (!g.fb && !g.x) return reply([{ kind: "text", text: `อ่านฟีดไม่ได้ครับ ⚠️ ${[...issues, ...g.issues].join(" · ")}`, replyTo: msgId }]);
-      const answer = await askKiki(
-        "สรุปฟีดโซเชียลของเจ้าของตอนนี้: ข่าว/เรื่องเด่น/อัปเดตจากคนที่ติดตาม แยกเป็นหัวข้ออ่านง่าย อะไรน่าสนใจชี้เป้า (รอบนี้แคปภาพโพสต์ไม่ได้ บอกเจ้าของตรง ๆ สั้น ๆ ด้วย)",
-        [g.fb ? `=== เนื้อหาจากฟีด Facebook ===\n${g.fb}` : "", g.x ? `=== เนื้อหาจากฟีด X ===\n${g.x}` : "", issues.length ? `หมายเหตุ: ${issues.join(" · ")}` : ""].filter(Boolean).join("\n\n"),
-      );
-      return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
-    }
+    // (ยกเลิกแล้ว 3 ส.ค.: สรุปฟีด Facebook/X — เจ้าของสั่งเลิกอ่านโซเชียลทั้งหมด)
 
     // ===== เปลี่ยนเสียงพูดของ Vex =====
     const voiceM = text.match(/(?:เปลี่ยน|ใช้|เอา)เสียง(?:เป็น|ชื่อ)?\s*([A-Za-z]+)/);
@@ -545,22 +532,25 @@ export async function POST(req: Request) {
     }
 
     // ===== ตอบคำถาม "ค่าอะไร" ของรายการจากเมลธนาคาร (หมวด รอระบุ) =====
+    // reply ที่ข้อความแจ้งเงิน (🔴/🟢) = ชี้ตัวรายการชัดเจน — ส่ง replyText เข้าไปให้จับคู่จากยอดจริง
     if (
-      (replyText && /ค่าอะไร|รอระบุ/.test(replyText)) ||
-      (!imageFiles.length && /^(ค่า|เป็นค่า|มันคือ|อันนี้(คือ|เป็น)?|หมวด)/.test(text) && (await hasPendingTxn()))
+      (replyText && /🔴 เงินออก|🟢 เงินเข้า|ค่าอะไร|รอระบุ/.test(replyText)) ||
+      (!imageFiles.length && (await hasPendingTxn()) &&
+        (/^(ค่า|เป็นค่า|มันคือ|อันนี้(คือ|เป็น)?|หมวด)/.test(text) || (!/\d/.test(text) && /^(จ่าย|ซื้อ|โอน)/.test(text))))
     ) {
-      const done = await classifyPendingTxn(text);
+      const done = await classifyPendingTxn(text, replyText || undefined);
+      if (done && !done.ok) return reply([{ kind: "text", text: done.msg, replyTo: msgId }]);
       if (done) {
         const { png } = await financeCardPng();
         const sends: Send[] = [];
         if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
-        sends.push({ kind: "text", text: `เข้าใจแล้วครับ ✅ ${done}`, replyTo: msgId });
+        sends.push({ kind: "text", text: `เข้าใจแล้วครับ ✅ ${done.msg}`, replyTo: msgId });
         return reply(sends);
       }
     }
 
-    // ===== Wishlist: อยากได้/ซื้อไหวไหม =====
-    if (WISH_RE.test(text)) {
+    // ===== Wishlist: อยากได้/ซื้อไหวไหม (ยกเว้นสั่งหาสินค้า — อันนั้นไปทางค้นเว็บ) =====
+    if (WISH_RE.test(text) && !isShoppingQuery(text)) {
       const t = await handleWish(text);
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
@@ -790,13 +780,16 @@ export async function POST(req: Request) {
       } catch { /* แยกไม่ได้ → คุยปกติให้ถามต่อ */ }
     }
 
-    // ===== หาข้อมูล/ค้นเว็บสด + วิเคราะห์ =====
-    if (/หาข้อมูล|ค้นหา|รีเสิร์ช|research|เสิร์ช|ช่วยหา(ให้)?|หาให้หน่อย|เทียบ.{0,16}(รุ่น|ราคา|สเปค)|ราคา.{0,12}(ตอนนี้|ล่าสุด|เท่าไหร่)|ข่าว.{0,10}(วันนี้|ล่าสุด|เกี่ยวกับ)|อัปเดตล่าสุด/i.test(text) && !imageFiles.length) {
+    // ===== หาข้อมูล/หาสินค้า/ค้นเว็บสด + วิเคราะห์ =====
+    if ((/หาข้อมูล|ค้นหา|รีเสิร์ช|research|เสิร์ช|ช่วยหา(ให้)?|หาให้หน่อย|ไปหา.{0,40}(มาให้|ให้หน่อย|ให้ที)|เทียบ.{0,16}(รุ่น|ราคา|สเปค)|ราคา.{0,12}(ตอนนี้|ล่าสุด|เท่าไหร่)|ข่าว.{0,10}(วันนี้|ล่าสุด|เกี่ยวกับ)|อัปเดตล่าสุด/i.test(text) || isShoppingQuery(text)) && !imageFiles.length) {
       try {
-        const research = await webResearch(text);
+        const shopping = isShoppingQuery(text);
+        // ส่งบทสนทนาล่าสุดไปด้วย — เจ้าของถามต่อเนื่องได้ ("เอาแบบเมื่อกี้แต่ถูกกว่า")
+        const convoCtx = await kikiConversation(12).catch(() => "");
+        const research = await webResearch([replyText, text].filter(Boolean).join("\n"), { context: convoCtx, shopping });
         const answer = await askKiki(
           text,
-          `=== ผลค้นเว็บสด (ข้อมูลจริงเรียลไทม์ ใช้ตอบ/วิเคราะห์ได้เลย ห้ามมโนเพิ่ม) ===\n${research.slice(0, 14_000)}\n\n[วิเคราะห์+สรุปตามที่เจ้าของขอ เว้นบรรทัดอ่านง่าย ตัวเลข/วันที่ครบ]`,
+          `=== ผลค้นเว็บสด (ข้อมูลจริงเรียลไทม์ ใช้ตอบ/วิเคราะห์ได้เลย ห้ามมโนเพิ่ม) ===\n${research.slice(0, 14_000)}\n\n[${shopping ? "จัดเป็นลิสต์ตัวเลือกสินค้า: ชื่อ/ราคา/ข้อดี + ลิงก์ URL เต็มวางบรรทัดของมันเอง (ห้ามตัดลิงก์ทิ้ง ห้ามย่อ) ปิดท้ายฟันธงตัวที่แนะนำสุด+เหตุผล ตัดสินใจแทนเจ้าของได้เลย" : "วิเคราะห์+สรุปตามที่เจ้าของขอ เว้นบรรทัดอ่านง่าย ตัวเลข/วันที่ครบ"}]`,
         );
         return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
       } catch { /* ค้นไม่ได้ → ตกไปคุยปกติ ตอบเท่าที่รู้ */ }

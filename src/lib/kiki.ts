@@ -734,16 +734,27 @@ export async function reindexPersonal(): Promise<number> {
 
 // ===== ค้นเว็บสด (Gemini + Google Search grounding) — หาข้อมูล/ข่าวเรียลไทม์ =====
 
-export async function webResearch(query: string): Promise<string> {
+// โหมดช้อปปิ้ง: เจ้าของสั่ง "ไปหาผ้าปูที่นอน/หมอน ในช้อปปี้" — หาสินค้าจริง+ลิงก์+ฟันธงแทนได้เลย
+export function isShoppingQuery(text: string): boolean {
+  return /หาซื้อ|หาสินค้า|หาของ|ช้อปปี้|shopee|ลาซาด้า|lazada|ซื้อที่ไหน|ร้านไหน(ดี)?|ยี่ห้อไหนดี|รุ่นไหนดี|ตัวไหนดี/i.test(text);
+}
+
+export async function webResearch(query: string, opts: { context?: string; shopping?: boolean } = {}): Promise<string> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new Error("ยังไม่ได้ตั้งค่า GEMINI_API_KEY");
+  const instruction = opts.shopping
+    ? `โหมดหาสินค้า: หาสินค้าจริงตามโจทย์ 3-5 ตัวเลือก (เว็บไทยเป็นหลัก: Shopee / Lazada / เว็บร้านทางการ)
+แต่ละตัวบอก: ชื่อสินค้า+รุ่น · ราคาโดยประมาณ · ซื้อได้ที่ไหน · ลิงก์ URL เต็ม (ขึ้นบรรทัดใหม่ ลิงก์ล้วน ๆ ไม่ต้องครอบ markdown) · ข้อดี-ข้อสังเกตสั้น ๆ
+ปิดท้าย "ฟันธง" เลือกให้ 1 ตัวพร้อมเหตุผล — ตัดสินใจแทนได้เลยไม่ต้องถามกลับ ตอบเป็นภาษาไทย ข้อมูลจริงจากการค้นหาเท่านั้น`
+    : `ตอบเป็นภาษาไทย อ้างอิงข้อมูลจริงจากการค้นหา ระบุตัวเลข/วันที่/แหล่งที่มาให้ครบ ถ้าข้อมูลขัดแย้งกันให้บอก`;
+  const ctx = opts.context ? `บริบทบทสนทนาก่อนหน้า (ไว้ตีความว่าเจ้าของหมายถึงอะไร เช่น ถามต่อจากของเดิม):\n${opts.context}\n\n===\n\n` : "";
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: `${query}
+      contents: [{ role: "user", parts: [{ text: `${ctx}โจทย์ล่าสุดจากเจ้าของ: ${query}
 
-ตอบเป็นภาษาไทย อ้างอิงข้อมูลจริงจากการค้นหา ระบุตัวเลข/วันที่/แหล่งที่มาให้ครบ ถ้าข้อมูลขัดแย้งกันให้บอก` }] }],
+${instruction}` }] }],
       tools: [{ google_search: {} }],
     }),
     signal: AbortSignal.timeout(90_000),

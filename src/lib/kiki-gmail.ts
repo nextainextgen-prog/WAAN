@@ -116,20 +116,46 @@ export async function pollBankEmails(): Promise<BankTxnEvent[]> {
   return out;
 }
 
-// เจ้าของตอบว่า "ค่าอะไร" → อัปเดตรายการ "รอระบุ" ที่เก่าสุด
-export async function classifyPendingTxn(answer: string): Promise<string | null> {
+const PENDING_WINDOW_MS = 7 * 86400_000; // เคยใช้ 48 ชม. — รายการที่ค้างนานกว่านั้นหลุดจากการถาม-ตอบถาวร
+
+export interface ClassifyResult {
+  ok: boolean; // true = จัดหมวดสำเร็จ · false = จับคู่รายการไม่ได้ (msg อธิบายตรง ๆ ห้ามเดาตัวอื่นแทน)
+  msg: string;
+}
+
+// เจ้าของตอบว่า "ค่าอะไร" → อัปเดตรายการ "รอระบุ"
+// replyText = ข้อความที่เจ้าของกด reply (โครง 🔴 เงินออก X ฿) — ใช้ยอด+ทิศทางชี้ตัวรายการตรง ๆ
+// (เคยพัง: หยิบตัวเก่าสุดเสมอ ไม่สนว่า reply ใส่ข้อความไหน — reply ที่รายการ 60 ฿ แต่ไปแก้รายการ 10 ฿ คนละตัว)
+export async function classifyPendingTxn(answer: string, replyText?: string): Promise<ClassifyResult | null> {
   const { db } = await import("./db");
-  const pending = await db.financeTxn.findFirst({
-    where: { category: PENDING_CATEGORY, createdAt: { gte: new Date(Date.now() - 48 * 3600_000) } },
+  const all = await db.financeTxn.findMany({
+    where: { category: PENDING_CATEGORY, createdAt: { gte: new Date(Date.now() - PENDING_WINDOW_MS) } },
     orderBy: { createdAt: "asc" },
   });
-  if (!pending) return null;
+  if (!all.length) return null;
+  let pending = all[0];
+  if (replyText) {
+    const m = replyText.match(/เงิน(ออก|เข้า)\s*([\d,]+(?:\.\d+)?)\s*฿/);
+    if (m) {
+      const amt = Number(m[2].replace(/,/g, ""));
+      const typ = m[1] === "ออก" ? "expense" : "income";
+      const hit = [...all].reverse().find((p) => p.type === typ && Math.abs(p.amount - amt) < 0.005);
+      if (!hit) {
+        return {
+          ok: false,
+          msg: `รายการ${m[1] === "ออก" ? "จ่าย" : "รับ"} ${fmtBaht(amt)} ฿ ตัวนั้นไม่ได้ค้าง "รอระบุ" แล้วครับ (น่าจะจัดหมวดไปก่อนหน้านี้) — พิมพ์ "ขอดูการเงิน" เช็คได้เลย`,
+        };
+      }
+      pending = hit;
+    }
+  }
   const raw = await askExtractor(
     `รายการ: ${pending.type === "expense" ? "จ่าย" : "รับ"} ${pending.amount} บาท · ${pending.note || ""}\nเจ้าของบอกว่า: """${answer}"""`,
     {
       system: `จัดหมวดรายการเงินตามที่เจ้าของบอก ตอบ JSON เท่านั้น: {"category":"...","note":"สั้น ๆ ว่าค่าอะไร"}
 หมวดรายจ่าย: อาหาร | เดินทาง | ของใช้ | บันเทิง | บิล/สมาชิก | สุขภาพ | ให้คนอื่น | อื่นๆ
-หมวดรายรับ: เงินเดือน | เงินเสริม | อื่นๆ`,
+หมวดรายรับ: เงินเดือน | เงินเสริม | อื่นๆ
+กติกา note: เก็บเฉพาะ "สิ่งที่เจ้าของบอกว่าเป็นค่าอะไร" ห้ามใส่ตัวเลข/ยอดเงินใน note เอง (ยอดจริงระบบมีแล้ว ห้ามเดาเพิ่ม)`,
       timeoutMs: 60_000,
     },
   );
@@ -144,7 +170,7 @@ export async function classifyPendingTxn(answer: string): Promise<string | null>
     });
     const { rebuildLedgerMonth, ymOf } = await import("./kiki-finance");
     await rebuildLedgerMonth(ymOf(pending.occurredAt)).catch(() => {});
-    return `${pending.type === "expense" ? "จ่าย" : "รับ"} ${fmtBaht(pending.amount)} ฿ → หมวด ${p.category}${p.note ? ` · ${p.note}` : ""}`;
+    return { ok: true, msg: `${pending.type === "expense" ? "จ่าย" : "รับ"} ${fmtBaht(pending.amount)} ฿ → หมวด ${p.category}${p.note ? ` · ${p.note}` : ""}` };
   } catch {
     return null;
   }
@@ -154,7 +180,7 @@ export async function classifyPendingTxn(answer: string): Promise<string | null>
 export async function hasPendingTxn(): Promise<boolean> {
   const { db } = await import("./db");
   const n = await db.financeTxn.count({
-    where: { category: PENDING_CATEGORY, createdAt: { gte: new Date(Date.now() - 48 * 3600_000) } },
+    where: { category: PENDING_CATEGORY, createdAt: { gte: new Date(Date.now() - PENDING_WINDOW_MS) } },
   });
   return n > 0;
 }
