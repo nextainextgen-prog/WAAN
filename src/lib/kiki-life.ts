@@ -2,8 +2,7 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { db } from "./db";
-import { askClaude } from "./claude";
-import { KIKI_GUARD, writePersonalNote, readPersonalNote, personalHubFooter, PERSONAL_FOLDER } from "./kiki";
+import { askExtractor, writePersonalNote, readPersonalNote, personalHubFooter, PERSONAL_FOLDER } from "./kiki";
 import { getVaultPath } from "./obsidian";
 import { financeSnapshot, fmtBaht, snapshotFacts } from "./kiki-finance";
 
@@ -16,7 +15,7 @@ import { financeSnapshot, fmtBaht, snapshotFacts } from "./kiki-finance";
 
 async function llmJson<T>(system: string, prompt: string): Promise<T | null> {
   try {
-    const raw = await askClaude(prompt, { guard: KIKI_GUARD, system, timeoutMs: 90_000 });
+    const raw = await askExtractor(prompt, { system, timeoutMs: 90_000 });
     const m = raw.match(/\{[\s\S]*\}/);
     return m ? (JSON.parse(m[0]) as T) : null;
   } catch {

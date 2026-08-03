@@ -1,6 +1,5 @@
 import { db } from "./db";
-import { askClaude } from "./claude";
-import { KIKI_GUARD, getSetting } from "./kiki";
+import { askExtractor, getSetting } from "./kiki";
 import { deleteGoogleEvent, moveGoogleEvent, thaiDate } from "./calendar";
 
 /**
@@ -364,9 +363,9 @@ export async function editCalendar(command: string, chatId: string): Promise<Edi
   const table = rows
     .map((r) => `${r.id} | ${r.date.toISOString().slice(0, 10)} | ${r.timeText || "ทั้งวัน"}${r.endTime ? `-${r.endTime}` : ""} | ${r.title} | ${r.location || "-"} | ${r.done ? "เสร็จแล้ว" : "ยังไม่เสร็จ"}`)
     .join("\n");
-  const raw = await askClaude(
+  const raw = await askExtractor(
     `วันนี้คือ ${todayISO}\nคำสั่งจากเจ้าของ: """${command}"""\n\nตารางนัด (id | วันที่ | เวลา | ชื่อนัด | สถานที่ | สถานะ):\n${table}`,
-    { guard: KIKI_GUARD, system: CAL_EDIT_SYSTEM, timeoutMs: 90_000 },
+    { system: CAL_EDIT_SYSTEM, timeoutMs: 90_000 },
   );
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) return { applied: [], reason: "อ่านคำสั่งไม่ออก" };

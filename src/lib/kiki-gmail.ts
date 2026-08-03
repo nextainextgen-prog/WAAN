@@ -1,7 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { askClaude } from "./claude";
-import { KIKI_GUARD, getSetting, setSetting } from "./kiki";
+import { askExtractor, getSetting, setSetting } from "./kiki";
 import { recordTxns, fmtBaht, type TxnRecord } from "./kiki-finance";
 
 /**
@@ -87,10 +86,9 @@ export async function pollBankEmails(): Promise<BankTxnEvent[]> {
   const out: BankTxnEvent[] = [];
   for (const mail of mails) {
     try {
-      const raw = await askClaude(
+      const raw = await askExtractor(
         `เมลจากธนาคาร:\nหัวเรื่อง: ${mail.subject}\nเนื้อหา: """${mail.text}"""`,
         {
-          guard: KIKI_GUARD,
           system: `คุณคือระบบอ่านเมลแจ้งเตือนธนาคารไทย (K PLUS/กสิกร) ตอบ JSON เท่านั้น:
 {"relevant":true/false,"type":"income|expense","amount":123.45,"counterparty":"ชื่อบัญชี/ธนาคารปลายทางหรือต้นทาง","when":"YYYY-MM-DDTHH:mm"}
 - โอนเงินออก/จ่ายบิล/ถอน = expense · เงินเข้า/รับโอน = income
@@ -126,10 +124,9 @@ export async function classifyPendingTxn(answer: string): Promise<string | null>
     orderBy: { createdAt: "asc" },
   });
   if (!pending) return null;
-  const raw = await askClaude(
+  const raw = await askExtractor(
     `รายการ: ${pending.type === "expense" ? "จ่าย" : "รับ"} ${pending.amount} บาท · ${pending.note || ""}\nเจ้าของบอกว่า: """${answer}"""`,
     {
-      guard: KIKI_GUARD,
       system: `จัดหมวดรายการเงินตามที่เจ้าของบอก ตอบ JSON เท่านั้น: {"category":"...","note":"สั้น ๆ ว่าค่าอะไร"}
 หมวดรายจ่าย: อาหาร | เดินทาง | ของใช้ | บันเทิง | บิล/สมาชิก | สุขภาพ | ให้คนอื่น | อื่นๆ
 หมวดรายรับ: เงินเดือน | เงินเสริม | อื่นๆ`,

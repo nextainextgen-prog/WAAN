@@ -14,6 +14,7 @@ import { socialReady, grabFeeds, grabFeedPosts } from "@/lib/kiki-social";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
 import {
   askKiki,
+  askExtractor,
   saveKikiChat,
   getKikiOwnerId,
   setSetting,
@@ -392,8 +393,7 @@ export async function POST(req: Request) {
       }
       let dm: { target?: string; message?: string } | null = null;
       try {
-        const raw = await askClaude(`ข้อความเจ้าของ: """${text}"""`, {
-          guard: KIKI_GUARD,
+        const raw = await askExtractor(`ข้อความเจ้าของ: """${text}"""`, {
           system: `แยกคำสั่งส่งข้อความ ตอบ JSON เท่านั้น: {"target":"ชื่อ/username คนหรือกลุ่มที่จะส่งหา","message":"ข้อความที่จะส่ง (เรียบเรียงจากที่เจ้าของสั่ง ให้เหมือนเจ้าของพิมพ์เอง ไม่ต้องแนะนำตัว)"}`,
           timeoutMs: 60_000,
         });
@@ -748,7 +748,7 @@ export async function POST(req: Request) {
     // ===== ปฏิทิน: ลงนัด =====
     if (CAL_CREATE_RE.test(text)) {
       try {
-        const parsedList = await extractEvents(text);
+        const parsedList = await extractEvents(text, askExtractor);
         if (parsedList.length) {
           const now = new Date();
           const travelMin = Number((await getSetting("kiki_travel_min")) || 40);

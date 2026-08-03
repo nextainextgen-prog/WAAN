@@ -46,10 +46,14 @@ function dayStart(d: Date): Date {
 }
 
 // ดึงงานทั้งหมดจากข้อความ (รองรับหลายงานในข้อความเดียว)
-export async function extractEvents(text: string): Promise<ParsedEvent[]> {
+// llm: ส่งสมองตัวอื่นมาแทน askClaude ได้ (Vex ใช้ตัวที่มี Gemini สำรอง) — ไม่ส่ง = พฤติกรรมเดิมของวาน
+export async function extractEvents(
+  text: string,
+  llm: (prompt: string, opts: { system: string; timeoutMs: number }) => Promise<string> = (p, o) => askClaude(p, o),
+): Promise<ParsedEvent[]> {
   const now = new Date();
   const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  const raw = await askClaude(`วันนี้คือ ${todayISO}\n\nข้อความ: ${text}`, { system: EXTRACT_SYSTEM, timeoutMs: 60_000 });
+  const raw = await llm(`วันนี้คือ ${todayISO}\n\nข้อความ: ${text}`, { system: EXTRACT_SYSTEM, timeoutMs: 60_000 });
   const list = parseEvents(raw).filter((e) => e.title);
   if (!list.length) throw new Error("ไม่พบรายละเอียดงานที่จะลง");
   // อีเมล/Meet: จับจากข้อความตรงๆ (แม่นกว่าให้ LLM เดา) — ใช้ร่วมทุกงานในข้อความเดียว

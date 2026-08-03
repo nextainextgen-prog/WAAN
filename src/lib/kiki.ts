@@ -353,9 +353,9 @@ export async function saveLinkToPersonal(url: string, userNote?: string): Promis
   // ให้สมองสรุป/จัดโครงสร้างก่อนเก็บ — ไม่ดัมป์ดิบ
   let organized = "";
   try {
-    organized = await askClaude(
+    organized = await askExtractor(
       `จัดเนื้อหาต่อไปนี้เป็นโน้ตความรู้ภาษาไทย (markdown): สรุปประเด็นสำคัญเป็นหัวข้อ อ่านง่าย เก็บรายละเอียดที่มีประโยชน์ครบ ไม่ต้องเกริ่นนำ/ปิดท้าย\n\nชื่อเรื่อง: ${content.title}\nลิงก์: ${content.url}\n${userNote ? `หมายเหตุจากเจ้าของ: ${userNote}\n` : ""}\nเนื้อหา:\n${content.text.slice(0, 20_000)}`,
-      { guard: KIKI_GUARD, timeoutMs: 90_000 },
+      { timeoutMs: 90_000 },
     );
   } catch {
     organized = content.text.slice(0, 8_000);
@@ -518,15 +518,25 @@ export async function askKiki(message: string, extraContext?: string): Promise<s
 }
 
 // สมองสำรอง: Gemini API (เร็ว ใช้ persona เดียวกัน) — ใช้เฉพาะตอน Claude CLI ล่ม/ช้าเกิน
-async function askGeminiChat(system: string, message: string): Promise<string> {
+// รูปแนบ: Claude CLI อ่านจาก path ด้วยเครื่องมือ แต่ Gemini ไม่มีเครื่องมือ → ยัดเป็นภาพ inline แทน
+async function askGeminiChat(system: string, message: string, imagePaths: string[] = []): Promise<string> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new Error("no GEMINI_API_KEY");
+  const parts: Record<string, unknown>[] = [];
+  for (const p of imagePaths) {
+    const buf = await fs.readFile(p).catch(() => null);
+    if (!buf) continue;
+    const ext = path.extname(p).toLowerCase();
+    const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+    parts.push({ inline_data: { mime_type: mime, data: buf.toString("base64") } });
+  }
+  parts.push({ text: message });
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       system_instruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: message }] }],
+      contents: [{ role: "user", parts }],
     }),
     signal: AbortSignal.timeout(60_000),
   });
@@ -535,6 +545,24 @@ async function askGeminiChat(system: string, message: string): Promise<string> {
   const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
   if (!text) throw new Error("empty");
   return text;
+}
+
+// ตัวสกัดข้อมูลทุกตัว (เงิน/นัด/หนี้/เมล ฯลฯ) เรียกผ่านนี่: Claude CLI ก่อน → Gemini สำรองเมื่อช้า/ล่ม
+export async function askExtractor(
+  prompt: string,
+  opts: { system?: string; timeoutMs?: number; imagePaths?: string[] } = {},
+): Promise<string> {
+  try {
+    return await askClaude(prompt, { guard: KIKI_GUARD, system: opts.system, timeoutMs: opts.timeoutMs ?? 90_000 });
+  } catch (e) {
+    const sys = [KIKI_GUARD, opts.system || ""].filter(Boolean).join("\n\n");
+    const p = opts.imagePaths?.length
+      ? `${prompt}\n\n(รูปที่พูดถึงตาม path ข้างบนแนบมาเป็นภาพในข้อความนี้แล้ว — อ่านจากภาพแนบโดยตรง ไม่ต้องใช้เครื่องมือ)`
+      : prompt;
+    const g = await askGeminiChat(sys, p, opts.imagePaths || []).catch(() => "");
+    if (g) return g;
+    throw e;
+  }
 }
 
 // ===== YouTube → ความรู้ (Gemini ดูคลิปจริง) =====

@@ -1,6 +1,5 @@
 import { db } from "./db";
-import { askClaude } from "./claude";
-import { KIKI_GUARD, appendPersonalNote, readPersonalNote, writePersonalNote, personalHubFooter, PERSONAL_FOLDER } from "./kiki";
+import { askExtractor, appendPersonalNote, readPersonalNote, writePersonalNote, personalHubFooter, PERSONAL_FOLDER } from "./kiki";
 
 /**
  * การเงินส่วนตัวของเจ้าของ — Vex เป็นเลขาการเงิน
@@ -41,10 +40,10 @@ export async function extractFinance(text: string, imagePaths: string[] = [], re
         .map((r) => `- ${r.type === "income" ? "รับ" : "จ่าย"} ${r.amount} บาท · ${r.category}${r.note ? ` · ${r.note}` : ""}`)
         .join("\n")}\nถ้าเจ้าของแค่ถาม/อธิบาย/บ่น/แก้ความเข้าใจเรื่องยอดเดิม โดยไม่ได้แจ้งรายการใหม่ = {"items":[]}`
     : "";
-  const raw = await askClaude(`ข้อความจากเจ้าของ: """${text}"""${img}${rec}`, {
-    guard: KIKI_GUARD,
+  const raw = await askExtractor(`ข้อความจากเจ้าของ: """${text}"""${img}${rec}`, {
     system: EXTRACT_SYSTEM,
     timeoutMs: 120_000,
+    imagePaths,
   });
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) return [];
@@ -445,9 +444,9 @@ export async function editFinance(command: string): Promise<EditFinanceResult> {
   const table = rows
     .map((r) => `${r.id} | เกิด ${r.occurredAt.toISOString().slice(0, 16)} | ${r.type} | ${r.amount} | ${r.category} | ${r.note || "-"} | บันทึกเมื่อ ${r.createdAt.toISOString().slice(0, 16)}`)
     .join("\n");
-  const raw = await askClaude(
+  const raw = await askExtractor(
     `คำสั่งจากเจ้าของ: """${command}"""\n\nตารางรายการ (id | เกิดเมื่อ | ประเภท | จำนวน | หมวด | โน้ต | บันทึกเมื่อ):\n${table}`,
-    { guard: KIKI_GUARD, system: EDIT_SYSTEM, timeoutMs: 120_000 },
+    { system: EDIT_SYSTEM, timeoutMs: 120_000 },
   );
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) return { applied: [], reason: "อ่านคำสั่งไม่ออก ลองบอกชื่อรายการ+ยอดชัด ๆ อีกที" };
