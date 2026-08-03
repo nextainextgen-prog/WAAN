@@ -155,6 +155,7 @@ export async function POST(req: Request) {
   const replyText = String(body.replyText || "").trim();
   const imageFiles = (body.imageFiles as string[] | undefined) || [];
   const audioFiles = (body.audioFiles as { path: string; mime?: string }[] | undefined) || [];
+  const docFiles = (body.docFiles as { path: string; name: string }[] | undefined) || [];
   const msgId = body.msgId ? Number(body.msgId) : undefined;
   const callbackData = String(body.callbackData || "");
   // ปุ่มกด = คำสั่งยืนยันแบบพิมพ์ (แปลงเป็นข้อความเดิม logic ยืนยันทุกตัวใช้ต่อได้เลย)
@@ -162,7 +163,9 @@ export async function POST(req: Request) {
   else if (callbackData === "kiki:dm:no") text = "ยกเลิก";
   else if (callbackData === "kiki:grp:yes") text = "[ปุ่ม:สร้างกลุ่ม]";
   else if (callbackData === "kiki:grp:no") text = "[ปุ่ม:ยกเลิกกลุ่ม]";
-  if (!chatId || (!text && !imageFiles.length && !audioFiles.length)) return ok([]);
+  else if (callbackData === "kiki:dev:yes") text = "[ปุ่ม:พัฒนาเลย]";
+  else if (callbackData === "kiki:dev:no") text = "[ปุ่ม:ยกเลิกพัฒนา]";
+  if (!chatId || (!text && !imageFiles.length && !audioFiles.length && !docFiles.length)) return ok([]);
 
   // ===== เสียง → ข้อความ (เจ้าของอัดเสียงสั่งแทนการพิมพ์ได้ทุกอย่าง) =====
   let voiceNote = "";
@@ -276,6 +279,27 @@ export async function POST(req: Request) {
         `มาแล้วครับผม ⚡ ผม Vex เลขาส่วนตัว\n\nส่งสลิปมาได้เลย เดี๋ยวจดให้ · ลงนัดก็ได้ · ส่งลิงก์ให้เก็บก็ได้\nอยากให้จำอะไรพิมพ์ "จำไว้ว่า ..." ครับ`,
       );
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== ไฟล์เอกสาร (pdf/docx/txt/md) → สรุปเก็บเข้าคลังความรู้ (เจ้าของสั่ง 3 ส.ค.) =====
+    if (docFiles.length) {
+      const { saveDocToPersonal } = await import("@/lib/kiki");
+      const results: string[] = [];
+      const fails: string[] = [];
+      for (const d of docFiles) {
+        try {
+          const r = await saveDocToPersonal(d.path, d.name, text || undefined);
+          results.push(`"${r.title}" → คลังความรู้ (${d.name})`);
+        } catch (e) {
+          fails.push(`${d.name}: ${e instanceof Error ? e.message.slice(0, 100) : "อ่านไม่ได้"}`);
+        }
+      }
+      const lines = [
+        results.length ? `เก็บเข้าคลังแล้วครับ ✅\n${results.map((r) => `• ${r}`).join("\n")}` : "",
+        fails.length ? `⚠️ อ่านไม่ได้: ${fails.join(" · ")}` : "",
+        results.length ? `ถามย้อนหลังได้เลย ค้นแบบความหมายเจอแน่นอน` : "",
+      ].filter(Boolean).join("\n\n");
+      return reply([{ kind: "text", text: lines, replyTo: msgId }]);
     }
 
     // ===== ฝาก Hermes — งานยาก/หลายขั้น/ใช้เวลานาน (agent GPT-5.5 + เว็บ/เบราว์เซอร์/terminal) =====
@@ -458,6 +482,36 @@ export async function POST(req: Request) {
         await setPendingDm(null);
         return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่ส่ง", replyTo: msgId }]);
       }
+    }
+
+    // ===== พัฒนาตัวเอง: ยืนยัน/ยกเลิก =====
+    {
+      const { getPendingDev, setPendingDev, queueDevJob, devJobRunning } = await import("@/lib/kiki-dev");
+      const pendingDev = await getPendingDev();
+      if (pendingDev && text === "[ปุ่ม:ยกเลิกพัฒนา]") {
+        await setPendingDev(null);
+        return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่พัฒนา", replyTo: msgId }]);
+      }
+      if (pendingDev && text === "[ปุ่ม:พัฒนาเลย]") {
+        await setPendingDev(null);
+        if (await devJobRunning()) return reply([{ kind: "text", text: `มีงานพัฒนารันอยู่แล้วครับ ⚠️ รอตัวเดิมจบก่อน (สูงสุด 45 นาที) ค่อยสั่งตัวใหม่`, replyTo: msgId }]);
+        await queueDevJob(chatId, pendingDev);
+        return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งสเปกให้วิศวกร (Claude ตัวเดียวกับที่พี่ใช้) ลงมือแก้โค้ดผมแล้ว\n\nใช้เวลาได้ถึง 45 นาที เสร็จแล้วรายงานพร้อม commit — ช่วงท้ายผมจะรีสตาร์ทตัวเองแป๊บนึง ถ้าเงียบช่วงสั้น ๆ คือกำลังเกิดใหม่ครับ`, replyTo: msgId }]);
+      }
+    }
+
+    // ===== พัฒนาตัวเอง: รับสเปก + ปุ่มยืนยัน =====
+    const devM = text.match(/^\s*(?:พัฒนา(?:ตัวเอง|ระบบ)?|อัปเกรด(?:ตัวเอง|ระบบ)?|เพิ่ม(?:ความสามารถ|ฟีเจอร์)|สร้างระบบ|ทำระบบ|แก้บั๊ก)\s*[:：]?\s*([\s\S]{10,})/);
+    if (devM && !text.startsWith("[ปุ่ม")) {
+      const { setPendingDev } = await import("@/lib/kiki-dev");
+      const spec = devM[1].trim();
+      await setPendingDev(spec);
+      return reply([{
+        kind: "text",
+        text: `จะส่งสเปกนี้ให้วิศวกรแก้โค้ดผมจริง ๆ นะครับ:\n\n"${spec.slice(0, 500)}"\n\nกติกา: แตะได้เฉพาะโค้ดฝั่งผม (Vex) · tsc ต้องผ่าน · commit+push · เสร็จแล้วรีสตาร์ทตัวเอง+รายงาน\nถ้าของที่ได้ไม่ตรงใจ บอกพี่โด้ให้ย้อน commit ได้เสมอ`,
+        replyTo: msgId,
+        buttons: [[{ text: "✅ พัฒนาเลย", data: "kiki:dev:yes" }, { text: "❌ ยกเลิก", data: "kiki:dev:no" }]],
+      }]);
     }
 
     // ===== สร้างกลุ่มใหม่: ยืนยัน/ยกเลิก (ปุ่มหรือพิมพ์) =====

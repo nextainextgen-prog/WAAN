@@ -97,10 +97,17 @@ export interface HermesDelivery {
 // cron เรียกทุกนาที: หยิบงานที่เสร็จ/พังแล้วยังไม่ได้ส่ง + เก็บกวาดงานค้าง (เว็บรีสตาร์ทกลางคัน)
 export async function collectHermesDeliveries(): Promise<HermesDelivery[]> {
   // งานที่สถานะ running นานผิดปกติ = โปรเซสตายไปแล้ว (เช่น restart เว็บ) — ปิดจ็อบตรง ๆ ไม่แขวนเงียบ
+  // งาน Hermes รันในเว็บ = เพดาน 20 นาที · งาน [พัฒนา] รัน detached นอกเว็บ = เพดาน 60 นาที (ตัวรันมี timeout 45 นาทีของตัวเอง)
   await db.kikiHermesJob
     .updateMany({
-      where: { status: "running", startedAt: { lt: new Date(Date.now() - 20 * 60_000) } },
+      where: { status: "running", startedAt: { lt: new Date(Date.now() - 20 * 60_000) }, NOT: { task: { startsWith: "[พัฒนา]" } } },
       data: { status: "failed", error: "งานหลุดกลางคัน (ระบบรีสตาร์ท) — สั่งใหม่อีกทีครับ", doneAt: new Date() },
+    })
+    .catch(() => {});
+  await db.kikiHermesJob
+    .updateMany({
+      where: { status: "running", startedAt: { lt: new Date(Date.now() - 60 * 60_000) }, task: { startsWith: "[พัฒนา]" } },
+      data: { status: "failed", error: "งานพัฒนาหลุดกลางคัน — เช็ค git log ว่ามี commit ค้างไหม แล้วสั่งใหม่", doneAt: new Date() },
     })
     .catch(() => {});
   const rows = await db.kikiHermesJob.findMany({ where: { status: { in: ["done", "failed"] }, sentAt: null }, orderBy: { doneAt: "asc" }, take: 5 });

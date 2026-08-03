@@ -138,6 +138,8 @@ async function processMessage(msgs) {
   const files = msgs.map(fileOf).filter(Boolean);
   const audios = msgs.map(audioOf).filter(Boolean);
   const imageFiles = [];
+  // เอกสาร pdf/docx/txt/md → ส่งให้สมองสรุปเก็บเข้าคลังความรู้
+  const docFiles = [];
   const audioFiles = [];
   if (files.length || audios.length) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kiki-img-"));
@@ -153,8 +155,14 @@ async function processMessage(msgs) {
         if (p) audioFiles.push({ path: p, mime: a.mime });
       } catch { /* ข้ามเสียงที่โหลดไม่ได้ */ }
     }
+    for (const f of files.filter((x) => !x.isImage && /\.(pdf|docx|txt|md)$/i.test(x.file_name || "")).slice(0, 3)) {
+      try {
+        const p = await downloadFile(f.file_id, dir, f.file_name);
+        if (p) docFiles.push({ path: p, name: f.file_name });
+      } catch { /* ข้ามไฟล์ที่โหลดไม่ได้ */ }
+    }
   }
-  if (!text && !imageFiles.length && !audioFiles.length) return;
+  if (!text && !imageFiles.length && !audioFiles.length && !docFiles.length) return;
 
   await reactMsg(chatId, msg.message_id, audioFiles.length || imageFiles.length ? "👀" : null);
   await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
@@ -171,6 +179,7 @@ async function processMessage(msgs) {
     replyText,
     imageFiles,
     audioFiles,
+    docFiles,
     msgId: msg.message_id,
   });
   const waits = [0, 5000, 12000];

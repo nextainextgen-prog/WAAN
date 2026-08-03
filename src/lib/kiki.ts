@@ -425,6 +425,13 @@ export async function transcribeAudio(filePath: string, mime = "audio/ogg"): Pro
   if (!key) throw new Error("ยังไม่ได้ตั้งค่า GEMINI_API_KEY สำหรับถอดเสียง");
   const data = (await fs.readFile(filePath)).toString("base64");
   const model = "gemini-2.5-flash";
+  // คำไทยเพี้ยนบ่อย (pain point เก่า) → ป้อนบริบท: เรื่องที่คุยล่าสุด + ชื่อเฉพาะที่มักโผล่ ให้เดาคำกำกวมถูกทาง
+  let hints = "";
+  try {
+    const [convo, facts] = await Promise.all([kikiConversation(6), db.ownerFact.findMany({ where: { active: true, category: "คนรอบตัว" }, take: 15 })]);
+    const names = facts.map((f) => f.fact).join(" · ");
+    hints = `\n\nบริบทช่วยถอด (อย่าเอาไปใส่ในคำตอบ): เรื่องที่คุยกันล่าสุด:\n${convo.slice(-1200)}\nชื่อ/คำเฉพาะที่มักพูดถึง: Vex, วาน, โด้, Codewars, wishlist, Shopee, Lazada${names ? `, ${names.slice(0, 300)}` : ""}`;
+  } catch { /* ไม่มีบริบทก็ถอดตรง ๆ */ }
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
@@ -435,10 +442,11 @@ export async function transcribeAudio(filePath: string, mime = "audio/ogg"): Pro
           {
             parts: [
               { inline_data: { mime_type: mime, data } },
-              { text: "ถอดเสียงในไฟล์นี้เป็นข้อความภาษาไทยตรงตามที่พูดทุกคำ ตอบเฉพาะข้อความที่ถอดได้เท่านั้น ไม่ต้องอธิบายอะไรเพิ่ม" },
+              { text: `ถอดเสียงในไฟล์นี้เป็นข้อความภาษาไทยตรงตามที่พูดทุกคำ ตอบเฉพาะข้อความที่ถอดได้เท่านั้น ไม่ต้องอธิบายอะไรเพิ่ม\nคำกำกวม/ชื่อเฉพาะ ให้เทียบกับบริบทด้านล่างแล้วเลือกคำที่สมเหตุสมผลที่สุด${hints}` },
             ],
           },
         ],
+        generationConfig: { temperature: 0.1 },
       }),
     },
   );
@@ -591,6 +599,32 @@ export async function askExtractor(
     if (g) return g;
     throw e;
   }
+}
+
+// ===== ไฟล์เอกสาร (pdf/docx/txt/md) → คลังความรู้ =====
+
+export async function saveDocToPersonal(filePath: string, fileName: string, userNote?: string): Promise<{ title: string; rel: string; summary: string }> {
+  const { extractText } = await import("./extract");
+  const { text: rawText } = await extractText(filePath);
+  if (!rawText.trim()) throw new Error("อ่านเนื้อหาในไฟล์ไม่ได้ (ไฟล์ว่างหรือเป็นสแกนภาพ)");
+  const baseTitle = fileName.replace(/\.[a-z0-9]+$/i, "");
+  const organized = await askExtractor(
+    `จัดเนื้อหาไฟล์ "${fileName}" เป็นโน้ตความรู้ภาษาไทย (markdown): บรรทัดแรกสุด = ชื่อเรื่องสั้น ๆ (ไม่ต้องมีคำนำหน้า) เว้นบรรทัด แล้วสรุปประเด็นสำคัญเป็นหัวข้อ เก็บรายละเอียด/ตัวเลขที่มีประโยชน์ครบ ไม่ต้องเกริ่น\n${userNote ? `เจ้าของสั่งเก็บโดยบอกว่า: ${userNote}\n` : ""}\nเนื้อหา:\n${rawText.slice(0, 24_000)}`,
+    { timeoutMs: 150_000 },
+  ).catch(() => rawText.slice(0, 6000));
+  const nl = organized.indexOf("\n");
+  const title = (nl > 0 ? organized.slice(0, nl) : baseTitle).replace(/^#+\s*/, "").trim().slice(0, 90) || baseTitle;
+  const summary = (nl > 0 ? organized.slice(nl + 1) : organized).trim();
+  const today = new Date().toISOString().slice(0, 10);
+  const rel = `knowledge/${today}-${slugify(title)}.md`;
+  const md = [
+    "---", "type: knowledge", "tags: [ส่วนตัว, ความรู้, เอกสาร]", `source: ไฟล์ ${fileName}`, `saved: ${today}`, "---", "",
+    `# ${title}`, "", userNote ? `> เจ้าของสั่งเก็บ: ${userNote}\n` : "", summary,
+    personalHubFooter([`[[${PERSONAL_FOLDER}/knowledge/_สารบัญ-ความรู้ส่วนตัว|สารบัญความรู้ส่วนตัว]]`]),
+  ].join("\n");
+  await writePersonalNote(rel, md);
+  await appendKnowledgeHub(rel, title);
+  return { title, rel, summary };
 }
 
 // ===== YouTube → ความรู้ (Gemini ดูคลิปจริง) =====

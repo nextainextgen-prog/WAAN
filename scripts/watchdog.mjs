@@ -83,11 +83,12 @@ function afterBanner(logf, n = 50) {
 const SERVICES = [
   { label: "com.changoh.web", log: "dev.log", name: "web", auth: null, web: true },
   { label: "com.changoh.bot", log: "bot.log", name: "bot", auth: null },
-  { label: "com.changoh.drive", log: "drive.log", name: "drive", auth: "npm run drive:auth" },
-  { label: "com.changoh.oho", log: "oho.log", name: "oho", auth: "npm run oho:auth" },
-  { label: "com.changoh.fb", log: "fb.log", name: "fb", auth: "npm run fb:auth" },
-  { label: "com.changoh.line", log: "line.log", name: "line", auth: "npm run line:auth" },
-  { label: "com.changoh.refund", log: "refund.log", name: "refund", auth: "npm run thunder:auth" },
+  { label: "com.changoh.kiki", log: "kiki.log", name: "kiki (Vex)", auth: null, vex: true },
+  { label: "com.changoh.drive", log: "drive.log", name: "drive", auth: "npm run drive:auth", script: "drive:auth" },
+  { label: "com.changoh.oho", log: "oho.log", name: "oho", auth: "npm run oho:auth", script: "oho:auth" },
+  { label: "com.changoh.fb", log: "fb.log", name: "fb", auth: "npm run fb:auth", script: "fb:auth" },
+  { label: "com.changoh.line", log: "line.log", name: "line", auth: "npm run line:auth", script: "line:auth" },
+  { label: "com.changoh.refund", log: "refund.log", name: "refund", auth: "npm run thunder:auth", script: "thunder:auth" },
 ];
 
 let state = {};
@@ -140,6 +141,27 @@ for (const s of SERVICES) {
   }
 }
 
+// แจ้งฝั่ง Vex ผ่านบอท Vex เอง (คนละโทเค็น คนละกลุ่มกับวาน)
+async function tgVex(text) {
+  const token = (process.env.KIKI_BOT_TOKEN || "").trim();
+  if (!token) return false;
+  let chat = null;
+  for (const dbf of ["prisma/changoh.db", "changoh.db"]) {
+    try {
+      const v = execSync(`sqlite3 "${path.join(ROOT, dbf)}" "SELECT value FROM Setting WHERE key='kiki_chat_ids' LIMIT 1;"`, { encoding: "utf8" }).trim();
+      if (v) { chat = JSON.parse(v)[0]; break; }
+    } catch {}
+  }
+  if (!chat) return false;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chat, text }),
+    });
+    return (await r.json()).ok === true;
+  } catch { return false; }
+}
+
 // ---- ส่งแจ้งเตือน ----
 if (restarted.length) {
   const k = "restart";
@@ -147,14 +169,38 @@ if (restarted.length) {
     await tg(`🔄 <b>น้องวาน: รีสตาร์ท service ที่หยุดไป</b>\n${restarted.join(", ")}\n(ระบบกู้ให้อัตโนมัติแล้ว)`);
     state.alerted[k] = now;
   }
+  // ฝั่ง Vex ล่ม → Vex แจ้งเองในกลุ่มหลักหลังฟื้น (เจ้าของจะได้รู้ว่าช่วงที่เงียบไปคือดับ ไม่ใช่เมิน)
+  if (restarted.some((r) => r.includes("kiki"))) {
+    const k2 = "restart-vex";
+    if (now - (state.alerted[k2] || 0) > 30 * 60e3) {
+      await tgVex(`⚠️ ระบบผมดับไปช่วงนึงครับ — watchdog กู้กลับมาแล้ว ถ้าช่วงที่ผ่านมาสั่งอะไรแล้วผมเงียบ สั่งซ้ำได้เลย`);
+      state.alerted[k2] = now;
+    }
+  }
 }
+// เซสชันหมดอายุ → ถามในห้องคุมระบบว่า "ให้ผมรันให้ไหม" (วานรันเองได้ พี่โด้แค่ตอบ "รันเลย")
+// ส่งผ่าน /api/telegram/ops-alert เพื่อให้มีการ "ผูกคำสั่งกับใบแจ้งเตือน" — กัน "รันเลย" ไปโดนตัวผิด
+// เว็บล่ม/เรียกไม่ติด → ถอยไปข้อความเดิม (บอกคำสั่งให้ก็อปเอง) จะได้ไม่เงียบหาย
 for (const s of expired) {
-  await tg(
-    `🔑 <b>น้องวาน: เซสชัน ${s.name.toUpperCase()} น่าจะหมดอายุ</b>\n` +
-    `พังต่อเนื่อง ${FAIL_THRESHOLD}+ รอบแล้ว — ตัวนี้ต้องล็อกอินเอง (มี reCAPTCHA/2FA)\n\n` +
-    `เปิด <b>Terminal</b> แล้ววาง:\n<code>cd ${ROOT} && ${s.auth}</code>\n\n` +
-    `ล็อกอินครั้งเดียวในหน้าต่างที่เด้งขึ้น เดี๋ยวระบบใช้ต่อเอง ไม่ต้องทำอย่างอื่น`
-  );
+  let handed = false;
+  if (s.script) {
+    try {
+      const r = await fetch(`${WEB}/api/telegram/ops-alert`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-internal-token": process.env.INTERNAL_API_TOKEN || "" },
+        body: JSON.stringify({ service: s.name, script: s.script }),
+      });
+      handed = r.ok && (await r.json().catch(() => ({})))?.ok === true;
+    } catch { /* เว็บไม่ตอบ */ }
+  }
+  if (!handed) {
+    await tg(
+      `🔑 <b>น้องวาน: เซสชัน ${s.name.toUpperCase()} น่าจะหมดอายุ</b>\n` +
+      `พังต่อเนื่อง ${FAIL_THRESHOLD}+ รอบแล้ว — ตัวนี้ต้องล็อกอินเอง (มี reCAPTCHA/2FA)\n\n` +
+      `เปิด <b>Terminal</b> แล้ววาง:\n<code>cd ${ROOT} && ${s.auth}</code>\n\n` +
+      `ล็อกอินครั้งเดียวในหน้าต่างที่เด้งขึ้น เดี๋ยวระบบใช้ต่อเอง ไม่ต้องทำอย่างอื่น`
+    );
+  }
 }
 
 // ---- 4) กู้รายงานแชท: ถ้าเลย 07:00 แล้วยังไม่มีรายงาน "เมื่อวาน" (เช่นเครื่องปิดตอน 06:00) → รันซ้ำเอง ----
