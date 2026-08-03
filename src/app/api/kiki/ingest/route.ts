@@ -37,6 +37,7 @@ import {
   ttsOgg,
   webResearch,
   isShoppingQuery,
+  sanitizeVexText,
 } from "@/lib/kiki";
 import {
   extractFinance,
@@ -201,7 +202,7 @@ export async function POST(req: Request) {
           const p = para.trim();
           if (!p) continue;
           const lines = p.split("\n").map((x) => x.trim()).filter(Boolean);
-          const isStructured = (l: string) => /^([-•·*]|\d+[.)]\s|[🟢🔴⚠️✅]|\|)/.test(l);
+          const isStructured = (l: string) => /^([-•·*█▌]|\d+[.)]\s|[🟢🔴🔁⚠️✅⏰]|\|)/.test(l);
           if (lines.length >= 2 && !lines.some(isStructured)) {
             // prose หลายบรรทัดติดกัน (AI ลืมเว้นบรรทัดว่าง — เคสจริง 31 ก.ค.) → แยกบรรทัดละบับเบิล อ่านง่าย
             for (const l of lines) out.push({ kind: "text", text: l });
@@ -217,7 +218,15 @@ export async function POST(req: Request) {
       const tail = out.splice(7);
       out.push({ kind: "text", text: tail.map((t) => t.text).join("\n\n"), parseMode: tail.some((t) => t.parseMode) ? "HTML" : undefined });
     }
-    return out.map((x, i) => (i === 0 ? { ...x, replyTo: s.replyTo } : x));
+    return out
+      .filter((x) => x.parseMode || (x.text || "").trim())
+      .map((x) => {
+        // ตาข่ายมืออาชีพ: markdown ที่ AI เผลอเขียน (** ## ---) ต้องไม่หลุดถึงแชทดิบ ๆ
+        if (x.parseMode || !x.text) return x;
+        const clean = sanitizeVexText(x.text);
+        return { ...x, text: clean.text, parseMode: clean.parseMode };
+      })
+      .map((x, i) => (i === 0 ? { ...x, replyTo: s.replyTo } : x));
   };
 
   const reply = async (sendsIn: Send[]) => {
@@ -245,6 +254,16 @@ export async function POST(req: Request) {
         `มาแล้วครับผม ⚡ ผม Vex เลขาส่วนตัว\n\nส่งสลิปมาได้เลย เดี๋ยวจดให้ · ลงนัดก็ได้ · ส่งลิงก์ให้เก็บก็ได้\nอยากให้จำอะไรพิมพ์ "จำไว้ว่า ..." ครับ`,
       );
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== ฝาก Hermes — งานยาก/หลายขั้น/ใช้เวลานาน (agent GPT-5.5 + เว็บ/เบราว์เซอร์/terminal) =====
+    const hermesM = text.match(/^\s*(?:ฝาก|ให้)\s*(?:เฮอ(?:ร์)?เ?มี?ส|hermes)\s*(?:ไป|ช่วย|ทำ|จัดการ)?\s*[:：]?\s*([\s\S]{5,})/i);
+    if (hermesM) {
+      const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
+      if (!kikiHermesReady()) return reply([{ kind: "text", text: `Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`, replyTo: msgId }]);
+      const task = hermesM[1].trim();
+      await queueHermesJob(chatId, task);
+      return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งต่อให้ Hermes ทำเบื้องหลัง\n\nงาน: ${task.slice(0, 200)}\n\nใช้เวลาได้ถึง 15 นาที เสร็จเมื่อไหร่ผมเอาผลมาส่งเอง ระหว่างนี้สั่งงานอื่นได้ปกติ`, replyTo: msgId }]);
     }
 
     // ===== ลบรายการเงินล่าสุด (ทางลัด — เฉพาะพูดถึง "ล่าสุด/เมื่อกี้" ชัด ๆ) =====
@@ -293,6 +312,74 @@ export async function POST(req: Request) {
         if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
         return reply(sends);
       }
+    }
+
+    // ===== บัญชีตัวเอง (1.4) — โอนข้ามบัญชีตัวเองไม่นับเป็นรายจ่าย =====
+    if (/บัญชีตัวเอง(มี)?อะไรบ้าง|ลิสต์บัญชีตัวเอง/.test(text)) {
+      const { getOwnAccounts } = await import("@/lib/kiki-finance");
+      const list = await getOwnAccounts();
+      return reply([{ kind: "text", text: list.length ? `บัญชีตัวเองที่จำไว้: ${list.join(" · ")}` : `ยังไม่มีครับ — พิมพ์ "บัญชีตัวเอง: <ชื่อตามเมลธนาคาร>" เพื่อสอนผม`, replyTo: msgId }]);
+    }
+    // เพิ่มต้องมี ":" หรือ "คือ" ชัดเจน — กันประโยคคำถามโดนจับเป็นชื่อบัญชี (เคยพัง: "บัญชีตัวเองมีอะไรบ้าง")
+    const ownAccM = text.match(/^\s*บัญชี(?:ตัวเอง|ผม|ของผม)\s*(?:[:：]|คือ)\s*(.{3,60})$/);
+    if (ownAccM) {
+      const { addOwnAccount } = await import("@/lib/kiki-finance");
+      const list = await addOwnAccount(ownAccM[1].trim());
+      return reply([{ kind: "text", text: `จำแล้วครับ ✅ โอนไปหา "${ownAccM[1].trim()}" = ย้ายเงินตัวเอง ไม่นับเป็นรายจ่าย\n\nบัญชีตัวเองทั้งหมด: ${list.join(" · ")}`, replyTo: msgId }]);
+    }
+
+    // ===== ยอดเงินในบัญชี + เส้นเงินสด 30 วัน (2.1) =====
+    const balM = text.match(/(?:ยอด(?:เงิน)?ใน(?:บัญชี|แบงค์|ธนาคาร)|เงินในบัญชี)\s*(?:ตอนนี้|เหลือ)?\s*[:：]?\s*([\d,]+(?:\.\d+)?)/);
+    if (balM) {
+      const { setBalance, cashForecast30 } = await import("@/lib/kiki-finance");
+      const amt = Number(balM[1].replace(/,/g, ""));
+      await setBalance(amt);
+      const fc = await cashForecast30().catch(() => null);
+      return reply([{ kind: "text", text: `ตั้งยอดตั้งต้น ${fmtBaht(amt)} ฿ แล้วครับ ✅ ต่อจากนี้ผมคำนวณยอดคงเหลือจากรายการที่บันทึกให้เอง\n\n${fc ? fc.lines.join("\n") : ""}`.trim(), replyTo: msgId }]);
+    }
+    if (/เส้นเงินสด|เงิน(จะ)?พอไหม|คาดการณ์เงิน|forecast|เงินเหลือ(ถึง)?สิ้นเดือน|30\s*วัน.{0,10}เหลือ/i.test(text)) {
+      const { cashForecast30 } = await import("@/lib/kiki-finance");
+      const fc = await cashForecast30().catch(() => null);
+      if (!fc) return reply([{ kind: "text", text: `ยังคำนวณไม่ได้ครับ — บอกยอดตั้งต้นก่อน เช่น "ยอดในบัญชีตอนนี้ 25,000" แล้วผมจะพยากรณ์ 30 วันข้างหน้าให้ (บิลประจำ+pace ใช้จริง)`, replyTo: msgId }]);
+      return reply([{ kind: "text", text: fc.lines.join("\n"), replyTo: msgId }]);
+    }
+
+    // ===== บิลประจำ / subscription (1.2) =====
+    if (/บิลประจำ|subscription|ตัดทุกวันที่|ทุกเดือน.{0,12}ตัด|ยกเลิกบิล/i.test(text) && !RECUR_RE.test(text)) {
+      const { handleBillCommand } = await import("@/lib/kiki-finance");
+      const t = await handleBillCommand([replyText, text].filter(Boolean).join("\n"));
+      return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== ร้านประจำ (1.1) — ดูรายการที่ระบบจำได้ =====
+    if (/ร้านประจำ(มี)?อะไรบ้าง|ลิสต์ร้านประจำ|ร้านที่จำได้/.test(text)) {
+      const { listMerchants } = await import("@/lib/kiki-finance");
+      return reply([{ kind: "text", text: await listMerchants(), replyTo: msgId }]);
+    }
+
+    // ===== การ์ดสุขภาพการเงิน (4.1) =====
+    if (/สุขภาพ(ทาง)?การเงิน|ภาพรวมการเงิน|การเงิน(โดย)?รวม(เป็นไง|ดีไหม)?/.test(text)) {
+      const { healthSnapshot, healthCardHtml, healthFacts } = await import("@/lib/kiki-finance");
+      const h = await healthSnapshot();
+      const sendsH: Send[] = [];
+      try {
+        const png = await renderHtmlToPng(healthCardHtml(h), { width: 720, height: 200 });
+        sendsH.push({ kind: "photo", dataBase64: png.toString("base64"), filename: "health.png" });
+      } catch { /* การ์ดพัง ส่งข้อความล้วน */ }
+      const t = await vexSay(
+        "เจ้าของขอดูสุขภาพการเงินภาพรวม — วิเคราะห์จากตัวเลขจริง: จุดแข็ง จุดเสี่ยง สิ่งที่ควรทำ (ตรงไปตรงมา ไม่ชมลอย ๆ)",
+        healthFacts(h),
+        healthFacts(h).join("\n"),
+      );
+      sendsH.push({ kind: "text", text: t, replyTo: msgId });
+      return reply(sendsH);
+    }
+
+    // ===== ถามวิเคราะห์อิสระ (2.3) — text→query บน DB ตัวเลขไม่ผ่าน AI =====
+    if (/(หมด(เงิน)?|ใช้)(ไป)?(กับ|เท่าไหร่|กี่บาท)|เท่าไหร่.{0,16}(ค่า|หมวด|กับ)|ค่า[ก-๙a-zA-Z]{2,}.{0,12}(รวม|ทั้งหมด|เท่าไหร่|กี่บาท)|เทียบ.{0,12}(เดือน|หมวด|สัปดาห์)|เฉลี่ย.{0,12}(วัน|เดือน|สัปดาห์)|(เดือน|วัน|สัปดาห์)ไหนใช้(เยอะ|น้อย|หนัก)|หมวดไหน(ใช้|กิน|เปลือง)/i.test(text) && !/สรุป.{0,20}(html|ไฟล์|เอกสาร)/i.test(text)) {
+      const { analyzeFinance } = await import("@/lib/kiki-finance");
+      const t = await analyzeFinance([replyText, text].filter(Boolean).join("\n"));
+      return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
     // ===== "ซื้อ/ใช้อะไรไปบ้าง" — ลิสต์รายการรายตัว (ตัวเลขจาก DB ตรง ๆ) =====
@@ -536,15 +623,19 @@ export async function POST(req: Request) {
     if (
       (replyText && /🔴 เงินออก|🟢 เงินเข้า|ค่าอะไร|รอระบุ/.test(replyText)) ||
       (!imageFiles.length && (await hasPendingTxn()) &&
-        (/^(ค่า|เป็นค่า|มันคือ|อันนี้(คือ|เป็น)?|หมวด)/.test(text) || (!/\d/.test(text) && /^(จ่าย|ซื้อ|โอน)/.test(text))))
+        (/^(ค่า|เป็นค่า|มันคือ|อันนี้(คือ|เป็น)?|หมวด)/.test(text) ||
+          /^\s*[\d,]+(\.\d+)?\s+\S/.test(text) || // "319 ค่าตั๋วหนัง" — บอกยอดนำหน้า จับคู่รายการจากยอด
+          (!/\d/.test(text) && /^(จ่าย|ซื้อ|โอน)/.test(text))))
     ) {
       const done = await classifyPendingTxn(text, replyText || undefined);
       if (done && !done.ok) return reply([{ kind: "text", text: done.msg, replyTo: msgId }]);
       if (done) {
         const { png } = await financeCardPng();
+        const todayList = await itemizedText("today").catch(() => "");
         const sends: Send[] = [];
         if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
         sends.push({ kind: "text", text: `เข้าใจแล้วครับ ✅ ${done.msg}`, replyTo: msgId });
+        if (todayList) sends.push({ kind: "text", text: todayList });
         return reply(sends);
       }
     }
@@ -609,14 +700,19 @@ export async function POST(req: Request) {
         const addedFacts = recs.map(
           (r) => `เพิ่งบันทึก: ${r.type === "income" ? "เงินเข้า" : "จ่ายออก"} ${fmtBaht(r.amount)} บาท หมวด ${r.category}${r.note ? ` (${r.note})` : ""}`,
         );
-        const t = await vexSay(
-          `เพิ่งบันทึกรายการเงินให้เจ้าของ ${recs.length} รายการ — ยืนยันว่าจดแล้ว + คอมเมนต์ตามพฤติกรรม (รายรับ=ชม/แซว, รายจ่ายเยอะ=เตือน/ด่าแบบหวังดี, ใกล้เกินงบ=เตือนแรง)`,
+        const comment = await vexSay(
+          `เพิ่งบันทึกรายการเงินให้เจ้าของ ${recs.length} รายการ — คอมเมนต์สั้น ๆ ตามพฤติกรรม (รายรับ=ชม/แซว, รายจ่ายเยอะ=เตือน/ด่าแบบหวังดี, ใกล้เกินงบ=เตือนแรง) ไม่ต้องบอกว่าจดแล้ว (ระบบแจ้งเองแล้ว)`,
           [...addedFacts, ...snapFacts],
-          `จดแล้วครับ ✅ ${recs.map((r) => `${r.type === "income" ? "+" : "−"}${fmtBaht(r.amount)} ฿ (${r.category})`).join(" · ")}`,
+          "",
         );
+        // เจ้าของสั่ง (3 ส.ค.): บอกชัดว่าเพิ่งลงค่าอะไร + แนบลิสต์ที่ซื้อวันนี้ต่อท้ายภาพทุกครั้ง
+        const confirmed = `บันทึกแล้ว ✅\n${recs.map((r) => `${r.type === "income" ? "+" : "−"}${fmtBaht(r.amount)} ฿ · ${r.note || r.category} (${r.category})`).join("\n")}`;
+        const todayList = await itemizedText("today").catch(() => "");
         const sends: Send[] = [];
         if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
-        sends.push({ kind: "text", text: t, replyTo: msgId });
+        sends.push({ kind: "text", text: confirmed, replyTo: msgId });
+        if (todayList) sends.push({ kind: "text", text: todayList });
+        if (comment.trim()) sends.push({ kind: "text", text: comment });
         return reply(sends);
       }
       // สกัดไม่ได้ → ไหลไปคุยปกติ (เผื่อไม่ใช่เรื่องเงินจริง ๆ)

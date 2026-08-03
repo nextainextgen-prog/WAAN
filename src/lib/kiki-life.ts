@@ -93,48 +93,120 @@ export async function handleWish(text: string): Promise<string> {
 
 // ===== #4 สมุดหนี้/เงินยืม =====
 
-export const DEBT_RE = /ยืม(เงิน)?|ติดเงิน|ติดค่า|เป็นหนี้|ค้าง(เงิน|ค่า)|คืนเงิน|ใช้หนี้|ใครติด|สมุดหนี้|หนี้/i;
+export const DEBT_RE = /ยืม(เงิน)?|ติดเงิน|ติดค่า|เป็นหนี้|ค้าง(เงิน|ค่า)|คืนเงิน|ใช้หนี้|ใครติด|สมุดหนี้|หนี้|ผ่อน(บัตร|รถ|ของ|คืน|เดือนละ)|จ่ายงวด|งวด(บัตร|รถ)/i;
 
 interface DebtAction {
-  action: "add" | "settle" | "list";
+  action: "add" | "settle" | "pay" | "list";
   direction?: "they_owe" | "i_owe";
   person?: string;
   amount?: number;
   note?: string;
+  dueDate?: string; // YYYY-MM-DD กำหนดคืน
+  installmentAmount?: number; // ผ่อนงวดละ
+  installmentDay?: number; // ตัด/จ่ายทุกวันที่
+  totalAmount?: number; // ยอดตั้งต้นทั้งก้อน
+  id?: string; // ใช้กับ pay/settle เมื่อชี้ตัวได้
+}
+
+function debtLine(d: { person: string; direction: string; amount: number; note: string | null; dueDate: Date | null; installmentAmount: number | null; installmentDay: number | null; totalAmount: number | null }): string {
+  const parts = [`${fmtBaht(d.amount)} ฿`];
+  if (d.installmentAmount) parts.push(`ผ่อนเดือนละ ${fmtBaht(d.installmentAmount)} ฿${d.installmentDay ? ` ทุกวันที่ ${d.installmentDay}` : ""}${d.totalAmount ? ` (จากทั้งหมด ${fmtBaht(d.totalAmount)} ฿)` : ""}`);
+  if (d.dueDate) parts.push(`ครบกำหนด ${d.dueDate.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}`);
+  if (d.note) parts.push(d.note);
+  return parts.join(" · ");
 }
 
 export async function handleDebt(text: string): Promise<string> {
   const open = await db.debt.findMany({ where: { settledAt: null }, orderBy: { createdAt: "asc" } });
-  const table = open.map((d) => `${d.id} | ${d.direction === "they_owe" ? `${d.person} ติดเรา` : `เราติด ${d.person}`} | ${fmtBaht(d.amount)} ฿${d.note ? ` | ${d.note}` : ""}`).join("\n") || "(ว่าง)";
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const table = open.map((d) => `${d.id} | ${d.direction === "they_owe" ? `${d.person} ติดเรา` : `เราติด ${d.person}`} | ${debtLine(d)}`).join("\n") || "(ว่าง)";
   const a = await llmJson<DebtAction>(
-    `คุณคือระบบสมุดหนี้ ตอบ JSON เท่านั้น: {"action":"add|settle|list","direction":"they_owe|i_owe","person":"...","amount":123,"note":"..."}
-- "X ยืม 500" / "X ติดค่าข้าว 120" = add they_owe (เขาติดเรา) · "ผมยืม X" / "ผมติดเงิน X" = add i_owe
-- "X คืนแล้ว/คืน 500 แล้ว" = settle (จับคู่กับรายการที่มี) · ถามว่าใครติดบ้าง = list`,
-    `หนี้คงค้าง (id | ใครติดใคร | ยอด):\n${table}\n\nข้อความเจ้าของ: """${text}"""`,
+    `คุณคือระบบสมุดหนี้ วันนี้คือ ${todayISO} ตอบ JSON เท่านั้น:
+{"action":"add|settle|pay|list","direction":"they_owe|i_owe","person":"...","amount":123,"note":"...","dueDate":"YYYY-MM-DD ถ้าระบุกำหนดคืน","installmentAmount":งวดละ,"installmentDay":ตัดทุกวันที่,"totalAmount":ยอดทั้งก้อน,"id":"ใช้กับ settle/pay"}
+- "X ยืม 500" = add they_owe · "ผมยืม X / ผมติดเงิน X" = add i_owe
+- "คืนสิ้นเดือน/คืนวันที่ 15" = ใส่ dueDate (ตีความจากวันนี้)
+- ผ่อน: "ผ่อนบัตรกรุงศรี เดือนละ 3500 ตัดทุกวันที่ 25 เหลือ 42000" = add i_owe amount=42000 installmentAmount=3500 installmentDay=25 · "เพื่อนผ่อนคืนเดือนละ 500" = they_owe แบบผ่อน
+- "X คืนแล้ว" = settle (เลือก id จากตาราง) · "X คืนมา 500 / จ่ายงวดบัตรแล้ว" = pay amount=ยอดที่จ่าย (เลือก id) — ระบบจะหักยอดให้
+- ถามว่าใครติดบ้าง/มีหนี้อะไร = list`,
+    `หนี้คงค้าง (id | ใครติดใคร | รายละเอียด):\n${table}\n\nข้อความเจ้าของ: """${text}"""`,
   );
   if (!a) return "ยังไม่เข้าใจครับ ลองบอกว่าใครยืมเท่าไหร่";
 
   if (a.action === "add" && a.person && a.amount) {
-    await db.debt.create({ data: { direction: a.direction || "they_owe", person: a.person.slice(0, 50), amount: a.amount, note: a.note || null } });
+    const due = a.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(a.dueDate) ? new Date(`${a.dueDate}T00:00:00`) : null;
+    await db.debt.create({
+      data: {
+        direction: a.direction || "they_owe",
+        person: a.person.slice(0, 50),
+        amount: a.amount,
+        note: a.note || null,
+        dueDate: due,
+        installmentAmount: a.installmentAmount || null,
+        installmentDay: a.installmentDay ? Math.min(31, Math.max(1, a.installmentDay)) : null,
+        totalAmount: a.totalAmount || (a.installmentAmount ? a.amount : null),
+      },
+    });
     const who = a.direction === "i_owe" ? `เราติด ${a.person}` : `${a.person} ติดเรา`;
-    return `จดแล้วครับ ✅ ${who} ${fmtBaht(a.amount)} ฿${a.note ? ` (${a.note})` : ""}\n\n${a.direction === "i_owe" ? "ครบกำหนดเมื่อไหร่บอกด้วย เดี๋ยวเตือนให้คืน" : "เดี๋ยวผมช่วยทวงให้เป็นระยะ อย่าให้หายไปกับสายลม"}`;
+    const extra = a.installmentAmount
+      ? `ผ่อนเดือนละ ${fmtBaht(a.installmentAmount)} ฿${a.installmentDay ? ` — ผมจะเตือนทุกวันที่ ${a.installmentDay}` : ""}`
+      : due
+        ? `ครบกำหนด ${due.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })} — ถึงวันผมเตือนแน่นอน`
+        : a.direction === "i_owe"
+          ? "ครบกำหนดเมื่อไหร่บอกด้วย เดี๋ยวเตือนให้คืน"
+          : "เดี๋ยวผมช่วยทวงให้เป็นระยะ";
+    return `จดแล้วครับ ✅ ${who} ${fmtBaht(a.amount)} ฿${a.note ? ` (${a.note})` : ""}\n${extra}`;
   }
-  if (a.action === "settle" && a.person) {
-    const hit = open.find((d) => d.person.includes(a.person!) || a.person!.includes(d.person));
-    if (hit) {
-      await db.debt.update({ where: { id: hit.id }, data: { settledAt: new Date() } });
-      const left = open.filter((d) => d.id !== hit.id);
-      return `เคลียร์แล้วครับ ✅ ${hit.person} ${fmtBaht(hit.amount)} ฿\n${left.length ? `ยังเหลือค้าง ${left.length} รายการ` : "สมุดหนี้สะอาดเอี่ยม 🎯"}`;
+  if ((a.action === "settle" || a.action === "pay") && (a.id || a.person)) {
+    const hit = open.find((d) => d.id === a.id) || open.find((d) => a.person && (d.person.includes(a.person) || a.person.includes(d.person)));
+    if (!hit) return `หารายการของ "${a.person || a.id}" ไม่เจอครับ`;
+    if (a.action === "pay" && a.amount && a.amount < hit.amount) {
+      const left = Math.round((hit.amount - a.amount) * 100) / 100;
+      await db.debt.update({ where: { id: hit.id }, data: { amount: left } });
+      const pct = hit.totalAmount ? ` — ผ่อนไปแล้ว ${Math.round(((hit.totalAmount - left) / hit.totalAmount) * 100)}%` : "";
+      return `รับยอดแล้วครับ ✅ ${hit.person} จ่าย ${fmtBaht(a.amount)} ฿ เหลือ ${fmtBaht(left)} ฿${pct}`;
     }
-    return `หารายการของ "${a.person}" ไม่เจอครับ`;
+    await db.debt.update({ where: { id: hit.id }, data: { settledAt: new Date() } });
+    const left = open.filter((d) => d.id !== hit.id);
+    return `เคลียร์แล้วครับ ✅ ${hit.person} ${fmtBaht(hit.amount)} ฿\n${left.length ? `ยังเหลือค้าง ${left.length} รายการ` : "สมุดหนี้สะอาดเอี่ยม 🎯"}`;
   }
   if (!open.length) return `ไม่มีหนี้ค้างครับ สะอาดหมดจด 🎯`;
   const theyOwe = open.filter((d) => d.direction === "they_owe");
   const iOwe = open.filter((d) => d.direction === "i_owe");
   const lines: string[] = [];
-  if (theyOwe.length) lines.push(`คนติดเรา (รวม ${fmtBaht(theyOwe.reduce((s, d) => s + d.amount, 0))} ฿):`, ...theyOwe.map((d) => `• ${d.person} — ${fmtBaht(d.amount)} ฿${d.note ? ` (${d.note})` : ""}`));
-  if (iOwe.length) lines.push(`${theyOwe.length ? "\n" : ""}เราติดเขา (รวม ${fmtBaht(iOwe.reduce((s, d) => s + d.amount, 0))} ฿):`, ...iOwe.map((d) => `• ${d.person} — ${fmtBaht(d.amount)} ฿${d.note ? ` (${d.note})` : ""}`));
+  if (theyOwe.length) lines.push(`คนติดเรา (รวม ${fmtBaht(theyOwe.reduce((s, d) => s + d.amount, 0))} ฿):`, ...theyOwe.map((d) => `• ${d.person} — ${debtLine(d)}`));
+  if (iOwe.length) lines.push(`${theyOwe.length ? "\n" : ""}เราติดเขา (รวม ${fmtBaht(iOwe.reduce((s, d) => s + d.amount, 0))} ฿):`, ...iOwe.map((d) => `• ${d.person} — ${debtLine(d)}`));
   return lines.join("\n");
+}
+
+// เตือนหนี้ตามกำหนด (cron รายวัน): ครบกำหนดวันนี้/เลยกำหนด + งวดผ่อนถึงวันตัด
+export async function debtDueReminders(now = new Date()): Promise<string[]> {
+  const open = await db.debt.findMany({ where: { settledAt: null } });
+  const out: string[] = [];
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  for (const d of open) {
+    if (d.installmentAmount && d.installmentDay === now.getDate() && d.remindedInstallmentYm !== ym) {
+      await db.debt.update({ where: { id: d.id }, data: { remindedInstallmentYm: ym } }).catch(() => {});
+      out.push(
+        d.direction === "i_owe"
+          ? `วันนี้งวด${d.person} ${fmtBaht(d.installmentAmount)} ฿ (คงเหลือ ${fmtBaht(d.amount)} ฿) — จ่ายแล้วบอกผมว่า "จ่ายงวด${d.person}แล้ว" เดี๋ยวหักยอดให้`
+          : `วันนี้ถึงงวดที่ ${d.person} ต้องคืน ${fmtBaht(d.installmentAmount)} ฿ (ค้าง ${fmtBaht(d.amount)} ฿) — ได้เงินแล้วบอกผมด้วย`,
+      );
+    }
+    if (d.dueDate && !d.installmentAmount) {
+      const overdueDays = Math.floor((today0.getTime() - new Date(d.dueDate.getFullYear(), d.dueDate.getMonth(), d.dueDate.getDate()).getTime()) / 86400_000);
+      if (overdueDays === 0) {
+        out.push(
+          d.direction === "i_owe"
+            ? `วันนี้ครบกำหนดคืน ${d.person} ${fmtBaht(d.amount)} ฿${d.note ? ` (${d.note})` : ""} — อย่าลืมนะครับ`
+            : `วันนี้ครบกำหนดที่ ${d.person} ต้องคืน ${fmtBaht(d.amount)} ฿${d.note ? ` (${d.note})` : ""} — ทวงได้เต็มปากแล้ว`,
+        );
+      } else if (overdueDays > 0 && overdueDays % 3 === 0 && overdueDays <= 15) {
+        out.push(`${d.direction === "i_owe" ? `เราค้างคืน ${d.person}` : `${d.person} เลยกำหนดคืน`} ${fmtBaht(d.amount)} ฿ มา ${overdueDays} วันแล้ว`);
+      }
+    }
+  }
+  return out;
 }
 
 // ทวงหนี้ประจำ (cron อาทิตย์เย็น) — คืน facts ให้ vex แต่งคำทวง
@@ -334,4 +406,39 @@ export async function weeklyReportFacts(now = new Date()): Promise<string> {
     ...snapshotFacts(snap),
     debts.length ? `หนี้คงค้าง: ${debts.map((d) => `${d.person} ${d.direction === "they_owe" ? "ติดเรา" : "เราติด"} ${fmtBaht(d.amount)}฿`).join(", ")}` : "",
   ].filter(Boolean).join("\n");
+}
+
+// ===== จำเองไม่ต้องสั่ง (C — เจ้าของสั่ง 3 ส.ค.) =====
+// ทุกคืนไล่อ่านบทสนทนาของวัน สกัดข้อเท็จจริงส่วนตัวใหม่ → OwnerFact อัตโนมัติ + รายงานให้ตรวจ
+
+export async function autoRememberFromToday(now = new Date()): Promise<string[]> {
+  const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const chats = await db.kikiChat.findMany({
+    where: { role: "user", createdAt: { gte: day0 } },
+    orderBy: { createdAt: "asc" },
+    take: 120,
+  });
+  if (chats.length < 3) return [];
+  const existing = await db.ownerFact.findMany({ where: { active: true }, select: { fact: true }, take: 200 });
+  const convo = chats.map((c) => c.content).join("\n").slice(0, 9000);
+  const r = await llmJson<{ facts: { fact: string; category: string }[] }>(
+    `คุณคือระบบสกัด "ข้อเท็จจริงถาวรเกี่ยวกับเจ้าของ" จากบทสนทนา ตอบ JSON เท่านั้น: {"facts":[{"fact":"...","category":"ความชอบ|ไม่ชอบ|นิสัย|สุขภาพ|คนรอบตัว|ของสำคัญ|ทั่วไป"}]}
+กติกาเข้มงวด:
+- เอาเฉพาะข้อมูลที่ "คงอยู่ระยะยาว" (ชอบ/ไม่ชอบ ความสัมพันธ์ นิสัย สุขภาพ ของที่ใช้) — สูงสุด 5 ข้อ
+- ห้ามเก็บ: ตัวเลขเงิน/รายจ่าย (มีระบบบัญชีแล้ว) · เรื่องชั่วคราว (วันนี้กินอะไร ไปไหน) · คำสั่งงาน · สิ่งที่อยู่ในรายการเดิมแล้ว
+- เขียน fact เป็นประโยคสั้น จบในตัว เช่น "แฟนชื่ออั๋น" ไม่ใช่ "เขาบอกว่า..."
+- ไม่มีอะไรใหม่ = {"facts":[]}`,
+    `ข้อเท็จจริงที่จำไว้แล้ว (ห้ามซ้ำ):\n${existing.map((f) => `- ${f.fact}`).join("\n") || "(ว่าง)"}\n\nบทสนทนาของเจ้าของวันนี้:\n"""${convo}"""`,
+  );
+  const facts = (r?.facts || []).filter((f) => f?.fact && f.fact.length >= 5).slice(0, 5);
+  const saved: string[] = [];
+  for (const f of facts) {
+    const dup = existing.some((e) => e.fact.includes(f.fact.slice(0, 15)) || f.fact.includes(e.fact.slice(0, 15)));
+    if (dup) continue;
+    await db.ownerFact.create({
+      data: { fact: f.fact.slice(0, 300), category: f.category?.slice(0, 20) || "ทั่วไป", source: "จำอัตโนมัติจากบทสนทนา" },
+    });
+    saved.push(f.fact);
+  }
+  return saved;
 }

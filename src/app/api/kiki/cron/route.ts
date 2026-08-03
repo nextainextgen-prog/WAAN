@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { thaiDate } from "@/lib/calendar";
-import { getKikiChatIds, getSetting, setSetting, askKiki, saveKikiChat } from "@/lib/kiki";
-import { financeSnapshot, snapshotFacts, financeCardHtml, fmtBaht } from "@/lib/kiki-finance";
+import { getKikiChatIds, getSetting, setSetting, askKiki, saveKikiChat, sanitizeVexText } from "@/lib/kiki";
+import { financeSnapshot, snapshotFacts, financeCardHtml, fmtBaht, upcomingBills, detectRecurringBills, cashForecast30 } from "@/lib/kiki-finance";
+import { PENDING_CATEGORY } from "@/lib/kiki-gmail";
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
-import { dueRecurrings, debtNagFacts, weeklyReportFacts } from "@/lib/kiki-life";
+import { dueRecurrings, debtNagFacts, weeklyReportFacts, debtDueReminders, autoRememberFromToday } from "@/lib/kiki-life";
 import { pollBankEmails } from "@/lib/kiki-gmail";
+import { collectHermesDeliveries } from "@/lib/kiki-hermes";
 import { askClaude } from "@/lib/claude";
 import { KIKI_GUARD, KIKI_PERSONA } from "@/lib/kiki";
 import { db } from "@/lib/db";
@@ -112,36 +114,72 @@ export async function POST(req: Request) {
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
-  // ===== C) สรุปเช้า 07:00 (การเงินเมื่อวาน + agenda วันนี้) =====
+  // ===== C) บรีฟเช้า 09:10 ฉบับเลขามืออาชีพ (เจ้าของสั่ง 3 ส.ค.) =====
+  // ครบทุกมุมในชุดเดียว: นัด · เงินเมื่อวานรายตัว · งบ/pace · รอระบุค้าง · หนี้-บิลใกล้กำหนด · เส้นเงินสด
   try {
-    if (mainChat && now.getHours() >= 7 && (await getSetting("kiki_last_brief")) !== today) {
+    if (mainChat && (now.getHours() > 9 || (now.getHours() === 9 && now.getMinutes() >= 10)) && (await getSetting("kiki_last_brief")) !== today) {
       await setSetting("kiki_last_brief", today);
       const snap = await financeSnapshot();
-      const yStart = new Date(dayStart.getTime() - 86400_000);
-      const yRows = await db.financeTxn.findMany({ where: { type: "expense", occurredAt: { gte: yStart, lt: dayStart } } });
-      const ySpent = yRows.reduce((s, r) => s + r.amount, 0);
+      const yRows = await db.financeTxn.findMany({ where: { occurredAt: { gte: new Date(dayStart.getTime() - 86400_000), lt: dayStart } }, orderBy: { occurredAt: "asc" } });
+      const ySpent = yRows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
       const todayRows = (await db.calendarEvent.findMany({ where: { agent: "kiki", date: { gte: dayStart, lt: dayEnd } }, orderBy: { date: "asc" } })) as CalRow[];
       const tmrCount = await db.calendarEvent.count({ where: { agent: "kiki", date: { gte: dayEnd, lt: tmrEnd } } });
-      if (ySpent > 0 || todayRows.length > 0 || snap.txnCount > 0) {
-        // การ์ด agenda เฉพาะวันที่มีนัด — วันว่างเอาแต่ข้อความพอ ไม่สแปมภาพ
-        if (todayRows.length) {
-          await db.calendarEvent.updateMany({ where: { id: { in: todayRows.map((r) => r.id) } }, data: { notified: true } }).catch(() => {});
-          const png = await cardPng(agendaCardHtml(todayRows.map(toKev), { heading: "วันนี้", now, travelMin, budgetLine: await budgetLine(), tomorrowLine: tmrCount ? `${tmrCount} นัด` : "ไม่มีนัด" }));
-          if (png) sends.push({ chatId: mainChat, kind: "photo", dataBase64: png, filename: "agenda.png" });
-        }
-        const facts = [
-          `เมื่อวานใช้ไป ${fmtBaht(ySpent)} บาท (${yRows.length} รายการ)`,
-          ...snapshotFacts(snap),
-          todayRows.length ? `นัดวันนี้: ${todayRows.map((e) => `${e.title}${e.timeText ? ` ${e.timeText}น.` : ""}`).join(" · ")}` : "วันนี้ไม่มีนัด",
-        ];
-        const t = await askKiki(
-          `[สรุปเช้าประจำวัน] แต่งข้อความทักเช้าสั้น ๆ (ไม่เกิน 6 บรรทัด) จากข้อเท็จจริงจริงเท่านั้น:\n${facts.map((f) => `- ${f}`).join("\n")}\n\nโทน: ทักเช้าแบบกวน ๆ + เตือนงบ/นัดวันนี้ ตอบเป็นข้อความที่จะส่งเลย`,
-        ).catch(() => `เช้าแล้วครับ ⏰\n\nเมื่อวานใช้ไป ${fmtBaht(ySpent)} ฿${todayRows.length ? `\nวันนี้มีนัด: ${todayRows.map((e) => e.title).join(", ")}` : ""}`);
+      const pendingRows = await db.financeTxn.findMany({ where: { category: PENDING_CATEGORY }, orderBy: { occurredAt: "asc" }, take: 30 });
+      const dueDebts = await db.debt.findMany({ where: { settledAt: null } });
+      const bills = await upcomingBills(now, 5);
+      const cash = await cashForecast30(now).catch(() => null);
+
+      // การ์ด agenda เฉพาะวันที่มีนัด — วันว่างเอาแต่ข้อความพอ ไม่สแปมภาพ
+      if (todayRows.length) {
+        await db.calendarEvent.updateMany({ where: { id: { in: todayRows.map((r) => r.id) } }, data: { notified: true } }).catch(() => {});
+        const png = await cardPng(agendaCardHtml(todayRows.map(toKev), { heading: "วันนี้", now, travelMin, budgetLine: await budgetLine(), tomorrowLine: tmrCount ? `${tmrCount} นัด` : "ไม่มีนัด" }));
+        if (png) sends.push({ chatId: mainChat, kind: "photo", dataBase64: png, filename: "agenda.png" });
+      }
+
+      // โครงบรีฟ deterministic — ตัวเลขจริงทั้งหมด ให้ AI แต่งได้แค่ 1 บรรทัดความเห็นปิดท้าย
+      const secs: string[] = [`บรีฟเช้า · ${now.toLocaleDateString("th-TH-u-ca-gregory", { weekday: "long", day: "numeric", month: "long" })}`];
+      secs.push(todayRows.length ? `นัดวันนี้ ${todayRows.length} นัด: ${todayRows.map((e) => `${e.timeText || "ทั้งวัน"} ${e.title}`).join(" · ")}` : "วันนี้ไม่มีนัด");
+      if (yRows.length) {
+        const items = yRows.filter((r) => r.type === "expense").slice(-6).map((r) => `${r.note || r.category} ${fmtBaht(r.amount)} ฿`).join(" · ");
+        secs.push(`เมื่อวานใช้ ${fmtBaht(ySpent)} ฿ (${yRows.filter((r) => r.type === "expense").length} รายการ)${items ? `: ${items}` : ""}`);
+      } else {
+        secs.push("เมื่อวานไม่มีรายการใช้จ่าย");
+      }
+      if (snap.totalBudget !== null && snap.safePerDay !== null) secs.push(`งบเดือนนี้เหลือ ${fmtBaht(Math.max(0, snap.totalBudget - snap.monthExpense))} ฿ — ใช้ได้วันละ ${fmtBaht(Math.floor(snap.safePerDay))} ฿`);
+      if (pendingRows.length) secs.push(`ค้างระบุหมวด ${pendingRows.length} รายการ (${fmtBaht(pendingRows.reduce((s, r) => s + r.amount, 0))} ฿) — เดี๋ยวผมไล่ถามช่วงเย็น`);
+      const dueSoon = dueDebts.filter((d) => (d.dueDate && d.dueDate.getTime() - now.getTime() < 3 * 86400_000) || (d.installmentDay && Math.abs(d.installmentDay - now.getDate()) <= 2));
+      if (dueSoon.length) secs.push(`หนี้ใกล้กำหนด: ${dueSoon.map((d) => `${d.person} ${fmtBaht(d.installmentAmount || d.amount)} ฿`).join(" · ")}`);
+      if (bills.length) secs.push(`บิลจะตัดเร็ว ๆ นี้: ${bills.map((b) => `${b.label} ${fmtBaht(b.amount)} ฿ (${b.inDays === 0 ? "วันนี้" : `อีก ${b.inDays} วัน`})`).join(" · ")}`);
+      if (cash) secs.push(cash.lines[cash.lines.length - 1]?.startsWith("⚠️") ? cash.lines[cash.lines.length - 1] : `คาดการณ์ 30 วัน: เหลือประมาณ ${fmtBaht(Math.round(cash.endBalance))} ฿`);
+
+      const comment = await askKiki(
+        `[ปิดท้ายบรีฟเช้า] จากข้อมูลบรีฟด้านล่าง เขียน "1 บรรทัดเดียว" ที่มีประโยชน์ที่สุดกับการตัดสินใจวันนี้ (เตือน/ชี้จุดเสี่ยง/สิ่งควรทำ) ห้ามทักทาย ห้ามชมลอย ๆ:\n${secs.join("\n")}`,
+      ).catch(() => "");
+      const t = [secs[0], "", ...secs.slice(1).map((s) => `• ${s}`), comment ? `\n${comment.split("\n")[0]}` : ""].filter(Boolean).join("\n");
+      sends.push({ chatId: mainChat, kind: "text", text: t });
+      await saveKikiChat("assistant", t);
+    }
+  } catch { /* พรุ่งนี้ค่อยว่ากัน */ }
+
+  // ===== C2) เย็น 19:00 — ไล่ถามรายการ "รอระบุ" ที่ค้าง (กันหมวดรอระบุบวมเงียบ ๆ) =====
+  try {
+    if (mainChat && now.getHours() >= 19 && (await getSetting("kiki_last_pending_nag")) !== today) {
+      await setSetting("kiki_last_pending_nag", today);
+      const pend = await db.financeTxn.findMany({ where: { category: PENDING_CATEGORY }, orderBy: { occurredAt: "asc" }, take: 15 });
+      if (pend.length) {
+        const lines = pend.map((r) => `🔴 เงินออก ${fmtBaht(r.amount)} ฿ · ${(r.note || "").replace(/ \(จากเมล K PLUS\)$/, "")} · ${r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}`);
+        const t = [
+          `มี ${pend.length} รายการยังไม่รู้ว่าค่าอะไร (รวม ${fmtBaht(pend.reduce((s, r) => s + r.amount, 0))} ฿)`,
+          "",
+          ...lines,
+          "",
+          `ตอบทีละตัวได้เลย: reply ที่บรรทัดไหนไม่ได้ ให้พิมพ์บอกเช่น "319 ค่าตั๋วหนัง" เดี๋ยวผมจับคู่ยอดให้เอง`,
+        ].join("\n");
         sends.push({ chatId: mainChat, kind: "text", text: t });
         await saveKikiChat("assistant", t);
       }
     }
-  } catch { /* พรุ่งนี้ค่อยว่ากัน */ }
+  } catch { /* พรุ่งนี้ค่อยถาม */ }
 
   // ===== D) ทักหลังนัดจบ (ถามผล + ชวนส่งสลิปค่าใช้จ่าย) =====
   try {
@@ -172,10 +210,16 @@ export async function POST(req: Request) {
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
-  // ===== G) เมลธนาคาร (K PLUS) → จดเป็น "รอระบุ" แล้วถามเจ้าของว่าค่าอะไร =====
+  // ===== G) เมลธนาคาร (K PLUS) → ร้านประจำจัดหมวดเอง · บัญชีตัวเองไม่นับ · ที่เหลือถาม "ค่าอะไร" =====
   try {
     if (mainChat) {
-      for (const ev of await pollBankEmails()) {
+      const { txns, ownTransfers } = await pollBankEmails();
+      for (const ot of ownTransfers) {
+        const t = `🔁 โอนข้ามบัญชีตัวเอง ${fmtBaht(ot.amount)} ฿ (${ot.counterparty}) — ไม่นับเป็นรายจ่ายครับ`;
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+      for (const ev of txns) {
         // โครงข้อความตายตัวตามที่เจ้าของสั่ง (31 ก.ค.): 🟢 เงินเข้า / 🔴 เงินออก + ข้อมูลเรียงอ่านง่าย
         const out = ev.txn.type === "expense";
         const when = ev.txn.occurredAt.toLocaleString("th-TH-u-ca-gregory", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -184,15 +228,91 @@ export async function POST(req: Request) {
           `${out ? "ไปที่" : "จาก"}: ${ev.counterparty}`,
           `เวลา: ${when} น. · K PLUS`,
         ].join("\n");
-        const tail = await askKiki(
-          `[แจ้งเงิน${out ? "ออก" : "เข้า"}จากเมลธนาคาร] ส่วนหัวระบบจัดให้แล้ว:\n${head}\n\nเติมท้ายให้ 1-2 บรรทัด: ${out ? "ถามว่าเป็นค่าอะไร ให้ตอบมาเดี๋ยวจัดหมวดให้" : "ถามว่าเงินอะไรเข้ามา"} (กวนได้นิดหน่อย) ตอบเฉพาะบรรทัดที่จะเติม`,
-        ).catch(() => (out ? "ค่าอะไรครับ บอกมาเดี๋ยวจดหมวดให้" : "เงินอะไรเข้ามาครับ"));
-        const t = `${head}\n\n${tail}`;
+        // ร้านประจำ = จบในข้อความเดียว ไม่ต้องถาม (แก้ได้ถ้าผิด)
+        const t = ev.autoCategory
+          ? `${head}\n\nร้านประจำ — จัดเข้าหมวด ${ev.autoCategory} ให้แล้วครับ ผิดหมวดสั่งแก้ได้เลย`
+          : `${head}\n\n${await askKiki(
+              `[แจ้งเงิน${out ? "ออก" : "เข้า"}จากเมลธนาคาร] ส่วนหัวระบบจัดให้แล้ว:\n${head}\n\nเติมท้ายให้ 1 บรรทัด: ${out ? "ถามว่าเป็นค่าอะไร ให้ตอบมาเดี๋ยวจัดหมวดให้" : "ถามว่าเงินอะไรเข้ามา"} ตอบเฉพาะบรรทัดที่จะเติม`,
+            ).catch(() => (out ? "ค่าอะไรครับ บอกมาเดี๋ยวจดหมวดให้" : "เงินอะไรเข้ามาครับ"))}`;
         sends.push({ chatId: mainChat, kind: "text", text: t });
         await saveKikiChat("assistant", t);
       }
     }
   } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== G2) งานที่ฝาก Hermes เสร็จแล้ว → ส่งผลเข้าแชท =====
+  try {
+    for (const d of await collectHermesDeliveries()) {
+      const chatTo = d.chatId || mainChat;
+      if (!chatTo) continue;
+      const taskShort = d.task.length > 80 ? `${d.task.slice(0, 80)}...` : d.task;
+      if (!d.ok) {
+        const t = `งานที่ฝากไว้ ("${taskShort}") ไม่สำเร็จครับ ⚠️ ${d.body}`;
+        sends.push({ chatId: chatTo, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+        continue;
+      }
+      if (d.body.length > 3200) {
+        sends.push({ chatId: chatTo, kind: "text", text: `งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}") — ผลยาว แนบเป็นไฟล์ให้เปิดอ่าน 📤` });
+        sends.push({ chatId: chatTo, kind: "document", dataBase64: Buffer.from(d.body, "utf8").toString("base64"), filename: `hermes-${today}.md`, caption: taskShort } as CronSend & { filename: string });
+      } else {
+        const t = `งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}")\n\n${d.body}`;
+        sends.push({ chatId: chatTo, kind: "text", text: t });
+      }
+      await saveKikiChat("assistant", `[ผลงาน Hermes] ${d.body.slice(0, 1500)}`);
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== G3) หนี้ถึงกำหนด/งวดผ่อน + บิลประจำใกล้ตัด (เช็ควันละครั้งตอน >= 10:00) =====
+  try {
+    if (mainChat && now.getHours() >= 10 && (await getSetting("kiki_last_debt_check")) !== today) {
+      await setSetting("kiki_last_debt_check", today);
+      for (const line of await debtDueReminders(now)) {
+        const t = `⏰ ${line}`;
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+      // บิลตัดในอีก 2 วัน — เตือนล่วงหน้าครั้งเดียวต่อเดือนต่อบิล
+      const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      let reminded: Record<string, string> = {};
+      try { reminded = JSON.parse((await getSetting("kiki_bill_reminded")) || "{}"); } catch { /* เริ่มใหม่ */ }
+      for (const b of await upcomingBills(now, 2)) {
+        if (b.inDays !== 2 || reminded[b.id] === ym) continue;
+        reminded[b.id] = ym;
+        const t = `⏰ อีก 2 วันบิล "${b.label}" ${fmtBaht(b.amount)} ฿ จะตัด (วันที่ ${b.dayOfMonth}) — เตรียมเงินไว้ครับ`;
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+      await setSetting("kiki_bill_reminded", JSON.stringify(reminded));
+      // จับบิลประจำใหม่จากรายการซ้ำ (สะสมข้อมูลพอเมื่อไหร่ก็เริ่มเจอ)
+      const found = await detectRecurringBills(now);
+      if (found.length) {
+        const t = `ผมสังเกตเห็นรายจ่ายซ้ำทุกเดือน เลยขึ้นทะเบียนเป็นบิลประจำให้:\n${found.map((f) => `• ${f}`).join("\n")}\n\nไม่ใช่บิลประจำตัวไหน สั่ง "ยกเลิกบิล..." ได้เลย`;
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+      // ถามข้อมูลผ่อนบัตร/ค่ารถครั้งเดียว (3.2 — เจ้าของสั่งให้มาถามเอง)
+      if (!(await getSetting("kiki_asked_installments"))) {
+        await setSetting("kiki_asked_installments", "1");
+        const t = `พี่มีผ่อนอะไรอยู่บ้างครับ (บัตรเครดิต/ค่ารถ/ผ่อนของ) — บอกทีละรายการแบบนี้ได้เลย:\n\n"ผ่อนบัตรกรุงศรี เดือนละ 3,500 ตัดทุกวันที่ 25 เหลือ 42,000"\n\nผมจะเตือนก่อนตัดทุกงวด + รวมภาระต่อเดือนเข้าเส้นเงินสดให้ครับ`;
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+    }
+  } catch { /* พรุ่งนี้ค่อยเช็ค */ }
+
+  // ===== G4) จำเองไม่ต้องสั่ง — สกัดข้อเท็จจริงใหม่จากบทสนทนาของวัน (21:00) =====
+  try {
+    if (mainChat && now.getHours() >= 21 && (await getSetting("kiki_last_autofact")) !== today) {
+      await setSetting("kiki_last_autofact", today);
+      const saved = await autoRememberFromToday(now);
+      if (saved.length) {
+        const t = `จากที่คุยกันวันนี้ ผมจำเพิ่ม ${saved.length} เรื่อง:\n${saved.map((f) => `• ${f}`).join("\n")}\n\nข้อไหนผิดสั่ง "ลืมเรื่อง..." ได้เลยครับ`;
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
+    }
+  } catch { /* พรุ่งนี้ค่อยจำ */ }
 
   // ===== H) เตือน pace เกินงบ (เที่ยงวัน วันละครั้ง ตั้งแต่วันที่ 5 ของเดือน) =====
   try {
@@ -284,5 +404,11 @@ ${nags.join("\n")}`);
     }
   } catch { /* เดือนหน้าลองใหม่ */ }
 
-  return NextResponse.json({ sends });
+  // ตาข่ายมืออาชีพขาออก: markdown ที่ AI เผลอเขียนต้องไม่หลุดถึง Telegram ดิบ ๆ (เคสจริง 3 ส.ค.)
+  const cleaned = sends.map((s) => {
+    if (s.kind !== "text" || !s.text || (s as CronSend & { parseMode?: string }).parseMode) return s;
+    const c = sanitizeVexText(s.text);
+    return { ...s, text: c.text, ...(c.parseMode ? { parseMode: c.parseMode } : {}) };
+  });
+  return NextResponse.json({ sends: cleaned });
 }

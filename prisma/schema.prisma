@@ -378,12 +378,39 @@ model FinanceTxn {
   amount     Float
   category   String   @default("อื่นๆ")  // อาหาร | เดินทาง | ของใช้ | บันเทิง | บิล/สมาชิก | สุขภาพ | ให้คนอื่น | เงินเดือน | เงินเสริม | อื่นๆ
   note       String?                      // จ่ายค่าอะไร/รับจากไหน (สั้น)
+  merchant   String?                      // ชื่อร้าน/ปลายทางจากเมลธนาคาร (ไว้จำร้านประจำ)
   slipPath   String?                      // ไฟล์สลิปที่เก็บถาวร
   source     String   @default("chat")    // chat | slip
   msgId      String?                      // ข้อความ Telegram ที่มา (ไว้ลบ/แก้)
 
   @@index([occurredAt])
   @@index([type, occurredAt])
+}
+
+// ร้านประจำที่เจ้าของเคยบอกแล้วว่าคือค่าอะไร — เจอโอนร้านเดิมซ้ำ = จัดหมวดเองไม่ต้องถาม
+model KikiMerchant {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  name      String   @unique              // ชื่อปลายทางตามเมลธนาคาร
+  category  String
+  note      String?                       // ค่าอะไร (ตามที่เจ้าของเคยตอบ)
+  hits      Int      @default(1)          // จับอัตโนมัติไปแล้วกี่ครั้ง
+}
+
+// บิลประจำ/subscription — ทั้งจับอัตโนมัติจากรายการซ้ำ และเจ้าของบอกเอง
+model RecurringBill {
+  id         String    @id @default(cuid())
+  createdAt  DateTime  @default(now())
+  label      String                       // ค่าเน็ต / Netflix / AIA
+  amount     Float
+  dayOfMonth Int                          // ตัดทุกวันที่เท่าไหร่
+  type       String    @default("expense") // expense | income (เงินเดือนเข้า)
+  source     String    @default("manual")  // manual | auto
+  lastSeenAt DateTime?                    // เห็นตัดจริงล่าสุดเมื่อไหร่
+  active     Boolean   @default(true)
+
+  @@index([active, dayOfMonth])
 }
 
 // งบต่อเดือน — category "รวม" = เพดานใช้จ่ายทั้งเดือน, อื่น ๆ = งบรายหมวด
@@ -421,13 +448,34 @@ model Debt {
   createdAt DateTime  @default(now())
   direction String                        // they_owe (เขาติดเรา) | i_owe (เราติดเขา)
   person    String
-  amount    Float
+  amount    Float                         // ยอดคงเหลือปัจจุบัน
   note      String?
   dueDate   DateTime?
   settledAt DateTime?
   nagCount  Int       @default(0)         // ทวงไปแล้วกี่รอบ
+  // ผ่อนเป็นงวด (บัตร/ค่ารถ/ให้เพื่อนผ่อนคืน)
+  installmentAmount Float?                // งวดละกี่บาท (null = ไม่ใช่หนี้ผ่อน)
+  installmentDay    Int?                  // ตัด/จ่ายทุกวันที่เท่าไหร่
+  totalAmount       Float?               // ยอดตั้งต้นทั้งก้อน (ไว้โชว์ผ่อนไปแล้วกี่ %)
+  remindedInstallmentYm String?          // เตือนงวดของเดือนไหนไปแล้ว (YYYY-MM กันเตือนซ้ำ)
 
   @@index([settledAt])
+}
+
+// งานที่เจ้าของฝาก Hermes ทำ (agent งานยาว) — รันเบื้องหลัง เสร็จแล้ว cron ส่งผลเข้าแชท
+model KikiHermesJob {
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  chatId    String
+  task      String
+  status    String    @default("pending") // pending | running | done | failed
+  result    String?
+  error     String?
+  startedAt DateTime?
+  doneAt    DateTime?
+  sentAt    DateTime?
+
+  @@index([status])
 }
 
 // เตือนซ้ำประจำ — ทุกวันที่ X / ทุกวันจันทร์ / ทุกวัน เวลา HH:MM
