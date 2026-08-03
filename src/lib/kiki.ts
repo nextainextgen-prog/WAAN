@@ -618,6 +618,113 @@ export async function askExtractor(
   }
 }
 
+// ===== ตรวจลิงก์ YouTube ว่ามีอยู่จริง (LLM ชอบแต่ง video id — เจอจริง 3 ส.ค.: 4 ใน 5 ลิงก์ 404) =====
+
+export interface YtHit {
+  url: string;
+  title: string;
+  author: string;
+}
+
+export async function verifyYoutubeLinks(text: string): Promise<{ ok: YtHit[]; dead: number }> {
+  const ids = [...new Set([...text.matchAll(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/g)].map((m) => m[1]))];
+  const ok: YtHit[] = [];
+  let dead = 0;
+  await Promise.all(
+    ids.slice(0, 12).map(async (id) => {
+      try {
+        const r = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`, {
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!r.ok) { dead++; return; }
+        const j = (await r.json()) as { title?: string; author_name?: string };
+        ok.push({ url: `https://www.youtube.com/watch?v=${id}`, title: j.title || "(ไม่มีชื่อ)", author: j.author_name || "" });
+      } catch {
+        dead++;
+      }
+    }),
+  );
+  return { ok, dead };
+}
+
+// ค้นจากหน้าผลค้นหา YouTube จริง — LLM แต่ง video id 100% (เทสจริง 3 ส.ค. ลิงก์ตายหมด) จึงห้ามเชื่อ LLM เรื่อง URL
+export async function youtubeSearch(query: string, limit = 8): Promise<YtHit[]> {
+  const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+      "Accept-Language": "th-TH,th;q=0.9,en;q=0.8",
+    },
+    signal: AbortSignal.timeout(25_000),
+  });
+  const html = await res.text();
+  const m = html.match(/var ytInitialData = (\{[\s\S]*?\});<\/script>/);
+  const out: YtHit[] = [];
+  const seen = new Set<string>();
+  if (m) {
+    try {
+      const walk = (o: unknown): void => {
+        if (out.length >= limit) return;
+        if (Array.isArray(o)) { for (const x of o) walk(x); return; }
+        if (o && typeof o === "object") {
+          const rec = o as Record<string, unknown>;
+          const vr = rec.videoRenderer as { videoId?: string; title?: { runs?: { text?: string }[] }; ownerText?: { runs?: { text?: string }[] }; lengthText?: { simpleText?: string } } | undefined;
+          if (vr?.videoId && !seen.has(vr.videoId)) {
+            seen.add(vr.videoId);
+            out.push({
+              url: `https://www.youtube.com/watch?v=${vr.videoId}`,
+              title: `${vr.title?.runs?.[0]?.text || "(ไม่มีชื่อ)"}${vr.lengthText?.simpleText ? ` (${vr.lengthText.simpleText})` : ""}`,
+              author: vr.ownerText?.runs?.[0]?.text || "",
+            });
+          }
+          for (const v of Object.values(rec)) walk(v);
+        }
+      };
+      walk(JSON.parse(m[1]));
+    } catch { /* parse พัง → ตกไป regex ด้านล่าง */ }
+  }
+  if (!out.length) {
+    for (const id of [...new Set([...html.matchAll(/"videoId":"([A-Za-z0-9_-]{11})"/g)].map((x) => x[1]))].slice(0, limit)) {
+      out.push({ url: `https://www.youtube.com/watch?v=${id}`, title: "(คลิปจากผลค้นหา)", author: "" });
+    }
+  }
+  return out.slice(0, limit);
+}
+
+// หาคลิปจริง: ให้ LLM แต่ง "คำค้น" (ถนัด) แล้วดึงคลิปจาก YouTube เอง (ลิงก์จริง 100%)
+export async function searchRealYoutube(topic: string, want = 4): Promise<YtHit[]> {
+  let queries: string[] = [];
+  try {
+    const raw = await askExtractor(`โจทย์: """${topic}"""`, {
+      system: `แปลงโจทย์เป็น "คำค้น YouTube" ที่คนไทยใช้จริง ตอบ JSON เท่านั้น: {"queries":["คำค้น 1","คำค้น 2","คำค้น 3"]}
+- คำค้นสั้น ตรงประเด็น แบบที่พิมพ์ในช่องค้นหา YouTube จริง ๆ (ไทยหรืออังกฤษตามที่จะเจอคลิปดีที่สุด)
+- 3 คำค้น มุมต่างกันเล็กน้อย`,
+      timeoutMs: 60_000,
+    });
+    const jm = raw.match(/\{[\s\S]*\}/);
+    queries = jm ? ((JSON.parse(jm[0]) as { queries?: string[] }).queries || []).slice(0, 3) : [];
+  } catch { /* ใช้โจทย์ดิบเป็นคำค้น */ }
+  if (!queries.length) queries = [topic.slice(0, 80)];
+
+  const found = new Map<string, YtHit>();
+  for (const q of queries) {
+    if (found.size >= want) break;
+    const hits = await youtubeSearch(q, 6).catch(() => []);
+    for (const h of hits) if (!found.has(h.url)) found.set(h.url, h);
+  }
+  // ตรวจซ้ำว่าเปิดได้จริงทุกลิงก์ก่อนส่งออก
+  const list = [...found.values()].slice(0, want + 4);
+  const verified: YtHit[] = [];
+  await Promise.all(
+    list.map(async (h) => {
+      try {
+        const r = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(h.url)}&format=json`, { signal: AbortSignal.timeout(12_000) });
+        if (r.ok) verified.push(h);
+      } catch { /* ตกรอบ */ }
+    }),
+  );
+  return verified.slice(0, want);
+}
+
 // ===== ไฟล์เอกสาร (pdf/docx/txt/md) → คลังความรู้ =====
 
 export async function saveDocToPersonal(filePath: string, fileName: string, userNote?: string): Promise<{ title: string; rel: string; summary: string }> {
@@ -827,20 +934,31 @@ export async function webResearch(query: string, opts: { context?: string; shopp
 ปิดท้าย "ฟันธง" เลือกให้ 1 ตัวพร้อมเหตุผล — ตัดสินใจแทนได้เลยไม่ต้องถามกลับ ตอบเป็นภาษาไทย ข้อมูลจริงจากการค้นหาเท่านั้น`
     : `ตอบเป็นภาษาไทย อ้างอิงข้อมูลจริงจากการค้นหา ระบุตัวเลข/วันที่/แหล่งที่มาให้ครบ ถ้าข้อมูลขัดแย้งกันให้บอก`;
   const ctx = opts.context ? `บริบทบทสนทนาก่อนหน้า (ไว้ตีความว่าเจ้าของหมายถึงอะไร เช่น ถามต่อจากของเดิม):\n${opts.context}\n\n===\n\n` : "";
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: `${ctx}โจทย์ล่าสุดจากเจ้าของ: ${query}
+  const body = JSON.stringify({
+    contents: [{ role: "user", parts: [{ text: `${ctx}โจทย์ล่าสุดจากเจ้าของ: ${query}
 
 ${instruction}` }] }],
-      tools: [{ google_search: {} }],
-    }),
-    signal: AbortSignal.timeout(90_000),
+    tools: [{ google_search: {} }],
   });
-  const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
-  if (j.error?.message) throw new Error(j.error.message);
-  const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
-  if (!text) throw new Error("ค้นเว็บไม่ได้ผลลัพธ์");
-  return text;
+  // Gemini คืน 503 "service unavailable" เป็นระยะ (เจอจริง 3 ส.ค.) — เป็นอาการชั่วคราว ลองซ้ำก่อนยอมแพ้
+  let lastErr: unknown = null;
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise((r) => setTimeout(r, i * 4000));
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(90_000),
+      });
+      const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+      if (j.error?.message) throw new Error(j.error.message);
+      const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+      if (!text) throw new Error("ค้นเว็บไม่ได้ผลลัพธ์");
+      return text;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("ค้นเว็บไม่สำเร็จ");
 }
