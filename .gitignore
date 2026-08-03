@@ -69,3 +69,18 @@ credentials.json
 
 # stray debug log
 aff-debug.log
+
+# vex (kiki) sessions — telegram session string + browser profile (login cookies)
+.kiki-tg-session
+.kiki-social-profile/
+
+# runtime state
+.watchdog-state.json
+
+# sqlite write-ahead files (คู่กับ *.db ที่ ignore ไว้แล้ว)
+*.db-shm
+*.db-wal
+
+# สคริปต์ทดลองชั่วคราว
+scripts/_*.mjs
+scripts/_*.ts
