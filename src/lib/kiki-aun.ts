@@ -120,6 +120,7 @@ async function aunContext(): Promise<string> {
 
 export interface TrainerReply {
   text: string;
+  doc?: { filename: string; dataBase64: string }; // ไฟล์ HTML ที่สร้างจริง (แผน/ตาราง)
 }
 
 export async function handleTrainerChat(text: string, fromName: string, isOwner: boolean): Promise<TrainerReply> {
@@ -150,6 +151,26 @@ export async function handleTrainerChat(text: string, fromName: string, isOwner:
     await addAunRule(text.slice(0, 300));
     const answer = await askTrainer(`อั๋นเพิ่งสั่งปรับนิสัย/วิธีทำงานของคุณ: "${text}" — ระบบบันทึกเป็นกฎถาวรแล้วจริง ยืนยันสั้น ๆ ว่าจำแล้วและจะทำตามยังไง`);
     return { text: answer };
+  }
+
+  // ขอไฟล์ (แผน/ตาราง HTML) — ทำจริง ส่งจริง (เคยพลาด: เคลม "เสร็จเรียบร้อย" ทั้งที่โหมดนี้ไม่มีระบบทำไฟล์)
+  if (/(ทำ|ขอ|สร้าง|เอา|ส่ง)[^\n]{0,50}(ไฟล์|html)|เป็นไฟล์/i.test(text)) {
+    const [ctx, convo] = await Promise.all([aunContext(), aunConversation()]);
+    const raw = await askExtractor(
+      `คำขอจาก${who}: """${text}"""\n\nสร้างไฟล์ HTML สมบูรณ์ตามคำขอ อิงแผน/บทสนทนาจริงด้านล่าง ห้ามมโนข้อมูลใหม่\nข้อกำหนด: ไฟล์เดียวจบ (<!doctype html>...</html>) ธีมสว่างสะอาด อ่านง่าย พิมพ์แปะตู้เย็นได้ (print-friendly) ถ้าเป็นตาราง/เช็คลิสต์ให้มี checkbox ติ๊กได้ + localStorage จำสถานะ + บรรทัดแรกใน <title> เป็นชื่อไฟล์สั้น ๆ ภาษาไทย\nตอบเป็นโค้ด HTML ล้วนเท่านั้น\n\n${ctx}\n\n${convo}`,
+      { timeoutMs: 220_000 },
+    ).catch(() => "");
+    const m = raw.match(/<!doctype[\s\S]*<\/html>/i) || raw.match(/<html[\s\S]*<\/html>/i);
+    if (m) {
+      const titleM = m[0].match(/<title>([^<]{2,60})<\/title>/i);
+      const fname = `${(titleM?.[1] || "แผนของอั๋น").trim().replace(/[\\/:*?"<>|]/g, "-")}.html`;
+      const confirm = `ไฟล์มาแล้วครับ 📎 "${fname}" — เปิดในเบราว์เซอร์ ติ๊กได้เลย ระบบจำสถานะให้ พิมพ์แปะตู้เย็นก็ได้`;
+      await saveKikiChat("assistant", `${confirm} [แนบไฟล์จริง]`, "aun");
+      return { text: confirm, doc: { filename: fname, dataBase64: Buffer.from(m[0], "utf8").toString("base64") } };
+    }
+    const sorry = `รอบนี้สร้างไฟล์ไม่สำเร็จครับ ขอลองใหม่อีกรอบ — สั่งซ้ำได้เลย (ผมจะไม่บอกว่าเสร็จถ้าไฟล์ยังไม่แนบมากับข้อความ)`;
+    await saveKikiChat("assistant", sorry, "aun");
+    return { text: sorry };
   }
 
   // คุยทั่วไปกับเทรนเนอร์

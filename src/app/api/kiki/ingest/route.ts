@@ -207,6 +207,7 @@ export async function POST(req: Request) {
       const r = await handleTrainerChat(text, fromName, isOwner);
       // ซอยบับเบิล + sanitize เหมือนโหมดหลัก
       const sends: Send[] = [{ kind: "text", text: r.text, replyTo: msgId }];
+      if (r.doc) sends.push({ kind: "document", dataBase64: r.doc.dataBase64, filename: r.doc.filename });
       return ok(sends.flatMap((s) => {
         if (s.kind !== "text" || !s.text) return [s];
         return s.text.split(/\n{2,}/).map((p, i) => ({ kind: "text" as const, text: p.trim(), ...(i === 0 ? { replyTo: s.replyTo } : {}) })).filter((x) => x.text);
