@@ -331,7 +331,11 @@ export async function POST(req: Request) {
     }
 
     // ===== ฝาก Hermes — งานยาก/หลายขั้น/ใช้เวลานาน (agent GPT-5.5 + เว็บ/เบราว์เซอร์/terminal) =====
-    const hermesM = text.match(/^\s*(?:ฝาก|ให้)\s*(?:เฮอ(?:ร์)?เ?มี?ส|hermes)\s*(?:ไป|ช่วย|ทำ|จัดการ)?\s*[:：]?\s*([\s\S]{5,})/i);
+    // จับทั้งแบบระบุชื่อ ("ฝาก Hermes ...") และแบบธรรมชาติ ("ผมฝากไปสร้าง...", "ฝากไปทำ...หน่อย")
+    // — เคยพลาด: เจ้าของพิมพ์ "ฝากไปสร้างพื้นที่..." ไม่เข้า pattern แล้ว Vex แต่งคำสั่ง "ฝาก Hermes" เองซึ่งไม่มีผล งานหายเงียบ
+    const hermesM =
+      text.match(/^\s*(?:ผม)?(?:ฝาก|ให้)\s*(?:เฮอ(?:ร์)?เ?มี?ส|hermes)\s*(?:ไป|ช่วย|ทำ|จัดการ)?\s*[:：]?\s*([\s\S]{5,})/i) ||
+      (!/ฝากบอก|ฝากแคป|ฝากทัก/.test(text) ? text.match(/^\s*(?:ผม)?ฝาก(?:มัน|ไป)\s*(?:ไป)?((?:สร้าง|ทำ|จัด|หา|เช็ค|รวบรวม|เตรียม)[\s\S]{5,})/) : null);
     if (hermesM) {
       const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
       if (!kikiHermesReady()) return reply([{ kind: "text", text: `Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`, replyTo: msgId }]);
