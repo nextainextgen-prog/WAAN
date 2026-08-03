@@ -501,10 +501,29 @@ export async function POST(req: Request) {
     }
 
     // ===== พัฒนาตัวเอง: รับสเปก + ปุ่มยืนยัน =====
+    // แบบชัด: "พัฒนา: <สเปก>" · แบบหลวม: "มึงพัฒนาเองได้ ทำเลย" (สเปกอยู่ในเรื่องที่เพิ่งคุย — เคสจริง 3 ส.ค.)
     const devM = text.match(/^\s*(?:พัฒนา(?:ตัวเอง|ระบบ)?|อัปเกรด(?:ตัวเอง|ระบบ)?|เพิ่ม(?:ความสามารถ|ฟีเจอร์)|สร้างระบบ|ทำระบบ|แก้บั๊ก)\s*[:：]?\s*([\s\S]{10,})/);
-    if (devM && !text.startsWith("[ปุ่ม")) {
+    const devLoose = !devM && /(พัฒนา|อัปเกรด).{0,16}(ตัวเอง|เอง)|เพิ่มความสามารถ(ตัวเอง)?|ทำเองได้.{0,10}ทำเลย/.test(text) && !text.startsWith("[ปุ่ม");
+    if ((devM || devLoose) && !text.startsWith("[ปุ่ม")) {
       const { setPendingDev } = await import("@/lib/kiki-dev");
-      const spec = devM[1].trim();
+      let spec = devM?.[1]?.trim() || "";
+      if (!spec) {
+        // สกัดสเปกจากบทสนทนา: เจ้าของเพิ่งบ่น/อยากได้อะไร
+        const convo = await kikiConversation(14);
+        try {
+          const rawS = await askExtractor(`${convo}\n\nข้อความล่าสุดของเจ้าของ: """${text}"""${replyText ? `\n(reply ถึง: """${replyText.slice(0, 500)}""")` : ""}`, {
+            system: `เจ้าของสั่งให้ "พัฒนาตัวเอง" โดยไม่บอกสเปกตรง ๆ — สเปกคือความสามารถที่เจ้าของเพิ่งอยากได้/เพิ่งถูกปฏิเสธในบทสนทนา ตอบ JSON เท่านั้น: {"spec":"สเปกที่ต้องพัฒนา เขียนชัด ๆ 1-3 ประโยค","confident":true/false}
+ไม่แน่ใจว่าเจ้าของหมายถึงอะไร = confident:false`,
+            timeoutMs: 60_000,
+          });
+          const mS = rawS.match(/\{[\s\S]*\}/);
+          const j = mS ? (JSON.parse(mS[0]) as { spec?: string; confident?: boolean }) : null;
+          if (j?.confident && j.spec) spec = j.spec.trim();
+        } catch { /* ถามกลับข้างล่าง */ }
+        if (!spec) {
+          return reply([{ kind: "text", text: `ได้ครับ ผมพัฒนาตัวเองได้จริง — แต่ขอสเปกชัด ๆ หน่อยว่าให้เพิ่มอะไร\n\nพิมพ์: พัฒนา: <สิ่งที่อยากได้>`, replyTo: msgId }]);
+        }
+      }
       await setPendingDev(spec);
       return reply([{
         kind: "text",
