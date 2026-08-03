@@ -69,6 +69,8 @@ interface Send {
   parseMode?: "HTML" | "Markdown";
   noPreview?: boolean; // ไม่ให้ Telegram เด้ง link preview (ลิงก์ Google Calendar ฯลฯ)
   replyTo?: number; // reply ไปที่ข้อความไหน
+  buttons?: { text: string; data: string }[][]; // ปุ่มกดยืนยัน (แทนการพิมพ์ "ยืนยัน")
+  chatId?: string; // ส่งไปแชทอื่น (เช่น ทักในกลุ่มที่เพิ่งสร้าง) — ไม่ใส่ = แชทเดิม
 }
 
 const ok = (sends: Send[]) => NextResponse.json({ sends });
@@ -154,6 +156,12 @@ export async function POST(req: Request) {
   const imageFiles = (body.imageFiles as string[] | undefined) || [];
   const audioFiles = (body.audioFiles as { path: string; mime?: string }[] | undefined) || [];
   const msgId = body.msgId ? Number(body.msgId) : undefined;
+  const callbackData = String(body.callbackData || "");
+  // ปุ่มกด = คำสั่งยืนยันแบบพิมพ์ (แปลงเป็นข้อความเดิม logic ยืนยันทุกตัวใช้ต่อได้เลย)
+  if (callbackData === "kiki:dm:yes") text = "ยืนยัน";
+  else if (callbackData === "kiki:dm:no") text = "ยกเลิก";
+  else if (callbackData === "kiki:grp:yes") text = "[ปุ่ม:สร้างกลุ่ม]";
+  else if (callbackData === "kiki:grp:no") text = "[ปุ่ม:ยกเลิกกลุ่ม]";
   if (!chatId || (!text && !imageFiles.length && !audioFiles.length)) return ok([]);
 
   // ===== เสียง → ข้อความ (เจ้าของอัดเสียงสั่งแทนการพิมพ์ได้ทุกอย่าง) =====
@@ -218,7 +226,7 @@ export async function POST(req: Request) {
       const tail = out.splice(7);
       out.push({ kind: "text", text: tail.map((t) => t.text).join("\n\n"), parseMode: tail.some((t) => t.parseMode) ? "HTML" : undefined });
     }
-    return out
+    const cleaned = out
       .filter((x) => x.parseMode || (x.text || "").trim())
       .map((x) => {
         // ตาข่ายมืออาชีพ: markdown ที่ AI เผลอเขียน (** ## ---) ต้องไม่หลุดถึงแชทดิบ ๆ
@@ -226,7 +234,10 @@ export async function POST(req: Request) {
         const clean = sanitizeVexText(x.text);
         return { ...x, text: clean.text, parseMode: clean.parseMode };
       })
-      .map((x, i) => (i === 0 ? { ...x, replyTo: s.replyTo } : x));
+      .map((x, i) => ({ ...x, chatId: s.chatId, ...(i === 0 ? { replyTo: s.replyTo } : {}) }));
+    // ปุ่มติดบับเบิลสุดท้าย (ข้อความยืนยันมักจบท้ายก้อน)
+    if (s.buttons && cleaned.length) cleaned[cleaned.length - 1] = { ...cleaned[cleaned.length - 1], buttons: s.buttons };
+    return cleaned;
   };
 
   const reply = async (sendsIn: Send[]) => {
@@ -438,6 +449,71 @@ export async function POST(req: Request) {
       }
     }
 
+    // ===== สร้างกลุ่มใหม่: ยืนยัน/ยกเลิก (ปุ่มหรือพิมพ์) =====
+    {
+      const rawGrp = await getSetting("kiki_pending_group");
+      const pendingGrp = rawGrp ? (JSON.parse(rawGrp) as { title: string }) : null;
+      if (pendingGrp && text === "[ปุ่ม:ยกเลิกกลุ่ม]") {
+        await setSetting("kiki_pending_group", "");
+        return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่สร้างกลุ่ม", replyTo: msgId }]);
+      }
+      if (pendingGrp && (text === "[ปุ่ม:สร้างกลุ่ม]" || /^\s*(สร้างเลย|ลุยเลย|เอาเลย)\s*$/.test(text))) {
+        await setSetting("kiki_pending_group", "");
+        const { userbotReady: ubReady, createOwnerGroup } = await import("@/lib/kiki-userbot");
+        if (!ubReady()) return reply([{ kind: "text", text: `บัญชี Telegram ยังไม่เชื่อมครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน`, replyTo: msgId }]);
+        try {
+          const g = await createOwnerGroup(pendingGrp.title);
+          await addKikiChatId(g.chatId);
+          const sends: Send[] = [];
+          if (g.botAdded) {
+            // ทักในกลุ่มใหม่ + แท็กเจ้าของ (tg://user ใช้ได้แม้ไม่มี username)
+            sends.push({
+              kind: "text",
+              chatId: g.chatId,
+              parseMode: "HTML",
+              text: `กลุ่ม "${escHtml(g.title)}" พร้อมใช้แล้วครับ <a href="tg://user?id=${fromId}">พี่</a> — ผมประจำการที่นี่แล้ว ใช้ได้ทุกความสามารถเหมือนกลุ่มหลักเลย 🎯`,
+            });
+          }
+          sends.push({
+            kind: "text",
+            text: `สร้างกลุ่ม "${g.title}" เสร็จแล้วครับ ✅ พี่เป็นเจ้าของกลุ่ม${g.botAdded ? " ผมเข้าไปประจำการ+ทักไว้ในนั้นแล้ว" : " ⚠️ แต่ดึงผมเข้าไม่สำเร็จ — เชิญ @kiki_lekha_bot เข้ากลุ่มให้หน่อยครับ"}\n\nเปิดดูในลิสต์แชท Telegram ได้เลย`,
+            replyTo: msgId,
+          });
+          return reply(sends);
+        } catch (e) {
+          return reply([{ kind: "text", text: `สร้างกลุ่มไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`, replyTo: msgId }]);
+        }
+      }
+    }
+
+    // ===== สร้างกลุ่มใหม่: รับคำสั่ง + ตั้งชื่อ + ปุ่มยืนยัน =====
+    if (/สร้างกลุ่ม/.test(text) && !text.startsWith("[ปุ่ม")) {
+      const { userbotReady: ubReady } = await import("@/lib/kiki-userbot");
+      if (!ubReady()) return reply([{ kind: "text", text: `สร้างกลุ่มต้องใช้บัญชี Telegram พี่ครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน (ครั้งเดียว)`, replyTo: msgId }]);
+      const nameM = text.match(/สร้างกลุ่ม.{0,8}(?:ชื่อ|ว่า)\s*["“']?([^"”'\n]{2,60})/);
+      let title = nameM?.[1]?.trim() || "";
+      if (!title) {
+        // ไม่บอกชื่อ = ตั้งจากเรื่องที่คุยกันล่าสุด
+        const convo = await kikiConversation(16);
+        try {
+          const rawT = await askExtractor(`${convo}\n\nคำสั่งเจ้าของ: """${text}"""`, {
+            system: `ตั้งชื่อกลุ่ม Telegram จากโปรเจกต์/เรื่องที่เจ้าของกำลังคุย ตอบ JSON เท่านั้น: {"title":"ชื่อกลุ่ม สั้น อ่านรู้เรื่อง (ไทย/อังกฤษได้ ไม่ใส่อิโมจิ)"}`,
+            timeoutMs: 60_000,
+          });
+          const mT = rawT.match(/\{[\s\S]*\}/);
+          title = mT ? String((JSON.parse(mT[0]) as { title?: string }).title || "").trim() : "";
+        } catch { /* ตกไปใช้ชื่อกลาง */ }
+      }
+      if (!title) title = `โปรเจกต์ใหม่ — โด้ x Vex`;
+      await setSetting("kiki_pending_group", JSON.stringify({ title }));
+      return reply([{
+        kind: "text",
+        text: `จะสร้างกลุ่ม "${title}" ผ่านบัญชีพี่ (พี่เป็นเจ้าของกลุ่มอัตโนมัติ) แล้วดึงผมเข้าไปประจำการครับ\n\nถ้าอยากได้ชื่ออื่น พิมพ์ "สร้างกลุ่มชื่อ ..." มาใหม่ได้เลย`,
+        replyTo: msgId,
+        buttons: [[{ text: "✅ สร้างเลย", data: "kiki:grp:yes" }, { text: "❌ ยกเลิก", data: "kiki:grp:no" }]],
+      }]);
+    }
+
     // ===== Telegram userbot: ลิสต์รายชื่อแชทในบัญชีเจ้าของ =====
     if (/(เช็ก|เช็ค|ลิส|ขอ|ดู).{0,10}(ราย)?ชื่อแชท|รายชื่อแชท|มีแชท(อะไร|ไหน|ใคร)บ้าง|แชททั้งหมด|ลิสแชท/i.test(text)) {
       if (!userbotReady()) return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram ครับ ⚠️ รัน: npm run kiki:tg-auth`, replyTo: msgId }]);
@@ -506,7 +582,12 @@ export async function POST(req: Request) {
         return reply([{ kind: "text", text: `เจอหลายแชทครับ หมายถึงอันไหน:\n${hits.map((h, i) => `${i + 1}. ${h.name}${h.username ? ` (@${h.username})` : ""}${h.isGroup ? " · กลุ่ม" : ""}`).join("\n")}\n\nสั่งใหม่โดยระบุชื่อเต็ม/username ครับ`, replyTo: msgId }]);
       }
       await setPendingDm({ peerId: hits[0].id, peerName: hits[0].name, message: dm.message });
-      return reply([{ kind: "text", text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"\n\nพิมพ์ "ยืนยัน" เพื่อส่ง หรือ "ยกเลิก" ⚠️`, replyTo: msgId }]);
+      return reply([{
+        kind: "text",
+        text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"`,
+        replyTo: msgId,
+        buttons: [[{ text: "✅ ส่งเลย", data: "kiki:dm:yes" }, { text: "❌ ไม่ส่ง", data: "kiki:dm:no" }]],
+      }]);
     }
 
     // ===== Telegram userbot: สรุปแชท/กลุ่มไหนก็ได้ที่เจ้าของอยู่ =====

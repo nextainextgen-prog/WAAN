@@ -79,6 +79,10 @@ async function deliver(chatId, sends) {
           ...(s.parseMode ? { parse_mode: s.parseMode } : {}),
           ...(s.noPreview ? { link_preview_options: { is_disabled: true } } : {}),
           ...(i === 0 && s.replyTo ? { reply_to_message_id: s.replyTo, allow_sending_without_reply: true } : {}),
+          // ปุ่มกดยืนยัน (เจ้าของสั่ง 3 ส.ค.: ไม่ต้องพิมพ์ "ยืนยัน" แล้ว)
+          ...(i === chunks.length - 1 && s.buttons
+            ? { reply_markup: { inline_keyboard: s.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) } }
+            : {}),
         }).catch((e) => console.error("send text err:", e?.message));
       }
     } else if (s.kind === "photo" && s.dataBase64) {
@@ -197,6 +201,35 @@ async function processMessage(msgs) {
   await tg("sendMessage", { chat_id: chatId, text: "ระบบหลังบ้านไม่ตอบครับ ⚠️ (ลองไป 3 รอบแล้ว) เดี๋ยวลองพิมพ์ใหม่อีกทีนะครับ" }).catch(() => {});
 }
 
+// ปุ่มถูกกด → ตอบรับทันที (หยุดวงหมุน) แล้วส่งเข้า ingest เป็น callbackData
+async function handleCallback(cq) {
+  await tg("answerCallbackQuery", { callback_query_id: cq.id }).catch(() => {});
+  const msg = cq.message;
+  if (!msg) return;
+  const chatId = String(msg.chat.id);
+  const body = JSON.stringify({
+    chatId,
+    text: "",
+    callbackData: String(cq.data || ""),
+    fromId: String(cq.from?.id || ""),
+    fromName: [cq.from?.first_name, cq.from?.last_name].filter(Boolean).join(" ") || cq.from?.username || "",
+    msgId: msg.message_id,
+  });
+  try {
+    const res = await fetch(APP_URL + "/api/kiki/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body,
+    });
+    const data = await res.json();
+    // เอาปุ่มออกจากข้อความเดิม กันกดซ้ำ
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    await deliver(chatId, data.sends || []);
+  } catch (e) {
+    console.error("callback err:", e?.message);
+  }
+}
+
 function handleMessage(msg) {
   const gid = msg.media_group_id;
   if (!gid) return processMessage([msg]);
@@ -238,13 +271,14 @@ async function main() {
     try {
       const res = await fetch(API("getUpdates"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ offset, timeout: 30, allowed_updates: ["message"] }),
+        body: JSON.stringify({ offset, timeout: 30, allowed_updates: ["message", "callback_query"] }),
       });
       const data = await res.json();
       if (!data.ok) { await new Promise((r) => setTimeout(r, 3000)); continue; }
       for (const u of data.result) {
         offset = u.update_id + 1;
         if (u.message) handleMessage(u.message);
+        if (u.callback_query) handleCallback(u.callback_query);
       }
     } catch (e) { console.error("poll err:", e.message); await new Promise((r) => setTimeout(r, 3000)); }
   }

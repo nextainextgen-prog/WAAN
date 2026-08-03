@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { TelegramClient } from "telegram";
+import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { getSetting, setSetting } from "./kiki";
 
@@ -147,4 +147,26 @@ export async function setAlias(a: TgAlias): Promise<void> {
   const all = (await getAliases()).filter((x) => x.alias !== a.alias);
   all.push(a);
   await setSetting("kiki_tg_aliases", JSON.stringify(all));
+}
+
+// ===== สร้างกลุ่มใหม่ในนามเจ้าของ (เจ้าของ = ผู้สร้างกลุ่มโดยอัตโนมัติ) + ดึงบอท Vex เข้า =====
+
+export async function createOwnerGroup(title: string): Promise<{ chatId: string; title: string; botAdded: boolean }> {
+  const c = await client();
+  const res = await c.invoke(
+    new Api.channels.CreateChannel({ title: title.slice(0, 120), about: "สร้างโดย Vex เลขาส่วนตัว", megagroup: true }),
+  );
+  const chats = (res as unknown as { chats?: { id: { toString(): string } }[] }).chats || [];
+  const chat = chats[0];
+  if (!chat) throw new Error("สร้างกลุ่มแล้วแต่อ่านผลลัพธ์ไม่ได้");
+  const chatId = `-100${chat.id.toString()}`; // supergroup id ฝั่ง Bot API
+  const botUsername = process.env.KIKI_BOT_USERNAME || "kiki_lekha_bot";
+  let botAdded = false;
+  try {
+    await c.invoke(new Api.channels.InviteToChannel({ channel: chat as unknown as Api.TypeInputChannel, users: [botUsername] }));
+    botAdded = true;
+  } catch {
+    // ดึงบอทเข้าไม่ได้ (โดนจำกัดสิทธิ์ ฯลฯ) — กลุ่มสร้างแล้ว ให้เจ้าของเชิญเองได้
+  }
+  return { chatId, title, botAdded };
 }
