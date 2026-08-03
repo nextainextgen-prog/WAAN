@@ -193,6 +193,17 @@ export async function POST(req: Request) {
   }
   if (ownerId && fromId && fromId !== ownerId) return ok([]);
   await addKikiChatId(chatId);
+  // จำชื่อกลุ่ม (ไว้ resolve "ไปแจ้งในกลุ่ม X" ว่าหมายถึงแชทไหน)
+  const chatTitleIn = String(body.chatTitle || "").trim();
+  if (chatTitleIn) {
+    try {
+      const titles = JSON.parse((await getSetting("kiki_chat_titles")) || "{}") as Record<string, string>;
+      if (titles[chatId] !== chatTitleIn) {
+        titles[chatId] = chatTitleIn;
+        await setSetting("kiki_chat_titles", JSON.stringify(titles));
+      }
+    } catch { /* map พังก็สร้างใหม่รอบหน้า */ }
+  }
 
   await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`);
 
@@ -250,8 +261,8 @@ export async function POST(req: Request) {
       if (ogg) voiceSend = { kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" };
     }
     let sends = sendsIn.flatMap(explodeTextSend);
-    // เจ้าของพูดมา = ตอบเสียง "อย่างเดียว" (ตัดข้อความออก คงการ์ด/ไฟล์ไว้) — ทำเสียงไม่ได้ค่อยส่งข้อความแทน
-    if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text");
+    // เจ้าของพูดมา = ตอบเสียง "อย่างเดียว" (ตัดข้อความออก คงการ์ด/ไฟล์/ข้อความข้ามกลุ่มไว้)
+    if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text" || s.chatId);
     if (voiceSend) sends.push(voiceSend);
     return ok(sends);
   };
@@ -559,6 +570,38 @@ export async function POST(req: Request) {
       await setAlias({ alias, peerId: peer.id, peerName: peer.name, note: desc !== alias ? desc : undefined });
       await rememberOwnerFact(`"${alias}" ใน Telegram = แชท "${peer.name}"${desc !== alias ? ` (${desc})` : ""}`, { category: "คนรอบตัว", source: text });
       return reply([{ kind: "text", text: `จำแล้วครับ ✅ "${alias}" = แชท ${peer.name}${desc !== alias ? ` (${desc})` : ""}\n\nต่อไปสั่งได้เลย: "ไปบอก${alias}ว่า..." / "สรุปแชทกับ${alias}"`, replyTo: msgId }]);
+    }
+
+    // ===== ส่งข้อความ/ประกาศเข้ากลุ่มที่ Vex ประจำการ (ส่งเองผ่านบอท ไม่ต้องยืนยัน) =====
+    // เคสจริง 3 ส.ค.: "ไปแจ้งข้อความในกลุ่ม..." ไม่มี intent → Vex รับปากลอย ๆ ว่าส่งแล้ว
+    if (/(ไปแจ้ง|ไปโพสต์|ไปประกาศ|ไปบอก|ฝากบอก|แจ้ง(ข้อความ)?|ประกาศ|โพสต์|ส่ง(ข้อความ)?).{0,24}(ใน|เข้า|ไปที่|ที่)?กลุ่ม/.test(text) && !/สร้างกลุ่ม/.test(text)) {
+      let titles: Record<string, string> = {};
+      try { titles = JSON.parse((await getSetting("kiki_chat_titles")) || "{}"); } catch { /* ว่างก็ได้ */ }
+      const knownIds = (await (await import("@/lib/kiki")).getKikiChatIds()).filter((id) => id.startsWith("-"));
+      const candidates = knownIds.filter((id) => id !== chatId);
+      const lower = text.toLowerCase();
+      // จับชื่อกลุ่มจากข้อความ → ไม่เจอ = กลุ่มที่เพิ่มล่าสุด (เคส "กลุ่มที่เพิ่งสร้าง")
+      let target = candidates.find((id) => {
+        const t = (titles[id] || "").toLowerCase();
+        return t && (lower.includes(t) || t.split(/[\s—–-]+/).some((w) => w.length >= 3 && lower.includes(w)));
+      });
+      if (!target && candidates.length) target = candidates[candidates.length - 1];
+      if (target) {
+        const convo = await kikiConversation(16);
+        const wantTag = /แท็ก|tag|เมนชั่น/i.test(text);
+        const content = await askKiki(
+          `[เขียนประกาศลงกลุ่ม "${titles[target] || target}"] เจ้าของสั่ง: """${text}"""\nเขียน "เนื้อหาที่จะโพสต์จริง" ตามคำสั่ง อิงเรื่องที่คุยกันในบริบท ตอบเฉพาะเนื้อหาที่จะส่ง ไม่ต้องเกริ่น ไม่ต้องถามกลับ`,
+          convo,
+        ).catch(() => "");
+        if (!content.trim()) return reply([{ kind: "text", text: `เรียบเรียงเนื้อหาไม่สำเร็จครับ ⚠️ ลองสั่งใหม่อีกที`, replyTo: msgId }]);
+        const clean = sanitizeVexText(content).text.replace(/<[^>]+>/g, "");
+        const finalHtml = `${wantTag ? `<a href="tg://user?id=${fromId}">พี่โด้</a>\n\n` : ""}${escHtml(clean)}`;
+        return reply([
+          { kind: "text", chatId: target, parseMode: "HTML", text: finalHtml },
+          { kind: "text", text: `ส่งเข้ากลุ่ม "${titles[target] || target}" แล้วครับ ✅${wantTag ? " (แท็กพี่ไว้บรรทัดแรก)" : ""}\n\nเนื้อหาที่ส่ง:\n${clean.slice(0, 400)}${clean.length > 400 ? "..." : ""}`, replyTo: msgId },
+        ]);
+      }
+      // ไม่รู้จักกลุ่มไหนเลย → ตกไปทาง userbot ข้างล่าง (กลุ่มนอกที่ Vex ไม่ได้อยู่)
     }
 
     // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====
