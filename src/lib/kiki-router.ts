@@ -1,0 +1,199 @@
+/**
+ * ตัวจัดเส้นทางคำสั่งของ Vex (เจ้าของสั่ง 4 ส.ค. 2026: "ไม่ต้องฟิกข้อมูลอะไรเลย ปล่อยให้อิสระ")
+ *
+ * ปัญหาเดิม: ingest ตัดสินใจด้วย regex ล้วน เรียงตายตัว → คำพูดธรรมชาติตกร่องผิดตลอด
+ *   เคสจริง: "คิดชื่อกลุ่มนี้ให้หน่อย อยากได้ประมาณว่า..." → ชนคำว่า "อยากได้" เข้าระบบ wishlist
+ *            แล้วถามกลับว่า "อยากได้อะไร ราคาเท่าไหร่"
+ *
+ * โครงใหม่: regex เหลือเฉพาะที่ชัด 100% (ปุ่ม/ยืนยัน/สลิป) ที่เหลือให้สมองอ่านเจตนาแล้วเลือกปลายทางเอง
+ * ไม่มั่นใจ = คุยปกติ (ปลอดภัยสุด — ตอบได้เสมอ ดีกว่าลากไปเข้าระบบผิดตัว)
+ */
+
+export interface IntentSpec {
+  id: string;
+  when: string; // อธิบายให้สมองรู้ว่าเมื่อไหร่ควรเลือกอันนี้
+  cap?: string; // บรรทัดความสามารถที่จะฉีดเข้า persona (ไม่ใส่ = ไม่ต้องโชว์)
+}
+
+// เพิ่มความสามารถใหม่ = เพิ่มที่นี่ที่เดียว (persona อ่านจากตารางนี้ ไม่หลุด sync อีก)
+export const INTENT_CATALOG: IntentSpec[] = [
+  { id: "chat", when: "คุยเล่น ถามความเห็น ถามความรู้ทั่วไป ปรึกษา หรืออะไรก็ตามที่ไม่เข้าข้ออื่นชัดเจน" },
+  {
+    id: "think",
+    when: "ขอให้คิด/เสนอ/ตั้งชื่อ/ระดมไอเดีย/ช่วยตัดสินใจ/เขียนให้ เช่น 'คิดชื่อกลุ่มให้หน่อย' 'ช่วยร่างข้อความ' 'เสนอแผนมาหน่อย' — ห้ามสับสนกับ wish เด็ดขาด แม้มีคำว่า 'อยากได้'",
+    cap: "คิด/เสนอไอเดีย/ตั้งชื่อ/ร่างข้อความให้ (ตอบยาวมีโครงสร้างได้)",
+  },
+
+  { id: "finance_record", when: "บอกว่าจ่าย/ซื้อ/ได้เงิน พร้อมจำนวนเงิน หรือส่งสลิปมา", cap: "บันทึกรายรับรายจ่าย (พิมพ์บอกหรือส่งสลิป)" },
+  { id: "finance_query", when: "ถามสถานะการเงินรวม เหลือเท่าไหร่ ใช้ไปเท่าไหร่ ขอการ์ดสรุป", cap: "สรุปการเงิน/งบคงเหลือ" },
+  { id: "finance_itemize", when: "ขอดูรายการที่ซื้อ/จ่ายไปเป็นรายตัว (วันนี้/เมื่อวาน/สัปดาห์นี้/เดือนนี้)", cap: "ลิสต์รายการใช้จ่ายรายตัว" },
+  { id: "finance_analyze", when: "ถามวิเคราะห์ตัวเลข เช่น หมวดไหนเปลืองสุด เทียบเดือน เฉลี่ยต่อวัน ใช้กับอะไรไปเท่าไหร่", cap: "วิเคราะห์การเงินตามคำถาม" },
+  { id: "finance_edit", when: "สั่งแก้/ลบ/ปรับตัวเลขรายการเงินที่บันทึกไปแล้ว รวมถึงลบตัวซ้ำ", cap: "แก้/ลบรายการเงินด้วยภาษาคน" },
+  { id: "finance_pending", when: "ถามถึง/ขอลิสต์รายการเงินที่ยังไม่รู้ว่าค่าอะไร (รอระบุ) หรือกำลังตอบว่ารายการนั้นคือค่าอะไร", cap: "ลิสต์รายการเงินที่ยังไม่ระบุหมวด + ตอบเป็นชุดได้" },
+  { id: "finance_budget", when: "ตั้ง/แก้งบประจำเดือน", cap: "ตั้งงบรายเดือน" },
+  { id: "finance_health", when: "ขอดูสุขภาพการเงินภาพรวม ระยะยาว อัตราการออม", cap: "การ์ดสุขภาพการเงิน" },
+  { id: "finance_forecast", when: "ถามว่าเงินจะพอไหม คาดการณ์ 30 วัน เส้นเงินสด หรือบอกยอดเงินคงเหลือในบัญชี", cap: "พยากรณ์เงินสด 30 วัน" },
+  { id: "bill", when: "เรื่องบิลประจำ/subscription ที่ตัดทุกเดือน", cap: "บิลประจำ/subscription" },
+  { id: "debt", when: "เรื่องหนี้ เงินยืม ผ่อน ทวงหนี้ ใครติดเงินใคร", cap: "สมุดหนี้/ผ่อน" },
+  { id: "wish", when: "อยากซื้อของชิ้นหนึ่งจริง ๆ แล้วอยากรู้ว่าซื้อไหวไหม/เก็บเข้า wishlist (ต้องเป็นสินค้าที่ซื้อด้วยเงินเท่านั้น)", cap: "wishlist + วิเคราะห์ว่าซื้อไหวไหม" },
+
+  { id: "calendar_create", when: "ลงนัด/ลงคิว/นัดหมายที่มีวันเวลาชัดเจน", cap: "ลงนัดเข้า Google Calendar + เตือนเป็นระยะ" },
+  { id: "calendar_view", when: "ขอดูตาราง/นัดวันนี้ พรุ่งนี้ สัปดาห์นี้", cap: "ดูตารางนัด" },
+  { id: "calendar_edit", when: "เลื่อน/ยกเลิก/ปิดนัดที่ลงไว้แล้ว", cap: "เลื่อน/ยกเลิกนัด" },
+  { id: "recurring", when: "ให้เตือนซ้ำเป็นประจำ ทุกวัน/ทุกสัปดาห์/ทุกวันที่เท่าไหร่", cap: "เตือนซ้ำประจำ" },
+
+  {
+    id: "task_add",
+    when: "สั่งให้จดเป็นงานที่ต้องทำ: 'จดไว้', 'โน้ตไว้', 'เดี๋ยวทำ', 'ลิสต์ไว้', 'เก็บไว้พัฒนา', 'อย่าลืมเตือนผมเรื่อง...' รวมถึงงานมีเงื่อนไข 'ถ้า X แล้วบอกผมด้วย' (ไม่มีวันเวลาชัด = งาน ไม่ใช่นัด)",
+    cap: "กระดานงาน: จดสิ่งที่ต้องทำ + ตามเตือนจนกว่าจะปิด (รับงานมีเงื่อนไข 'ถ้า...แล้วเตือน')",
+  },
+  { id: "task_list", when: "ขอดูงานที่ค้าง/ลิสต์ที่จดไว้/มีอะไรต้องทำบ้าง", cap: "ดูงานค้างทั้งหมด" },
+  { id: "task_done", when: "บอกว่างานนั้นทำเสร็จแล้ว/ปิดงาน/ไม่ต้องเตือนแล้ว", cap: "ปิดงานในกระดาน" },
+
+  { id: "memory_remember", when: "สั่งให้จำข้อเท็จจริงเกี่ยวกับตัวเอง/คนรอบตัว/ของสำคัญ (ไม่ใช่งานที่ต้องทำ)", cap: "จำข้อมูลถาวร" },
+  { id: "memory_forget", when: "สั่งให้ลืม/ลบความจำเรื่องหนึ่ง", cap: "ลืมเรื่องที่สั่ง" },
+  { id: "memory_list", when: "ถามว่าจำอะไรได้บ้าง รู้อะไรเกี่ยวกับเขาบ้าง", cap: "ลิสต์สิ่งที่จำไว้" },
+  { id: "memory_recall", when: "ถามถึงเรื่องที่เคยคุยกันไปแล้ว 'จำได้ไหมที่คุยเรื่อง...' 'ที่บอกไว้วันก่อน' 'สรุปที่คุยกันเมื่อวาน'", cap: "ค้นบทสนทนาเก่าย้อนหลังทั้งหมด" },
+  { id: "rule_teach", when: "สอน/สั่งให้ปรับพฤติกรรมถาวร 'ต่อไปนี้...' 'อย่า...อีก' 'ครั้งหน้าให้...'", cap: "สอนกฎถาวรให้ Vex" },
+  { id: "rule_list", when: "ถามว่ามีกฎอะไรที่สอนไว้บ้าง", cap: "ดูกฎที่สอนไว้" },
+
+  { id: "link_save", when: "ส่งลิงก์มาแล้วสั่งให้เก็บเข้าคลังความรู้", cap: "เก็บลิงก์เข้าคลังความรู้ (เก็บเฉพาะที่สั่ง)" },
+  { id: "doc_summary", when: "สั่งทำเอกสารสรุปเป็นไฟล์ HTML", cap: "ทำไฟล์สรุป HTML ส่งในแชท" },
+  { id: "image_save", when: "ส่งรูปมาแล้วสั่งให้เก็บไว้", cap: "เก็บรูปเข้าคลัง (เฉพาะที่สั่ง)" },
+  { id: "image_find", when: "ขอรูป/ภาพที่เคยเก็บไว้กลับมา", cap: "ค้นรูปที่เก็บไว้" },
+  { id: "web_research", when: "ให้หาข้อมูล/ข่าว/ราคา/คอร์ส จากอินเทอร์เน็ตสด ๆ", cap: "ค้นเว็บสด + สรุป" },
+  { id: "shopping", when: "ให้หาสินค้าจริงพร้อมราคาและลิงก์ร้าน", cap: "หาสินค้า+ราคา+ลิงก์ พร้อมฟันธง" },
+
+  { id: "tg_group_post", when: "สั่งให้ไปโพสต์/แจ้ง/ประกาศข้อความในกลุ่ม Telegram ที่ Vex อยู่", cap: "โพสต์ข้อความเข้ากลุ่มที่ประจำการ" },
+  { id: "tg_dm", when: "สั่งให้ทัก/ส่งข้อความหาคนอื่นในนามบัญชีเจ้าของ", cap: "ส่งข้อความหาคนอื่นในนามเจ้าของ (ยืนยันก่อนส่ง)" },
+  { id: "tg_list_chats", when: "ขอรายชื่อแชทในบัญชี Telegram", cap: "ลิสต์แชทในบัญชีเจ้าของ" },
+  { id: "tg_chat_summary", when: "ขอสรุปแชท/กลุ่มไหนสักอัน", cap: "สรุปแชทกับใครก็ได้" },
+  { id: "tg_create_group", when: "สั่งสร้างกลุ่ม Telegram ใหม่", cap: "สร้างกลุ่ม Telegram ใหม่" },
+
+  { id: "mac", when: "สั่งงานที่เครื่อง Mac: แคปหน้าจอ เปิดแอป/เว็บ เช็คแบต/ดิสก์ คุมเบราว์เซอร์ รันคำสั่ง", cap: "คุมเครื่อง Mac (แคปจอ/เปิดแอป/เช็คเครื่อง/รันคำสั่ง)" },
+  { id: "hermes", when: "ฝากงานยาวหลายขั้นให้ผู้ช่วยเบื้องหลังทำ", cap: "ฝากงานยาวให้ Hermes ทำเบื้องหลัง (รายงานความคืบหน้าทุก 3 นาที)" },
+  { id: "self_dev", when: "สั่งให้ Vex พัฒนา/อัปเกรดความสามารถตัวเอง หรือแก้บั๊กของตัวเอง", cap: "พัฒนาโค้ดตัวเองได้จริง" },
+  { id: "fitness", when: "เรื่องออกกำลังกาย ยิม น้ำหนัก โปรแกรมเล่น", cap: "โค้ชฟิตเนส + จดบันทึก" },
+  { id: "journal", when: "เล่าเรื่องวันนี้/สั่งจดไดอารี่", cap: "ไดอารี่ + อารมณ์ประจำวัน" },
+  { id: "voice_mode", when: "สั่งเปิด/ปิดโหมดตอบเสียง หรือเปลี่ยนเสียงพูด", cap: "ตอบเป็นเสียง/เปลี่ยนเสียง" },
+];
+
+export interface RouteResult {
+  intent: string;
+  confidence: number;
+  args: Record<string, string | boolean | undefined>;
+  reason?: string;
+}
+
+const CATALOG_TEXT = INTENT_CATALOG.map((i) => `- ${i.id}: ${i.when}`).join("\n");
+
+/** รายการความสามารถจริง (ฉีดเข้า persona — ห้ามให้ Vex ปฏิเสธของที่ตัวเองมี) */
+export function capabilityLines(): string {
+  return INTENT_CATALOG.filter((i) => i.cap).map((i) => `- ${i.cap}`).join("\n");
+}
+
+const ROUTER_SYSTEM = `คุณคือตัวจัดเส้นทางคำสั่งของเลขาส่วนตัว (Vex) อ่านข้อความล่าสุดของเจ้าของแล้วเลือก "ปลายทาง" เดียวที่ตรงเจตนาที่สุด
+
+ปลายทางที่มี:
+${CATALOG_TEXT}
+
+กติกาสำคัญ:
+1. ดูเจตนาจริง ไม่ใช่คำเดี่ยว ๆ — "อยากได้ชื่อกลุ่มเท่ ๆ" คือ think ไม่ใช่ wish · "หาคำตอบให้หน่อยว่าทำไม..." คือ chat ไม่ใช่ web_research ถ้าไม่ต้องใช้ข้อมูลสด
+2. ไม่แน่ใจ / กำกวม / เป็นการคุยต่อเนื่อง = ตอบ chat แล้วให้ confidence ต่ำ (ปลอดภัยกว่าลากผิดทาง)
+3. คำสั่ง "จดไว้/โน้ตไว้/เดี๋ยวทำ/อย่าลืมเตือนผม" = task_add เสมอ · มีวันเวลานัดหมายชัด = calendar_create · "จำไว้ว่า<ข้อเท็จจริง>" = memory_remember
+4. ถามถึงเรื่องที่เคยคุยกันไปแล้ว = memory_recall
+5. ข้อความอาจมีหลายเจตนา — เลือกอันที่เป็น "การกระทำหลัก" ที่เจ้าของอยากได้จริง
+
+ตอบ JSON เท่านั้น:
+{"intent":"<id>","confidence":0.0-1.0,"reason":"เหตุผลสั้นมาก","args":{}}
+
+args ใส่เฉพาะที่เกี่ยวข้อง:
+- task_add: {"title":"งานที่ต้องทำ สั้น ชัด","detail":"รายละเอียดถ้ามี","kind":"todo|idea|waiting","priority":"low|normal|high","trigger":"เงื่อนไขที่ต้องเตือน ถ้าเป็นงานแบบ ถ้า...แล้ว","due":"YYYY-MM-DD ถ้าระบุกำหนดชัด"}
+- task_done: {"ref":"งานไหน (เลขข้อ หรือคำในชื่องาน)"}
+- memory_remember: {"fact":"ข้อเท็จจริงที่ต้องจำ เขียนให้สมบูรณ์ในตัว"}
+- memory_recall: {"query":"เรื่องที่เขาอยากให้นึกออก"}`;
+
+async function routeWithGemini(prompt: string): Promise<RouteResult | null> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return null;
+  const call = async (withThinkingOff: boolean) => {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: ROUTER_SYSTEM }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          ...(withThinkingOff ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+        },
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+    if (j.error?.message) throw new Error(j.error.message);
+    return (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+  };
+  let raw = "";
+  try {
+    raw = await call(true);
+  } catch {
+    try { raw = await call(false); } catch { return null; }
+  }
+  return parseRoute(raw);
+}
+
+function parseRoute(raw: string): RouteResult | null {
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]) as { intent?: string; confidence?: number; reason?: string; args?: Record<string, string> };
+    const intent = String(j.intent || "").trim();
+    if (!intent || !INTENT_CATALOG.some((i) => i.id === intent)) return null;
+    return {
+      intent,
+      confidence: typeof j.confidence === "number" ? Math.max(0, Math.min(1, j.confidence)) : 0.5,
+      args: j.args || {},
+      reason: j.reason,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * อ่านเจตนาข้อความ — Gemini flash ก่อน (เร็ว ~1 วิ) ล่มค่อยใช้ Claude CLI
+ * พังทั้งคู่ = คุยปกติ (ไม่มีทางทำให้แชทเงียบ)
+ */
+export async function routeIntent(input: {
+  text: string;
+  replyText?: string;
+  convo?: string;
+  hasImages?: boolean;
+  hasDocs?: boolean;
+}): Promise<RouteResult> {
+  const text = (input.text || "").trim();
+  if (!text) return { intent: "chat", confidence: 0, args: {} };
+
+  const prompt = [
+    input.convo ? `บทสนทนาก่อนหน้า (ไว้ตีความว่าพูดถึงอะไรอยู่):\n${input.convo.slice(-2500)}` : "",
+    input.replyText ? `เจ้าของกำลัง reply ข้อความนี้:\n"""${input.replyText.slice(0, 600)}"""` : "",
+    input.hasImages ? "เจ้าของแนบรูปมาด้วย" : "",
+    input.hasDocs ? "เจ้าของแนบไฟล์เอกสารมาด้วย" : "",
+    `ข้อความล่าสุดของเจ้าของ:\n"""${text.slice(0, 1500)}"""`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const viaGemini = await routeWithGemini(prompt).catch(() => null);
+  if (viaGemini) return viaGemini;
+
+  try {
+    const { askExtractor } = await import("./kiki");
+    const raw = await askExtractor(prompt, { system: ROUTER_SYSTEM, timeoutMs: 45_000 });
+    const parsed = parseRoute(raw);
+    if (parsed) return parsed;
+  } catch { /* ตกไปคุยปกติ */ }
+  return { intent: "chat", confidence: 0, args: {} };
+}

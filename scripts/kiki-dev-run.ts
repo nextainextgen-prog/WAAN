@@ -44,14 +44,59 @@ async function main() {
 
   const cliPath = process.env.CLAUDE_CLI_PATH || "claude";
   const out: string[] = [];
+  let resultText = "";
+  // stream-json = เห็นทุกก้าวที่วิศวกรทำ → จดลง progressText ให้ cron รายงานทุก 3 นาที (เจ้าของสั่ง 4 ส.ค.)
   const code = await new Promise<number>((resolve) => {
-    const child = spawn(cliPath, ["-p", "--output-format", "text", "--strict-mcp-config", "--allowedTools", "Bash,Read,Glob,Grep,Write,Edit"], {
-      cwd: ROOT,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CLAUDE_DISABLE_IDE: "1" },
-    });
+    const child = spawn(
+      cliPath,
+      ["-p", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--allowedTools", "Bash,Read,Glob,Grep,Write,Edit"],
+      { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CLAUDE_DISABLE_IDE: "1" } },
+    );
+    db.kikiHermesJob.update({ where: { id: jobId }, data: { pid: child.pid ?? null } }).catch(() => {});
     const timer = setTimeout(() => { child.kill("SIGTERM"); resolve(124); }, 45 * 60_000);
-    child.stdout.on("data", (d) => out.push(d.toString()));
+
+    let buf = "";
+    let lastNote = 0;
+    let steps = 0;
+    const note = (line: string) => {
+      if (!line) return;
+      if (Date.now() - lastNote < 12_000) return;
+      lastNote = Date.now();
+      db.kikiHermesJob
+        .update({ where: { id: jobId }, data: { progressText: `ขั้นที่ ${steps} · ${line}`.slice(0, 400), progressAt: new Date() } })
+        .catch(() => {});
+    };
+    const describe = (ev: Record<string, unknown>): string => {
+      const type = String(ev.type || "");
+      if (type === "result") { resultText = String((ev as { result?: string }).result || ""); return "สรุปผลงาน"; }
+      if (type !== "assistant") return "";
+      const content = ((ev.message as { content?: unknown[] } | undefined)?.content || []) as Record<string, unknown>[];
+      for (const c of content) {
+        if (c.type === "tool_use") {
+          steps++;
+          const inp = (c.input || {}) as Record<string, string>;
+          const name = String(c.name || "");
+          const target = inp.file_path || inp.path || inp.command || inp.pattern || inp.query || "";
+          const label: Record<string, string> = { Edit: "แก้ไฟล์", Write: "เขียนไฟล์", Read: "อ่านไฟล์", Bash: "รันคำสั่ง", Grep: "ค้นโค้ด", Glob: "ไล่หาไฟล์" };
+          return `${label[name] || name} ${String(target).replace(ROOT + "/", "").slice(0, 120)}`;
+        }
+        if (c.type === "text" && String(c.text || "").trim().length > 20) return String(c.text).replace(/\s+/g, " ").slice(0, 160);
+      }
+      return "";
+    };
+
+    child.stdout.on("data", (d) => {
+      const chunk = d.toString();
+      out.push(chunk);
+      buf += chunk;
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const l of lines) {
+        const t = l.trim();
+        if (!t.startsWith("{")) continue;
+        try { note(describe(JSON.parse(t) as Record<string, unknown>)); } catch { /* บรรทัดไม่ใช่ JSON ก็ข้าม */ }
+      }
+    });
     child.stderr.on("data", (d) => out.push(d.toString()));
     child.on("close", (c) => { clearTimeout(timer); resolve(c ?? 1); });
     child.stdin.write(`${DEV_RULES}\n\n=== สเปกจากเจ้าของ ===\n${spec}`);
@@ -75,7 +120,8 @@ async function main() {
     sh(`launchctl kickstart -k gui/${process.getuid?.() || 501}/com.changoh.kiki`);
   }
 
-  const tail = out.join("").trim().split("\n").filter(Boolean).slice(-12).join("\n");
+  // stream-json: เอาข้อความสรุปจาก event "result" · ถ้าไม่มี ค่อยตกไปใช้ tail ดิบ
+  const tail = (resultText.trim() || out.join("").trim().split("\n").filter((l) => !l.trim().startsWith("{")).slice(-12).join("\n")).trim();
   const ok = code === 0 && committed && tscOk;
   await db.kikiHermesJob.update({
     where: { id: jobId },

@@ -38,7 +38,16 @@ function jobCwd(): string {
   return dir;
 }
 
-function runHermes(task: string, timeoutMs: number): Promise<string> {
+/** บรรทัดล่าสุดที่มีเนื้อจริง — เอาไว้บอกเจ้าของว่า "ตอนนี้ทำถึงไหน" */
+export function lastMeaningfulLine(buf: string): string {
+  const lines = buf
+    .split("\n")
+    .map((l) => l.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "").trim()) // ตัดสี ANSI
+    .filter((l) => l.length >= 6 && !/^[-=_*·.\s]+$/.test(l));
+  return lines.length ? lines[lines.length - 1].slice(0, 280) : "";
+}
+
+function runHermes(task: string, timeoutMs: number, jobId?: string): Promise<string> {
   const cli = hermesCliPath();
   if (!cli) return Promise.reject(new Error("ไม่พบ hermes CLI"));
   return new Promise((resolve, reject) => {
@@ -50,14 +59,26 @@ function runHermes(task: string, timeoutMs: number): Promise<string> {
     let stdout = "";
     let stderr = "";
     let done = false;
+    // จดความคืบหน้าลง DB เป็นระยะ (cron หยิบไปรายงานทุก 3 นาที — เจ้าของสั่ง 4 ส.ค.)
+    let lastNote = 0;
+    if (jobId) {
+      db.kikiHermesJob.update({ where: { id: jobId }, data: { pid: child.pid ?? null } }).catch(() => {});
+    }
+    const note = () => {
+      if (!jobId || Date.now() - lastNote < 15_000) return;
+      lastNote = Date.now();
+      const line = lastMeaningfulLine(stdout + "\n" + stderr);
+      if (!line) return;
+      db.kikiHermesJob.update({ where: { id: jobId }, data: { progressText: line, progressAt: new Date() } }).catch(() => {});
+    };
     const timer = setTimeout(() => {
       if (done) return;
       done = true;
       child.kill("SIGTERM");
       reject(new Error("Hermes ใช้เวลาเกินกำหนด (15 นาที)"));
     }, timeoutMs);
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout.on("data", (d) => { stdout += d.toString(); note(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); note(); });
     child.on("error", (e) => { if (!done) { done = true; clearTimeout(timer); reject(e); } });
     child.on("close", (code) => {
       if (done) return;
@@ -76,7 +97,7 @@ export async function queueHermesJob(chatId: string, task: string): Promise<stri
   void (async () => {
     try {
       await db.kikiHermesJob.update({ where: { id: job.id }, data: { status: "running", startedAt: new Date() } });
-      const result = await runHermes(task, 15 * 60_000);
+      const result = await runHermes(task, 15 * 60_000, job.id);
       await db.kikiHermesJob.update({ where: { id: job.id }, data: { status: "done", result: result.slice(0, 60_000), doneAt: new Date() } });
     } catch (e) {
       await db.kikiHermesJob
@@ -85,6 +106,56 @@ export async function queueHermesJob(chatId: string, task: string): Promise<stri
     }
   })();
   return job.id;
+}
+
+// ===== รายงานความคืบหน้าระหว่างทำ (เจ้าของสั่ง 4 ส.ค.: ทุก 3 นาทีบอกว่าถึงขั้นไหน) =====
+
+export interface JobPing {
+  jobId: string;
+  chatId: string;
+  text: string;
+}
+
+const PING_EVERY_MS = 3 * 60_000;
+
+/** งานที่รันอยู่และถึงคิวรายงาน — cron เรียกทุกนาที */
+export async function collectJobPings(now = new Date()): Promise<JobPing[]> {
+  const rows = await db.kikiHermesJob.findMany({ where: { status: "running", canceled: false }, take: 5 });
+  const out: JobPing[] = [];
+  for (const r of rows) {
+    const started = r.startedAt || r.createdAt;
+    const last = r.lastPingAt || started;
+    if (now.getTime() - last.getTime() < PING_EVERY_MS) continue;
+    await db.kikiHermesJob.update({ where: { id: r.id }, data: { lastPingAt: now } }).catch(() => {});
+    const mins = Math.max(1, Math.round((now.getTime() - started.getTime()) / 60_000));
+    const isDev = r.task.startsWith("[พัฒนา]");
+    const cap = isDev ? 45 : 15;
+    const head = `${isDev ? "งานพัฒนา" : "งานที่ฝากไว้"}ยังทำอยู่ครับ · ผ่านไป ${mins} นาที (เพดาน ${cap} นาที)`;
+    const body = r.progressText
+      ? `ตอนนี้: ${r.progressText}`
+      : "ยังไม่มีเอาต์พุตกลับมาจากตัวรัน — ผมจะรายงานใหม่อีก 3 นาที";
+    out.push({
+      jobId: r.id,
+      chatId: r.chatId,
+      text: `${head}\n\nงาน: ${r.task.replace(/^\[พัฒนา\]\s*/, "").slice(0, 120)}\n${body}`,
+    });
+  }
+  return out;
+}
+
+/** ยกเลิกงานที่รันอยู่ (ปุ่มในข้อความรายงาน) */
+export async function cancelJob(jobId: string): Promise<{ ok: boolean; msg: string }> {
+  const r = await db.kikiHermesJob.findUnique({ where: { id: jobId } });
+  if (!r) return { ok: false, msg: "หางานนี้ไม่เจอครับ" };
+  if (r.status !== "running") return { ok: false, msg: `งานนี้${r.status === "done" ? "เสร็จไปแล้ว" : "จบไปแล้ว"}ครับ` };
+  if (r.pid) {
+    try { process.kill(r.pid, "SIGTERM"); } catch { /* โปรเซสตายไปแล้ว */ }
+  }
+  await db.kikiHermesJob.update({
+    where: { id: jobId },
+    data: { status: "failed", canceled: true, error: "เจ้าของสั่งยกเลิก", doneAt: new Date(), sentAt: new Date() },
+  });
+  return { ok: true, msg: `ยกเลิกงานให้แล้วครับ: ${r.task.replace(/^\[พัฒนา\]\s*/, "").slice(0, 100)}` };
 }
 
 export interface HermesDelivery {

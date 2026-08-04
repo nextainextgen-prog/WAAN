@@ -6,11 +6,15 @@ import { renderHtmlToPng } from "@/lib/html-pdf";
 import { askClaude } from "@/lib/claude";
 import { extractEvents, createEvent, getUpcoming, thaiDate } from "@/lib/calendar";
 import { eventCardHtml, agendaCardHtml, weekCardHtml, editCalendar, weatherFor, evStart, type KikiEvent } from "@/lib/kiki-calendar";
-import { WISH_RE, handleWish, DEBT_RE, handleDebt, RECUR_RE, handleRecurring, FITNESS_RE, handleFitnessLog, fitnessCoachContext, saveJournal } from "@/lib/kiki-life";
+import { handleWish, handleDebt, RECUR_RE, handleRecurring, handleFitnessLog, fitnessCoachContext, saveJournal } from "@/lib/kiki-life";
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
 import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm, listDialogs, setAlias, getAliases, type PeerHit } from "@/lib/kiki-userbot";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
+import { routeIntent } from "@/lib/kiki-router";
+import { addTask, tasksBlock, findTasks, completeTasks, matchTriggers, markNagged } from "@/lib/kiki-tasks";
+import { recallContext, recentDaysContext } from "@/lib/kiki-memory";
+import { vexList } from "@/lib/kiki-format";
 import {
   askKiki,
   askExtractor,
@@ -135,14 +139,8 @@ async function storeSlips(imageFiles: string[]): Promise<string | null> {
   return first;
 }
 
-const FINANCE_QUERY_RE =
-  /(สรุป|ขอดู|เช็ก|เช็ค|ดู).{0,10}(การเงิน|บัญชี|รายจ่าย|รายรับ|งบ)|ใช้ไปเท่า|เหลือเท่าไห?ร่|ยอดใช้|(วันนี้|เดือนนี้).{0,8}ใช้(ไป)?เท่า|งบเหลือ|การ์ดเงิน|สถานะเงิน|เงินเหลือ/i;
 const FINANCE_VERB_RE =
   /จ่าย|ซื้อ|โอน(ไป|ให้)|เสียเงิน|เติมเงิน|ค่า[ก-๙]{2,}|ได้เงิน|เงินเข้า|เงินเดือน(ออก|เข้า)|รายรับ|รายจ่าย|เงินเสริม|ถูกหวย|ขายได้|หมดไป|บาท/i;
-const CAL_VIEW_RE =
-  /(ดู|เช็ก|เช็ค|ขอดู|มีอะไร).{0,8}(ตาราง(งาน)?|ปฏิทิน|calendar|คิว|นัด)|(วันนี้|พรุ่งนี้|สัปดาห์นี้).{0,6}(มีอะไร|ทำอะไร|ต้องทำ|ว่างไหม)|ตาราง(งาน)?(วันนี้|พรุ่งนี้)/i;
-const CAL_CREATE_RE =
-  /(ลง|ใส่|จด|บันทึก|เพิ่ม).{0,8}(ปฏิทิน|calendar|ตาราง(งาน)?|คิว|นัด(หมาย)?)|นัดหมาย|เตือน.{0,24}(ว่า|วันที่|พรุ่งนี้|มะรืน|วันนี้|จันทร์|อังคาร|พุธ|พฤหัส|ศุกร์|เสาร์|อาทิตย์|สิ้นเดือน)/i;
 
 export async function POST(req: Request) {
   if (!isServiceRequest(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -165,6 +163,12 @@ export async function POST(req: Request) {
   else if (callbackData === "kiki:grp:no") text = "[ปุ่ม:ยกเลิกกลุ่ม]";
   else if (callbackData === "kiki:dev:yes") text = "[ปุ่ม:พัฒนาเลย]";
   else if (callbackData === "kiki:dev:no") text = "[ปุ่ม:ยกเลิกพัฒนา]";
+  // ปุ่ม "หยุดงานนี้" ในรายงานความคืบหน้าทุก 3 นาที
+  if (callbackData.startsWith("kiki:job:cancel:")) {
+    const { cancelJob } = await import("@/lib/kiki-hermes");
+    const r = await cancelJob(callbackData.slice("kiki:job:cancel:".length));
+    return ok([{ kind: "text", text: r.ok ? `${r.msg} ✅` : `${r.msg} ⚠️` }]);
+  }
   if (!chatId || (!text && !imageFiles.length && !audioFiles.length && !docFiles.length)) return ok([]);
 
   // ===== เสียง → ข้อความ (เจ้าของอัดเสียงสั่งแทนการพิมพ์ได้ทุกอย่าง) =====
@@ -251,24 +255,18 @@ export async function POST(req: Request) {
         const c = seg.trim();
         if (c) out.push({ kind: "text", parseMode: "HTML", text: `<pre>${escHtml(c)}</pre>` });
       } else {
+        // 4 ส.ค. 2026: เลิกซอย "บรรทัดละบับเบิล" (เจ้าของด่าว่ากระจัดกระจาย อ่านไม่รู้เรื่อง)
+        // แยกตามย่อหน้าจริงเท่านั้น — ลิสต์/ตาราง/ย่อหน้ายาวอยู่ก้อนเดียวกันหมด
         for (const para of seg.split(/\n{2,}/)) {
           const p = para.trim();
-          if (!p) continue;
-          const lines = p.split("\n").map((x) => x.trim()).filter(Boolean);
-          const isStructured = (l: string) => /^([-•·*█▌]|\d+[.)]\s|[🟢🔴🔁⚠️✅⏰]|\|)/.test(l);
-          if (lines.length >= 2 && !lines.some(isStructured)) {
-            // prose หลายบรรทัดติดกัน (AI ลืมเว้นบรรทัดว่าง — เคสจริง 31 ก.ค.) → แยกบรรทัดละบับเบิล อ่านง่าย
-            for (const l of lines) out.push({ kind: "text", text: l });
-          } else {
-            out.push({ kind: "text", text: p }); // ลิสต์/ตาราง/บล็อกแจ้งเงิน อยู่ก้อนเดียวกัน
-          }
+          if (p) out.push({ kind: "text", text: p });
         }
       }
     });
     if (!out.length) return [s];
-    if (out.length > 8) {
-      // กันสแปมแชท: เกิน 8 บับเบิล รวมส่วนท้ายเป็นก้อนเดียว
-      const tail = out.splice(7);
+    if (out.length > 3) {
+      // เกิน 3 ก้อน = รวมส่วนที่เหลือเป็นก้อนเดียว (คุมให้แชทเป็นระเบียบ)
+      const tail = out.splice(2);
       out.push({ kind: "text", text: tail.map((t) => t.text).join("\n\n"), parseMode: tail.some((t) => t.parseMode) ? "HTML" : undefined });
     }
     const cleaned = out
@@ -285,6 +283,9 @@ export async function POST(req: Request) {
     return cleaned;
   };
 
+  // งานที่ผูกเงื่อนไข ("ถ้าถึง BNI แล้วเตือนผมด้วย") — เติมท้ายคำตอบเส้นทางไหนก็ได้
+  let triggerNote = "";
+
   const reply = async (sendsIn: Send[]) => {
     for (const s of sendsIn) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text.replace(/<\/?copy>/g, ""));
     const fullText = sendsIn.filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
@@ -294,7 +295,9 @@ export async function POST(req: Request) {
       const ogg = await ttsOgg(fullText.replace(/<[^>]+>/g, " "));
       if (ogg) voiceSend = { kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" };
     }
-    let sends = sendsIn.flatMap(explodeTextSend);
+    const withTrigger = triggerNote ? [...sendsIn, { kind: "text" as const, text: triggerNote }] : sendsIn;
+    triggerNote = "";
+    let sends = withTrigger.flatMap(explodeTextSend);
     // เจ้าของพูดมา = ตอบเสียง "อย่างเดียว" (ตัดข้อความออก คงการ์ด/ไฟล์/ข้อความข้ามกลุ่มไว้)
     if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text" || s.chatId);
     if (voiceSend) sends.push(voiceSend);
@@ -333,16 +336,99 @@ export async function POST(req: Request) {
       return reply([{ kind: "text", text: lines, replyTo: msgId }]);
     }
 
+    // ===== อ่านเจตนาด้วยสมอง (4 ส.ค. 2026) — regex เหลือเฉพาะที่ชัด 100% =====
+    // เจ้าของสั่ง: "ไม่ต้องฟิกข้อมูลอะไรเลย ปล่อยให้อิสระ" → พูดธรรมชาติแบบไหนก็ต้องไปถูกที่
+    const route = await routeIntent({
+      text,
+      replyText,
+      convo: await kikiConversation(10).catch(() => ""),
+      hasImages: imageFiles.length > 0,
+      hasDocs: docFiles.length > 0,
+    }).catch(() => ({ intent: "chat", confidence: 0, args: {} as Record<string, string | boolean | undefined> }));
+    const is = (id: string) => route.intent === id && route.confidence >= 0.45;
+    const arg = (k: string) => {
+      const v = route.args?.[k];
+      return typeof v === "string" && v.trim() ? v.trim() : "";
+    };
+
+    // งานที่ผูกเงื่อนไขไว้ — เจ้าของพูดถึงเมื่อไหร่ = ถึงเวลาเตือน
+    try {
+      const hits = await matchTriggers(text);
+      if (hits.length) {
+        await markNagged(hits.map((h) => h.id));
+        triggerNote = `เตือนตามที่พี่สั่งไว้:\n${hits.map((h) => `· ${h.title}`).join("\n")}`;
+      }
+    } catch { /* ไม่มีงานเงื่อนไขก็ข้าม */ }
+
+    // ===== กระดานงาน: จด / ดู / ปิด (เจ้าของสั่ง 4 ส.ค.) =====
+    if (is("task_add")) {
+      const title = arg("title") || text.replace(/^(ช่วย)?(จด|โน้ต|ลิสต์|บันทึก)(ไว้)?(ว่า|ให้)?\s*/i, "").slice(0, 200);
+      const dueRaw = arg("due");
+      const t = await addTask({
+        title,
+        detail: arg("detail") || undefined,
+        kind: (["todo", "idea", "waiting"].includes(arg("kind")) ? arg("kind") : "todo") as "todo" | "idea" | "waiting",
+        priority: (["low", "normal", "high"].includes(arg("priority")) ? arg("priority") : "normal") as "low" | "normal" | "high",
+        dueDate: dueRaw && /^\d{4}-\d{2}-\d{2}$/.test(dueRaw) ? new Date(`${dueRaw}T09:00:00+07:00`) : null,
+        triggerText: arg("trigger") || null,
+        source: text,
+        chatId,
+      });
+      const bits = [
+        t.kind === "idea" ? "เก็บไว้พัฒนา" : t.kind === "waiting" ? "รออยู่" : "ต้องทำ",
+        t.priority === "high" ? "สำคัญ" : "",
+        t.dueDate ? `กำหนด ${t.dueDate.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}` : "",
+        t.triggerText ? `จะเตือนตอนพี่พูดถึง "${t.triggerText}"` : "จะตามเตือนจนกว่าจะปิด",
+      ].filter(Boolean);
+      const block = vexList({ title: "จดลงกระดานงานแล้ว", items: [{ main: t.title, sub: bits.join(" · ") }] });
+      return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+    }
+    if (is("task_list")) {
+      const block = await tasksBlock();
+      return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+    }
+    if (is("task_done")) {
+      const found = await findTasks(arg("ref") || text);
+      if (!found.length) {
+        const block = await tasksBlock({ title: "ไม่แน่ใจว่างานไหนครับ — งานที่ค้างอยู่" });
+        return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+      }
+      const closed = await completeTasks(found.map((f) => f.id));
+      const left = await tasksBlock({ title: "ที่เหลือในกระดาน" });
+      return reply([
+        { kind: "text", text: vexList({ title: `ปิดงานแล้ว ${closed.length} งาน`, items: closed.map((c) => c.title) }).text, parseMode: "HTML", replyTo: msgId },
+        { kind: "text", text: left.text, parseMode: left.parseMode },
+      ]);
+    }
+
+    // ===== ค้นความจำบทสนทนาเก่า ("จำได้ไหมที่คุยเรื่อง...") =====
+    if (is("memory_recall")) {
+      const q = arg("query") || text;
+      const [hits, days] = await Promise.all([
+        recallContext(q, { k: 8 }).catch(() => ""),
+        recentDaysContext(4).catch(() => ""),
+      ]);
+      const answer = await askKiki(
+        text,
+        [
+          hits || "(ค้นในคลังแชทแล้วไม่เจอเรื่องนี้)",
+          days,
+          "[โหมดนึกย้อน] ตอบจากบทสนทนาเก่าที่ค้นเจอเท่านั้น บอกด้วยว่าคุยกันวันไหน ถ้าไม่เจอจริง ๆ ให้บอกตรง ๆ ว่าหาไม่เจอ ห้ามเดา",
+        ].filter(Boolean).join("\n\n"),
+      );
+      return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    }
+
     // ===== ฝาก Hermes — งานยาก/หลายขั้น/ใช้เวลานาน (agent GPT-5.5 + เว็บ/เบราว์เซอร์/terminal) =====
     // จับทั้งแบบระบุชื่อ ("ฝาก Hermes ...") และแบบธรรมชาติ ("ผมฝากไปสร้าง...", "ฝากไปทำ...หน่อย")
     // — เคยพลาด: เจ้าของพิมพ์ "ฝากไปสร้างพื้นที่..." ไม่เข้า pattern แล้ว Vex แต่งคำสั่ง "ฝาก Hermes" เองซึ่งไม่มีผล งานหายเงียบ
     const hermesM =
       text.match(/^\s*(?:ผม)?(?:ฝาก|ให้)\s*(?:เฮอ(?:ร์)?เ?มี?ส|hermes)\s*(?:ไป|ช่วย|ทำ|จัดการ)?\s*[:：]?\s*([\s\S]{5,})/i) ||
       (!/ฝากบอก|ฝากแคป|ฝากทัก/.test(text) ? text.match(/^\s*(?:ผม)?ฝาก(?:มัน|ไป)\s*(?:ไป)?((?:สร้าง|ทำ|จัด|หา|เช็ค|รวบรวม|เตรียม)[\s\S]{5,})/) : null);
-    if (hermesM) {
+    if (hermesM || is("hermes")) {
       const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
       if (!kikiHermesReady()) return reply([{ kind: "text", text: `Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`, replyTo: msgId }]);
-      const task = hermesM[1].trim();
+      const task = (hermesM?.[1] || text).trim();
       await queueHermesJob(chatId, task);
       return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งต่อให้ Hermes ทำเบื้องหลัง\n\nงาน: ${task.slice(0, 200)}\n\nใช้เวลาได้ถึง 15 นาที เสร็จเมื่อไหร่ผมเอาผลมาส่งเอง ระหว่างนี้สั่งงานอื่นได้ปกติ`, replyTo: msgId }]);
     }
@@ -356,7 +442,7 @@ export async function POST(req: Request) {
     }
 
     // ===== แก้บัญชีด้วยภาษาคน (ลบตัวซ้ำ/แก้ยอด/เปลี่ยนตัวเลข — Vex ลงมือเองจริง) =====
-    if (/(เปลี่ยน|แก้|ปรับ)\s*(ตัวเลข|ยอด|รายการ)|ยอด\s*(ผิด|เกิน|ไม่ตรง|เพี้ยน|ไม่ใช่)|ตัวเลข\s*(ผิด|ไม่ตรง|มั่ว|เพี้ยน)|(เข้าใจผิด|หาร).{0,24}(ปรับ|แก้|ตัวเลข|ยอด)|ลบรายการ|ตัดรายการ|(ลบ|เอา(ออก)?|ตัด|เคลียร์).{0,16}(ซ้ำ|ตัวซ้ำ)|ซ้ำ.{0,12}(ลบ|ออก|เคลียร์)/i.test(text)) {
+    if (is("finance_edit")) {
       const r = await editFinance([replyText, text].filter(Boolean).join("\n"));
       if (!r.applied.length) {
         return reply([{ kind: "text", text: `ยังไม่ได้แตะอะไรนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงรายการไหน"}\n\nบอกชื่อรายการ+ยอดชัด ๆ ได้เลย เช่น "ลบรายการเงินเดือน 20,739.12 ที่ซ้ำ"`, replyTo: msgId }]);
@@ -418,7 +504,7 @@ export async function POST(req: Request) {
       const fc = await cashForecast30().catch(() => null);
       return reply([{ kind: "text", text: `ตั้งยอดตั้งต้น ${fmtBaht(amt)} ฿ แล้วครับ ✅ ต่อจากนี้ผมคำนวณยอดคงเหลือจากรายการที่บันทึกให้เอง\n\n${fc ? fc.lines.join("\n") : ""}`.trim(), replyTo: msgId }]);
     }
-    if (/เส้นเงินสด|เงิน(จะ)?พอไหม|คาดการณ์เงิน|forecast|เงินเหลือ(ถึง)?สิ้นเดือน|30\s*วัน.{0,10}เหลือ/i.test(text)) {
+    if (is("finance_forecast")) {
       const { cashForecast30 } = await import("@/lib/kiki-finance");
       const fc = await cashForecast30().catch(() => null);
       if (!fc) return reply([{ kind: "text", text: `ยังคำนวณไม่ได้ครับ — บอกยอดตั้งต้นก่อน เช่น "ยอดในบัญชีตอนนี้ 25,000" แล้วผมจะพยากรณ์ 30 วันข้างหน้าให้ (บิลประจำ+pace ใช้จริง)`, replyTo: msgId }]);
@@ -426,7 +512,7 @@ export async function POST(req: Request) {
     }
 
     // ===== บิลประจำ / subscription (1.2) =====
-    if (/บิลประจำ|subscription|ตัดทุกวันที่|ทุกเดือน.{0,12}ตัด|ยกเลิกบิล/i.test(text) && !RECUR_RE.test(text)) {
+    if (is("bill")) {
       const { handleBillCommand } = await import("@/lib/kiki-finance");
       const t = await handleBillCommand([replyText, text].filter(Boolean).join("\n"));
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
@@ -439,7 +525,7 @@ export async function POST(req: Request) {
     }
 
     // ===== การ์ดสุขภาพการเงิน (4.1) =====
-    if (/สุขภาพ(ทาง)?การเงิน|ภาพรวมการเงิน|การเงิน(โดย)?รวม(เป็นไง|ดีไหม)?/.test(text)) {
+    if (is("finance_health")) {
       const { healthSnapshot, healthCardHtml, healthFacts } = await import("@/lib/kiki-finance");
       const h = await healthSnapshot();
       const sendsH: Send[] = [];
@@ -457,14 +543,14 @@ export async function POST(req: Request) {
     }
 
     // ===== ถามวิเคราะห์อิสระ (2.3) — text→query บน DB ตัวเลขไม่ผ่าน AI =====
-    if (/(หมด(เงิน)?|ใช้)(ไป)?(กับ|เท่าไหร่|กี่บาท)|เท่าไหร่.{0,16}(ค่า|หมวด|กับ)|ค่า[ก-๙a-zA-Z]{2,}.{0,12}(รวม|ทั้งหมด|เท่าไหร่|กี่บาท)|เทียบ.{0,12}(เดือน|หมวด|สัปดาห์)|เฉลี่ย.{0,12}(วัน|เดือน|สัปดาห์)|(เดือน|วัน|สัปดาห์)ไหนใช้(เยอะ|น้อย|หนัก)|หมวดไหน(ใช้|กิน|เปลือง)/i.test(text) && !/สรุป.{0,20}(html|ไฟล์|เอกสาร)/i.test(text)) {
+    if (is("finance_analyze")) {
       const { analyzeFinance } = await import("@/lib/kiki-finance");
       const t = await analyzeFinance([replyText, text].filter(Boolean).join("\n"));
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
     // ===== "ซื้อ/ใช้อะไรไปบ้าง" — ลิสต์รายการรายตัว (ตัวเลขจาก DB ตรง ๆ) =====
-    if (/(ซื้อ|ใช้(จ่าย|เงิน)?|จ่าย)(ไป(กับ)?)?อะไร(ไป)?บ้าง|อะไรบ้างที่(ซื้อ|จ่าย)|รายการ(รายจ่าย|ใช้จ่าย|ที่ซื้อ|ที่จ่าย|วันนี้|เมื่อวาน)|ขอ(ดู)?รายการ/i.test(text) && !/สรุป.{0,20}(html|ไฟล์|เอกสาร)/i.test(text)) {
+    if (is("finance_itemize")) {
       const period: ItemizedPeriod = /เมื่อวาน/.test(text) ? "yesterday"
         : /สัปดาห์|อาทิตย์(นี้|ที่ผ่าน)/.test(text) ? "week"
         : /เดือนนี้|ทั้งเดือน/.test(text) ? "month"
@@ -474,7 +560,7 @@ export async function POST(req: Request) {
     }
 
     // ===== ถามสถานะการเงิน =====
-    if (FINANCE_QUERY_RE.test(text) && !/สรุป.{0,20}(html|ไฟล์|เอกสาร|ละเอียด)/i.test(text)) {
+    if (is("finance_query")) {
       const { png, snapFacts } = await financeCardPng();
       const t = await vexSay(
         "เจ้าของขอดูสถานะการเงิน — สรุปสั้น + ความเห็น/คำเตือน/คำชมตามตัวเลขจริง (กวนตีนได้)",
@@ -539,7 +625,7 @@ export async function POST(req: Request) {
     // แบบชัด: "พัฒนา: <สเปก>" · แบบหลวม: "มึงพัฒนาเองได้ ทำเลย" (สเปกอยู่ในเรื่องที่เพิ่งคุย — เคสจริง 3 ส.ค.)
     const devM = text.match(/^\s*(?:พัฒนา(?:ตัวเอง|ระบบ)?|อัปเกรด(?:ตัวเอง|ระบบ)?|เพิ่ม(?:ความสามารถ|ฟีเจอร์)|สร้างระบบ|ทำระบบ|แก้บั๊ก)\s*[:：]?\s*([\s\S]{10,})/);
     const devLoose = !devM && /(พัฒนา|อัปเกรด).{0,16}(ตัวเอง|เอง)|เพิ่มความสามารถ(ตัวเอง)?|ทำเองได้.{0,10}ทำเลย/.test(text) && !text.startsWith("[ปุ่ม");
-    if ((devM || devLoose) && !text.startsWith("[ปุ่ม")) {
+    if ((devM || devLoose || is("self_dev")) && !text.startsWith("[ปุ่ม")) {
       const { setPendingDev } = await import("@/lib/kiki-dev");
       let spec = devM?.[1]?.trim() || "";
       if (!spec) {
@@ -606,7 +692,7 @@ export async function POST(req: Request) {
     }
 
     // ===== สร้างกลุ่มใหม่: รับคำสั่ง + ตั้งชื่อ + ปุ่มยืนยัน =====
-    if (/สร้างกลุ่ม/.test(text) && !text.startsWith("[ปุ่ม")) {
+    if (is("tg_create_group") && !text.startsWith("[ปุ่ม")) {
       const { userbotReady: ubReady } = await import("@/lib/kiki-userbot");
       if (!ubReady()) return reply([{ kind: "text", text: `สร้างกลุ่มต้องใช้บัญชี Telegram พี่ครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน (ครั้งเดียว)`, replyTo: msgId }]);
       const nameM = text.match(/สร้างกลุ่ม.{0,8}(?:ชื่อ|ว่า)\s*["“']?([^"”'\n]{2,60})/);
@@ -634,7 +720,7 @@ export async function POST(req: Request) {
     }
 
     // ===== Telegram userbot: ลิสต์รายชื่อแชทในบัญชีเจ้าของ =====
-    if (/(เช็ก|เช็ค|ลิส|ขอ|ดู).{0,10}(ราย)?ชื่อแชท|รายชื่อแชท|มีแชท(อะไร|ไหน|ใคร)บ้าง|แชททั้งหมด|ลิสแชท/i.test(text)) {
+    if (is("tg_list_chats")) {
       if (!userbotReady()) return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram ครับ ⚠️ รัน: npm run kiki:tg-auth`, replyTo: msgId }]);
       const kind = /ไม่เอากลุ่ม|เฉพาะคน|แค่คน|คนอย่างเดียว/.test(text) ? "user" : /เฉพาะกลุ่ม|เอาแต่กลุ่ม|แค่กลุ่ม/.test(text) ? "group" : "all";
       try {
@@ -682,7 +768,7 @@ export async function POST(req: Request) {
 
     // ===== ส่งข้อความ/ประกาศเข้ากลุ่มที่ Vex ประจำการ (ส่งเองผ่านบอท ไม่ต้องยืนยัน) =====
     // เคสจริง 3 ส.ค.: "ไปแจ้งข้อความในกลุ่ม..." ไม่มี intent → Vex รับปากลอย ๆ ว่าส่งแล้ว
-    if (/(ไปแจ้ง|ไปโพสต์|ไปประกาศ|ไปบอก|ฝากบอก|แจ้ง(ข้อความ)?|ประกาศ|โพสต์|ส่ง(ข้อความ)?).{0,24}(ใน|เข้า|ไปที่|ที่)?กลุ่ม/.test(text) && !/สร้างกลุ่ม/.test(text)) {
+    if (is("tg_group_post")) {
       let titles: Record<string, string> = {};
       try { titles = JSON.parse((await getSetting("kiki_chat_titles")) || "{}"); } catch { /* ว่างก็ได้ */ }
       const knownIds = (await (await import("@/lib/kiki")).getKikiChatIds()).filter((id) => id.startsWith("-"));
@@ -713,7 +799,7 @@ export async function POST(req: Request) {
     }
 
     // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====
-    if (/(ไปบอก|ทักไป(หา)?|ส่งข้อความ(หา|ให้)|ฝากบอก)[^\n]{1,60}(ว่า|:)/.test(text)) {
+    if (is("tg_dm")) {
       if (!userbotReady()) {
         return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram พี่ครับ ⚠️ รันในเทอร์มินัล: npm run kiki:tg-auth (ครั้งเดียว) แล้วผมส่งแทนพี่ได้เลย`, replyTo: msgId }]);
       }
@@ -758,7 +844,7 @@ export async function POST(req: Request) {
     }
 
     // ===== สั่งเครื่อง Mac (คำสั่งด่วน + agent ทำแทนที่เครื่อง/Warp/Chrome) =====
-    if (MAC_RE.test(text)) {
+    if (is("mac") || (MAC_RE.test(text) && route.intent === "chat")) {
       try {
         const quick = await quickMac(text);
         const r = quick || (await macAgent(text));
@@ -796,7 +882,7 @@ export async function POST(req: Request) {
     }
 
     // ===== เก็บรูปเข้าคลัง (เจ้าของสั่ง "เก็บรูปนี้") — เช็คก่อนเรื่องเงิน =====
-    if (imageFiles.length && /เก็บ(รูป|ภาพ|ไว้)|เซฟ(รูป|ภาพ)|บันทึก(รูป|ภาพ)|save\s*(รูป|ภาพ|pic)/i.test(text) && !FINANCE_VERB_RE.test(text)) {
+    if (imageFiles.length && is("image_save")) {
       const label = text.replace(/เก็บ|เซฟ|บันทึก|save|รูป(นี้|พวกนี้)?|ภาพ(นี้|พวกนี้)?|ไว้|ให้(หน่อย|ที)?|ด้วย|นะ|ครับ|หน่อย/gi, " ").trim();
       const saved: string[] = [];
       for (const p of imageFiles) {
@@ -810,7 +896,7 @@ export async function POST(req: Request) {
     }
 
     // ===== ขอรูปที่เคยเก็บกลับ =====
-    if (!imageFiles.length && /(ขอ|เอา|ส่ง|หา|ดู|เปิด).{0,10}(รูป|ภาพ)|(รูป|ภาพ).{0,14}(ที่เก็บ|เก็บไว้|ในคลัง|เคยส่ง)/i.test(text)) {
+    if (!imageFiles.length && is("image_find")) {
       const found = await findPersonalImages(text);
       if (found.length) {
         const sends: Send[] = [{ kind: "text", text: `เจอครับ 🎯 ${found.length} รูป`, replyTo: msgId }];
@@ -831,8 +917,8 @@ export async function POST(req: Request) {
     const banM = !teachM && /^\s*(?:อย่า|ห้าม|ไม่ต้อง|เลิก)/.test(text) && /ตลอด|ถาวร|ทุกครั้ง|อีกต่อไป|เด็ดขาด|อีกเลย|อีกแล้ว|ต่อไป/.test(text)
       ? text.trim()
       : null;
-    if ((teachM && teachM[1].trim().length >= 5) || banM) {
-      const rule = banM || teachM![1].trim();
+    if ((teachM && teachM[1].trim().length >= 5) || banM || is("rule_teach")) {
+      const rule = (banM || teachM?.[1]?.trim() || text).trim();
       await rememberOwnerFact(rule, { category: VEX_RULE_CATEGORY, source: text });
       const t = await vexSay(
         `เจ้าของเพิ่งสอนกฎใหม่ให้ตัวเอง: "${rule}" — ยืนยันว่ารับมาปรับตัวถาวรแล้ว ตั้งแต่ข้อความหน้าเป็นต้นไป`,
@@ -841,13 +927,34 @@ export async function POST(req: Request) {
       );
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
-    if (/(กฎ|สิ่งที่สอน|สอนอะไร)(นาย|ไว้|ไป)?(มี)?อะไรบ้าง|มีกฎอะไร/.test(text)) {
+    if (is("rule_list")) {
       const all = await listOwnerFacts();
       const rules = all.filter((f) => f.category === VEX_RULE_CATEGORY);
       const t = rules.length
         ? `กฎที่พี่สอนไว้ (${rules.length} ข้อ):\n\n${rules.map((r, i) => `${i + 1}. ${r.fact}`).join("\n")}`
         : `ยังไม่มีกฎพิเศษเลยครับ อยากให้ผมเป็นยังไงพิมพ์ "สอนว่า ..." มาได้เลย 🎯`;
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    }
+
+    // ===== ลิสต์รายการเงินที่ยังไม่รู้ว่าค่าอะไร (เจ้าของขอ: "รวมมาให้หมด เดี๋ยวผมบอกทีเดียว") =====
+    if (is("finance_pending") && !/^\s*[\d,]/.test(text) && !replyText) {
+      const { PENDING_CATEGORY } = await import("@/lib/kiki-gmail");
+      const dbp = (await import("@/lib/db")).db;
+      const pend = await dbp.financeTxn.findMany({ where: { category: PENDING_CATEGORY }, orderBy: { occurredAt: "asc" }, take: 40 });
+      if (pend.length) {
+        const total = pend.reduce((sum, r) => sum + r.amount, 0);
+        const block = vexList({
+          title: `รายการที่ยังไม่รู้ว่าค่าอะไร (${pend.length} รายการ · รวม ${fmtBaht(total)} ฿)`,
+          numbered: true,
+          items: pend.map((r) => ({
+            main: `${fmtBaht(r.amount)} ฿ — ${(r.note || "").replace(/ \(จากเมล K PLUS\)$/, "") || "ไม่มีรายละเอียด"}`,
+            sub: `${r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}${r.merchant ? ` · ${r.merchant}` : ""}`,
+          })),
+          note: 'ตอบรวดเดียวได้เลยครับ เช่น "1 ค่าข้าว 2 ค่าน้ำมัน 3 ค่าหมอ" หรือบอกเป็นยอดก็ได้ "319 ค่าตั๋วหนัง"',
+        });
+        return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+      }
+      return reply([{ kind: "text", text: "ไม่มีรายการค้างระบุเลยครับ เคลียร์หมดแล้ว", replyTo: msgId }]);
     }
 
     // ===== ตอบคำถาม "ค่าอะไร" ของรายการจากเมลธนาคาร (หมวด รอระบุ) =====
@@ -873,25 +980,25 @@ export async function POST(req: Request) {
     }
 
     // ===== Wishlist: อยากได้/ซื้อไหวไหม (ยกเว้นสั่งหาสินค้า — อันนั้นไปทางค้นเว็บ) =====
-    if (WISH_RE.test(text) && !isShoppingQuery(text)) {
+    if (is("wish")) {
       const t = await handleWish(text);
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
     // ===== สมุดหนี้/เงินยืม =====
-    if (DEBT_RE.test(text) && !FINANCE_QUERY_RE.test(text)) {
+    if (is("debt")) {
       const t = await handleDebt([replyText, text].filter(Boolean).join("\n"));
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
     // ===== เตือนซ้ำประจำ (ต้องมาก่อนปฏิทิน — "เตือนทุกวันที่ 25" ไม่ใช่นัดครั้งเดียว) =====
-    if (RECUR_RE.test(text)) {
+    if (is("recurring")) {
       const t = await handleRecurring(text, chatId);
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
 
     // ===== ฟิตเนส: จดบันทึก + Vex เป็นโค้ช (ใช้คลัง 7966) =====
-    if (FITNESS_RE.test(text)) {
+    if (is("fitness")) {
       const { logged, recentContext } = await handleFitnessLog(text);
       const coach = await fitnessCoachContext();
       const answer = await askKiki(
@@ -915,8 +1022,8 @@ export async function POST(req: Request) {
 
     // ===== บันทึกรายรับรายจ่าย (สลิป/ข้อความ) =====
     const financeLikely = imageFiles.length
-      ? (text ? FINANCE_VERB_RE.test(text) || text.length < 60 : true)
-      : FINANCE_VERB_RE.test(text) && /\d/.test(text);
+      ? (text ? is("finance_record") || FINANCE_VERB_RE.test(text) || text.length < 60 : true)
+      : is("finance_record") && /\d/.test(text);
     if (financeLikely) {
       // แนบรายการล่าสุดให้ตัวสกัดด้วย — เจ้าของพูดถึงยอดเดิม (ถาม/บ่น/แก้ความเข้าใจ) ต้องไม่ถูกลงซ้ำ
       const recent = await (await import("@/lib/db")).db.financeTxn.findMany({
@@ -952,8 +1059,8 @@ export async function POST(req: Request) {
 
     // ===== ความจำ (จำ/ลืม/จำอะไรบ้าง) =====
     const rememberM = text.match(/^\s*(?:จำไว้(?:ว่า|นะ|ด้วย)?|ช่วยจำ(?:ว่า)?|จำด้วยว่า)\s*[:：]?\s*([\s\S]+)/);
-    if (rememberM && rememberM[1].trim().length >= 3) {
-      const fact = rememberM[1].trim();
+    if ((rememberM && rememberM[1].trim().length >= 3) || (is("memory_remember") && (arg("fact") || text).length >= 5)) {
+      const fact = (rememberM?.[1]?.trim() || arg("fact") || text).trim();
       const category = /ชอบ/.test(fact) && !/ไม่ชอบ/.test(fact) ? "ความชอบ"
         : /ไม่ชอบ|แพ้|เกลียด|ห้าม/.test(fact) ? "ไม่ชอบ"
         : /สุขภาพ|ยา|หมอ|ออกกำลัง|น้ำหนัก/.test(fact) ? "สุขภาพ"
@@ -969,11 +1076,12 @@ export async function POST(req: Request) {
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
     const forgetM = text.match(/^\s*(?:ลืม(?:เรื่อง|ว่า|ไปเลย)?|ลบความจำ(?:เรื่อง)?)\s*[:：]?\s*([\s\S]+)/);
-    if (forgetM && forgetM[1].trim().length >= 2) {
-      const n = await forgetOwnerFacts(forgetM[1].trim());
-      return reply([{ kind: "text", text: n ? `ลืมให้แล้ว ${n} เรื่องครับ ✅` : `หาเรื่อง "${forgetM[1].trim()}" ในความจำไม่เจอครับ 🎯`, replyTo: msgId }]);
+    if ((forgetM && forgetM[1].trim().length >= 2) || is("memory_forget")) {
+      const kw = (forgetM?.[1] || text.replace(/^\s*(ลืม(เรื่อง|ว่า)?|ลบความจำ(เรื่อง)?)\s*/, "")).trim();
+      const n = await forgetOwnerFacts(kw);
+      return reply([{ kind: "text", text: n ? `ลืมให้แล้ว ${n} เรื่องครับ ✅` : `หาเรื่อง "${kw}" ในความจำไม่เจอครับ 🎯`, replyTo: msgId }]);
     }
-    if (/(จำอะไร(ได้)?บ้าง|รู้อะไรเกี่ยวกับ(ผม|กู|เรา)|ความจำมีอะไร|มีข้อมูลผมอะไรบ้าง)/i.test(text)) {
+    if (is("memory_list")) {
       const facts = await listOwnerFacts();
       if (!facts.length) return reply([{ kind: "text", text: `ยังไม่มีอะไรในหัวเลยครับ 🎯 พิมพ์ "จำไว้ว่า ..." มาได้เลย`, replyTo: msgId }]);
       const lines = facts.map((f, i) => `${i + 1}. [${f.category}] ${f.fact}`).join("\n");
@@ -982,7 +1090,7 @@ export async function POST(req: Request) {
 
     // ===== ลิงก์: เก็บเข้าคลัง / อ่านประกอบคำตอบ =====
     const urls = [...extractUrls(text), ...extractUrls(replyText)].slice(0, 3);
-    const saveLinkIntent = urls.length > 0 && /เก็บ|บันทึก|เซฟ|save|เข้าคลัง|ลงคลัง|จำลิงก์|อ่านเก็บ/i.test(text);
+    const saveLinkIntent = urls.length > 0 && is("link_save");
     if (saveLinkIntent) {
       const saved: string[] = [];
       const failed: string[] = [];
@@ -1003,7 +1111,7 @@ export async function POST(req: Request) {
     }
 
     // ===== ปฏิทิน: เลื่อน/ยกเลิก/เสร็จแล้ว (แก้ด้วยภาษาคน + sync Google Calendar) =====
-    if (/(เลื่อน|ย้าย)\s*(นัด|ตาราง)|ยกเลิกนัด|ลบนัด|นัด.{0,12}(ยกเลิก|เลื่อน|ไม่ไป(แล้ว)?)|^\s*เสร็จแล้ว|ไปมาแล้ว|ปิดนัด|นัด.{0,10}เสร็จ/i.test(text)) {
+    if (is("calendar_edit")) {
       const r = await editCalendar([replyText, text].filter(Boolean).join("\n"), chatId);
       if (!r.applied.length) {
         return reply([{ kind: "text", text: `ยังไม่ได้แตะนัดไหนนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงนัดไหน"}\nบอกชื่อนัดชัด ๆ อีกทีได้เลย`, replyTo: msgId }]);
@@ -1017,7 +1125,7 @@ export async function POST(req: Request) {
     }
 
     // ===== ปฏิทิน: ดู (วันนี้/พรุ่งนี้/สัปดาห์) =====
-    if (CAL_VIEW_RE.test(text)) {
+    if (is("calendar_view")) {
       const now = new Date();
       const travelMin = Number((await getSetting("kiki_travel_min")) || 40);
       const dayStartOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -1064,7 +1172,7 @@ export async function POST(req: Request) {
       }
     }
     // ===== ปฏิทิน: ลงนัด =====
-    if (CAL_CREATE_RE.test(text)) {
+    if (is("calendar_create")) {
       try {
         const parsedList = await extractEvents(text, askExtractor);
         if (parsedList.length) {
@@ -1109,9 +1217,9 @@ export async function POST(req: Request) {
     }
 
     // ===== หาข้อมูล/หาสินค้า/ค้นเว็บสด + วิเคราะห์ =====
-    if ((/หาข้อมูล|ค้นหา|รีเสิร์ช|research|เสิร์ช|ช่วยหา(ให้)?|หาให้หน่อย|ไปหา.{0,40}(มาให้|ให้หน่อย|ให้ที)|^หา.{2,60}(หน่อย|ให้ที|ให้ด้วย|มาให้)|หา(คอร์ส|ที่เรียน|เวิร์คช็อป|workshop|คลาส|โรงเรียน|สถาบัน)|เทียบ.{0,16}(รุ่น|ราคา|สเปค)|ราคา.{0,12}(ตอนนี้|ล่าสุด|เท่าไหร่)|ข่าว.{0,10}(วันนี้|ล่าสุด|เกี่ยวกับ)|อัปเดตล่าสุด/i.test(text) || isShoppingQuery(text)) && !imageFiles.length) {
+    if ((is("web_research") || is("shopping")) && !imageFiles.length) {
       try {
-        const shopping = isShoppingQuery(text);
+        const shopping = is("shopping") || isShoppingQuery(text);
         // ส่งบทสนทนาล่าสุดไปด้วย — เจ้าของถามต่อเนื่องได้ ("เอาแบบเมื่อกี้แต่ถูกกว่า")
         const convoCtx = await kikiConversation(12).catch(() => "");
         const research = await webResearch([replyText, text].filter(Boolean).join("\n"), { context: convoCtx, shopping });
@@ -1124,7 +1232,7 @@ export async function POST(req: Request) {
     }
 
     // ===== สรุปเป็น HTML (เจ้าของสั่ง "สรุป..." = เอกสาร HTML ละเอียดเสมอ) =====
-    if (/^\s*(ขอ)?(ช่วย)?(ทำ)?สรุป/.test(text)) {
+    if (is("doc_summary")) {
       const ctxParts: string[] = [];
       if (replyText) ctxParts.push(`ข้อความที่เจ้าของ reply ถึง (หัวข้อหลักของสรุป):\n"""${replyText.slice(0, 3000)}"""`);
       const notes = await retrievePersonalNotes(text).catch(() => "");
@@ -1171,6 +1279,13 @@ export async function POST(req: Request) {
           ctxParts.push(`เนื้อหาจากลิงก์ที่ส่งมา (อ่านให้แล้ว ใช้ตอบได้เลย):\n### ${c.title}\n${c.text.slice(0, 6000)}`);
         } catch { /* เปิดไม่ได้ก็ตอบเท่าที่รู้ */ }
       }
+    }
+    if (is("think")) {
+      ctxParts.push(
+        `[โหมดคิด/เสนอ] เจ้าของขอให้คิด เสนอ ตั้งชื่อ ร่าง หรือช่วยตัดสินใจ — ลงมือเสนอของจริงทันที ห้ามถามกลับก่อนโดยไม่จำเป็น
+ให้ตัวเลือกหลายอัน (3-6 อัน) แต่ละอันมีคำอธิบายว่าทำไมถึงเสนอ/ความหมาย/โทนที่ได้ แล้วปิดท้ายด้วยตัวที่แนะนำที่สุดพร้อมเหตุผล
+เขียนบรรทัดละตัวเลือก ยาวได้ ไม่ต้องรวบสั้น`,
+      );
     }
     const notes = await retrievePersonalNotes(text).catch(() => "");
     if (notes) ctxParts.push(`=== คลังความรู้/บันทึกส่วนตัวที่เกี่ยวข้อง (ใช้ตอบได้เลย ถ้าอยู่ในนี้อย่าบอกว่าไม่รู้) ===\n${notes}`);

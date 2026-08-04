@@ -8,7 +8,10 @@ import { PENDING_CATEGORY } from "@/lib/kiki-gmail";
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
 import { dueRecurrings, debtNagFacts, weeklyReportFacts, debtDueReminders, autoRememberFromToday } from "@/lib/kiki-life";
 import { pollBankEmails } from "@/lib/kiki-gmail";
-import { collectHermesDeliveries } from "@/lib/kiki-hermes";
+import { collectHermesDeliveries, collectJobPings } from "@/lib/kiki-hermes";
+import { tasksToNag, markNagged } from "@/lib/kiki-tasks";
+import { rollupRecentDays } from "@/lib/kiki-memory";
+import { vexSections, vexList } from "@/lib/kiki-format";
 import { askClaude } from "@/lib/claude";
 import { KIKI_GUARD, KIKI_PERSONA } from "@/lib/kiki";
 import { db } from "@/lib/db";
@@ -25,6 +28,8 @@ interface CronSend {
   dataBase64?: string;
   caption?: string;
   filename?: string;
+  parseMode?: "HTML" | "Markdown";
+  buttons?: { text: string; data: string }[][];
 }
 
 type CalRow = {
@@ -136,28 +141,72 @@ export async function POST(req: Request) {
         if (png) sends.push({ chatId: mainChat, kind: "photo", dataBase64: png, filename: "agenda.png" });
       }
 
-      // โครงบรีฟ deterministic — ตัวเลขจริงทั้งหมด ให้ AI แต่งได้แค่ 1 บรรทัดความเห็นปิดท้าย
-      const secs: string[] = [`บรีฟเช้า · ${now.toLocaleDateString("th-TH-u-ca-gregory", { weekday: "long", day: "numeric", month: "long" })}`];
-      secs.push(todayRows.length ? `นัดวันนี้ ${todayRows.length} นัด: ${todayRows.map((e) => `${e.timeText || "ทั้งวัน"} ${e.title}`).join(" · ")}` : "วันนี้ไม่มีนัด");
-      if (yRows.length) {
-        const items = yRows.filter((r) => r.type === "expense").slice(-6).map((r) => `${r.note || r.category} ${fmtBaht(r.amount)} ฿`).join(" · ");
-        secs.push(`เมื่อวานใช้ ${fmtBaht(ySpent)} ฿ (${yRows.filter((r) => r.type === "expense").length} รายการ)${items ? `: ${items}` : ""}`);
-      } else {
-        secs.push("เมื่อวานไม่มีรายการใช้จ่าย");
-      }
-      if (snap.totalBudget !== null && snap.safePerDay !== null) secs.push(`งบเดือนนี้เหลือ ${fmtBaht(Math.max(0, snap.totalBudget - snap.monthExpense))} ฿ — ใช้ได้วันละ ${fmtBaht(Math.floor(snap.safePerDay))} ฿`);
-      if (pendingRows.length) secs.push(`ค้างระบุหมวด ${pendingRows.length} รายการ (${fmtBaht(pendingRows.reduce((s, r) => s + r.amount, 0))} ฿) — เดี๋ยวผมไล่ถามช่วงเย็น`);
-      const dueSoon = dueDebts.filter((d) => (d.dueDate && d.dueDate.getTime() - now.getTime() < 3 * 86400_000) || (d.installmentDay && Math.abs(d.installmentDay - now.getDate()) <= 2));
-      if (dueSoon.length) secs.push(`หนี้ใกล้กำหนด: ${dueSoon.map((d) => `${d.person} ${fmtBaht(d.installmentAmount || d.amount)} ฿`).join(" · ")}`);
-      if (bills.length) secs.push(`บิลจะตัดเร็ว ๆ นี้: ${bills.map((b) => `${b.label} ${fmtBaht(b.amount)} ฿ (${b.inDays === 0 ? "วันนี้" : `อีก ${b.inDays} วัน`})`).join(" · ")}`);
-      if (cash) secs.push(cash.lines[cash.lines.length - 1]?.startsWith("⚠️") ? cash.lines[cash.lines.length - 1] : `คาดการณ์ 30 วัน: เหลือประมาณ ${fmtBaht(Math.round(cash.endBalance))} ฿`);
+      // 4 ส.ค. 2026: เขียนใหม่เป็น "หัวข้อ + บรรทัดละรายการ" (เจ้าของด่าว่าของเดิมยัดติดกันอ่านไม่ออก)
+      const sections: { head: string; lines: string[] }[] = [];
 
+      sections.push({
+        head: "นัดวันนี้",
+        lines: todayRows.length
+          ? todayRows.map((e) => `${e.timeText || "ทั้งวัน"} — ${e.title}${e.location ? ` ที่${e.location}` : ""}`)
+          : ["ไม่มีนัด"],
+      });
+
+      const yExpense = yRows.filter((r) => r.type === "expense");
+      sections.push({
+        head: `เมื่อวานใช้ไป ${fmtBaht(ySpent)} ฿ (${yExpense.length} รายการ)`,
+        lines: yExpense.length ? yExpense.slice(-8).map((r) => `${r.note || r.category} — ${fmtBaht(r.amount)} ฿`) : ["ไม่มีรายการ"],
+      });
+
+      const moneyLines: string[] = [];
+      if (snap.totalBudget !== null && snap.safePerDay !== null) {
+        moneyLines.push(`งบเดือนนี้เหลือ ${fmtBaht(Math.max(0, snap.totalBudget - snap.monthExpense))} ฿`);
+        moneyLines.push(`ใช้ได้วันละ ${fmtBaht(Math.floor(snap.safePerDay))} ฿`);
+      }
+      if (cash) {
+        const warn = cash.lines[cash.lines.length - 1];
+        moneyLines.push(warn?.startsWith("⚠️") ? warn : `คาดการณ์ 30 วัน เหลือประมาณ ${fmtBaht(Math.round(cash.endBalance))} ฿`);
+      }
+      if (moneyLines.length) sections.push({ head: "สถานะเงิน", lines: moneyLines });
+
+      const dueSoon = dueDebts.filter((d) => (d.dueDate && d.dueDate.getTime() - now.getTime() < 3 * 86400_000) || (d.installmentDay && Math.abs(d.installmentDay - now.getDate()) <= 2));
+      const dueLines = [
+        ...dueSoon.map((d) => `หนี้ ${d.person} — ${fmtBaht(d.installmentAmount || d.amount)} ฿`),
+        ...bills.map((b) => `${b.label} — ${fmtBaht(b.amount)} ฿ (${b.inDays === 0 ? "ตัดวันนี้" : `อีก ${b.inDays} วัน`})`),
+      ];
+      if (dueLines.length) sections.push({ head: "ใกล้ถึงกำหนดจ่าย", lines: dueLines });
+
+      // งานค้างในกระดาน (ระบบใหม่ 4 ส.ค.) — ทวงเช้าละครั้ง
+      const nagTasks = await tasksToNag(now).catch(() => []);
+      if (nagTasks.length) {
+        await markNagged(nagTasks.map((t) => t.id)).catch(() => {});
+        sections.push({
+          head: `งานค้างในกระดาน (${nagTasks.length})`,
+          lines: nagTasks.slice(0, 10).map((t) => {
+            const days = Math.floor((now.getTime() - t.createdAt.getTime()) / 86400_000);
+            return `${t.title}${days >= 1 ? ` (ค้างมา ${days} วัน)` : ""}`;
+          }),
+        });
+      }
+
+      if (pendingRows.length) {
+        sections.push({
+          head: `เงินออกที่ยังไม่รู้ว่าค่าอะไร (${pendingRows.length} รายการ · ${fmtBaht(pendingRows.reduce((s, r) => s + r.amount, 0))} ฿)`,
+          lines: ['ตอบทีเดียวได้เลย เช่น "1 ค่าข้าว 2 ค่าน้ำมัน" หรือขอลิสต์เต็มได้ตลอด'],
+        });
+      }
+
+      const flat = sections.map((s) => `${s.head}: ${s.lines.join(" / ")}`).join("\n");
       const comment = await askKiki(
-        `[ปิดท้ายบรีฟเช้า] จากข้อมูลบรีฟด้านล่าง เขียน "1 บรรทัดเดียว" ที่มีประโยชน์ที่สุดกับการตัดสินใจวันนี้ (เตือน/ชี้จุดเสี่ยง/สิ่งควรทำ) ห้ามทักทาย ห้ามชมลอย ๆ:\n${secs.join("\n")}`,
+        `[ปิดท้ายบรีฟเช้า] จากข้อมูลบรีฟด้านล่าง เขียน "1 บรรทัดเดียว" ที่มีประโยชน์ที่สุดกับการตัดสินใจวันนี้ (เตือน/ชี้จุดเสี่ยง/สิ่งควรทำ) ห้ามทักทาย ห้ามชมลอย ๆ:\n${flat}`,
       ).catch(() => "");
-      const t = [secs[0], "", ...secs.slice(1).map((s) => `• ${s}`), comment ? `\n${comment.split("\n")[0]}` : ""].filter(Boolean).join("\n");
-      sends.push({ chatId: mainChat, kind: "text", text: t });
-      await saveKikiChat("assistant", t);
+      const block = vexSections({
+        title: "บรีฟเช้า",
+        subtitle: now.toLocaleDateString("th-TH-u-ca-gregory", { weekday: "long", day: "numeric", month: "long", year: "numeric" }),
+        sections,
+        footer: comment ? comment.split("\n")[0].trim() : undefined,
+      });
+      sends.push({ chatId: mainChat, kind: "text", text: block.text, parseMode: block.parseMode });
+      await saveKikiChat("assistant", `บรีฟเช้า\n${flat}`);
     }
   } catch { /* พรุ่งนี้ค่อยว่ากัน */ }
 
@@ -167,16 +216,17 @@ export async function POST(req: Request) {
       await setSetting("kiki_last_pending_nag", today);
       const pend = await db.financeTxn.findMany({ where: { category: PENDING_CATEGORY }, orderBy: { occurredAt: "asc" }, take: 15 });
       if (pend.length) {
-        const lines = pend.map((r) => `🔴 เงินออก ${fmtBaht(r.amount)} ฿ · ${(r.note || "").replace(/ \(จากเมล K PLUS\)$/, "")} · ${r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}`);
-        const t = [
-          `มี ${pend.length} รายการยังไม่รู้ว่าค่าอะไร (รวม ${fmtBaht(pend.reduce((s, r) => s + r.amount, 0))} ฿)`,
-          "",
-          ...lines,
-          "",
-          `ตอบทีละตัวได้เลย: reply ที่บรรทัดไหนไม่ได้ ให้พิมพ์บอกเช่น "319 ค่าตั๋วหนัง" เดี๋ยวผมจับคู่ยอดให้เอง`,
-        ].join("\n");
-        sends.push({ chatId: mainChat, kind: "text", text: t });
-        await saveKikiChat("assistant", t);
+        const block = vexList({
+          title: `เงินออกที่ยังไม่รู้ว่าค่าอะไร (${pend.length} รายการ · รวม ${fmtBaht(pend.reduce((s, r) => s + r.amount, 0))} ฿)`,
+          numbered: true,
+          items: pend.map((r) => ({
+            main: `${fmtBaht(r.amount)} ฿ — ${(r.note || "").replace(/ \(จากเมล K PLUS\)$/, "") || "ไม่มีรายละเอียด"}`,
+            sub: r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" }),
+          })),
+          note: 'ตอบรวดเดียวได้เลยครับ เช่น "1 ค่าข้าว 2 ค่าน้ำมัน" หรือบอกเป็นยอด "319 ค่าตั๋วหนัง"',
+        });
+        sends.push({ chatId: mainChat, kind: "text", text: block.text, parseMode: block.parseMode });
+        await saveKikiChat("assistant", block.text.replace(/<[^>]+>/g, ""));
       }
     }
   } catch { /* พรุ่งนี้ค่อยถาม */ }
@@ -262,6 +312,18 @@ export async function POST(req: Request) {
       await saveKikiChat("assistant", `[ผลงาน Hermes] ${d.body.slice(0, 1500)}`);
     }
   } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== G2.5) งานเบื้องหลังยังทำอยู่ → รายงานทุก 3 นาที (เจ้าของสั่ง 4 ส.ค.) =====
+  try {
+    for (const p of await collectJobPings(now)) {
+      sends.push({
+        chatId: p.chatId,
+        kind: "text",
+        text: p.text,
+        buttons: [[{ text: "หยุดงานนี้", data: `kiki:job:cancel:${p.jobId}` }]],
+      });
+    }
+  } catch { /* รอบหน้าค่อยรายงาน */ }
 
   // ===== G3) หนี้ถึงกำหนด/งวดผ่อน + บิลประจำใกล้ตัด (เช็ควันละครั้งตอน >= 10:00) =====
   try {
@@ -424,6 +486,14 @@ ${nags.join("\n")}`);
   } catch { /* พรุ่งนี้ค่อยถาม */ }
 
   // (ยกเลิกแล้ว 3 ส.ค.: ข่าวเช้าจากฟีดเฟส/X 08:30 — เจ้าของสั่งเลิกอ่านโซเชียลทั้งหมด)
+
+  // ===== J2) สรุปบทสนทนาของวันเก็บเป็นความจำระยะยาว (23:00) =====
+  try {
+    if (now.getHours() >= 23 && (await getSetting("kiki_last_rollup")) !== today) {
+      await setSetting("kiki_last_rollup", today);
+      await rollupRecentDays().catch(() => []);
+    }
+  } catch { /* พรุ่งนี้ค่อยสรุป */ }
 
   // ===== E) สรุปสิ้นเดือน (วันที่ 1 เวลา >= 08:00 สรุปเดือนที่แล้ว) =====
   try {

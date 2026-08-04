@@ -478,7 +478,48 @@ model KikiHermesJob {
   doneAt    DateTime?
   sentAt    DateTime?
 
+  // รายงานความคืบหน้าระหว่างทำ (เจ้าของสั่ง 4 ส.ค.: ทุก 3 นาทีต้องบอกว่าถึงไหนแล้ว)
+  progressText String?                    // บรรทัดล่าสุดที่ agent พ่นออกมา (ย่อแล้ว)
+  progressAt   DateTime?                  // อัปเดต progressText ล่าสุดเมื่อไหร่
+  lastPingAt   DateTime?                  // ส่งรายงานเข้าแชทล่าสุดเมื่อไหร่
+  pid          Int?                       // โปรเซสที่รันอยู่ (ไว้สั่งยกเลิก)
+  canceled     Boolean   @default(false)
+
   @@index([status])
+}
+
+// กระดานงานส่วนตัว — "จดไว้/เดี๋ยวทำ/เก็บไว้พัฒนา" (คนละอย่างกับนัดที่มีเวลาชัด และคนละอย่างกับความจำเฉย ๆ)
+model KikiTask {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  title       String                       // สิ่งที่ต้องทำ (สั้น)
+  detail      String?                      // รายละเอียด/บริบทเพิ่ม
+  kind        String    @default("todo")   // todo (ต้องทำ) | idea (เก็บไว้พัฒนา) | waiting (รอคนอื่น)
+  status      String    @default("open")   // open | done | dropped
+  priority    String    @default("normal") // low | normal | high
+  dueDate     DateTime?                    // มีเวลาแบบหลวม ๆ (ไม่ใช่ปฏิทิน)
+  triggerText String?                      // เงื่อนไข เช่น "ถึง BNI" — เตือนตอนเจ้าของพูดถึง
+  remind      Boolean   @default(true)     // ให้ตามเตือนไหม ("จำไว้เฉย ๆ" = false)
+  lastNaggedAt DateTime?
+  nagCount    Int       @default(0)
+  source      String?                      // ข้อความต้นทางของเจ้าของ
+  chatId      String?
+  doneAt      DateTime?
+
+  @@index([status])
+}
+
+// ความจำระยะยาวของ Vex ที่ไม่ใช่ไฟล์ในคลัง (สรุปบทสนทนารายวัน ฯลฯ) — เก็บใน DB ไม่เขียนลง Obsidian
+model KikiMemory {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  kind      String   @default("daily")   // daily = สรุปแชทรายวัน
+  day       String                        // YYYY-MM-DD
+  content   String
+  scope     String   @default("owner")
+
+  @@unique([kind, day, scope])
 }
 
 // เตือนซ้ำประจำ — ทุกวันที่ X / ทุกวันจันทร์ / ทุกวัน เวลา HH:MM
