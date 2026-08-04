@@ -45,6 +45,23 @@ export function resolveApp(name: string): { app: string; procs: string[]; opener
   return { app: n, procs: [n.toLowerCase()] }; // แอปอื่นก็ลองเปิดตามชื่อที่บอกมา
 }
 
+/** เดาว่าเจ้าของหมายถึงแอปไหนจากข้อความ (ใช้ตอนตัวอ่านเจตนาไม่ได้กรอกชื่อแอปมา) */
+export function guessAppFromText(text: string): string | null {
+  const hit = APPS.find((a) => a.keys.test(text || ""));
+  return hit ? hit.app : null;
+}
+
+/**
+ * แอปที่อยู่หน้าจอตอนนี้ (แปลงชื่อโปรเซสเป็นชื่อแอปจริง — Warp ใช้ชื่อโปรเซสว่า "stable")
+ * ใช้ตอนเจ้าของ reply ภาพหน้าจอแล้วบอกว่า "พิมพ์ในห้องนี้" โดยไม่ได้บอกชื่อแอป
+ */
+export async function currentAppName(): Promise<string | null> {
+  const proc = (await frontApp()).toLowerCase();
+  if (!proc) return null;
+  const hit = APPS.find((a) => a.procs.some((p) => proc.includes(p) || p.includes(proc)));
+  return hit ? hit.app : proc;
+}
+
 export async function frontApp(): Promise<string> {
   try {
     return await osa('tell application "System Events" to get name of first application process whose frontmost is true');
@@ -70,12 +87,29 @@ async function pasteText(text: string): Promise<void> {
     child.stdin?.end(text);
   });
   await wait(250);
-  await osa('tell application "System Events" to keystroke "v" using {command down}');
+  await pressKey("v", ["command down"]); // key code 9 — ต้องไม่ใช้ keystroke "v" เพราะภาษาไทยจะเพี้ยน
 }
+
+/**
+ * รหัสปุ่มจริงบนคีย์บอร์ด (ไม่ผูกกับภาษา)
+ *
+ * ทำไมต้องใช้: เทสจริง 4 ส.ค. — เจ้าของตั้งคีย์บอร์ดเป็นภาษาไทยค้างไว้
+ * `keystroke "v" using {command down}` เลยไม่ใช่ Cmd+V แต่กลายเป็นการพิมพ์อักษรไทยตัวอื่น
+ * ผลคือวางข้อความไม่ติด แถมเผลอพิมพ์เศษอักษรไทยส่งเข้าห้องจริง
+ */
+const KEY_CODES: Record<string, number> = { a: 0, x: 7, c: 8, v: 9, k: 40, l: 37, o: 31, p: 35, t: 17, w: 13, f: 3 };
+
+/** แอปที่ "ช่องพิมพ์" เป็นกล่องข้อความเปล่า ๆ — ปลอดภัยที่จะเคาะตัวอักษรแล้วเลือกทับ */
+const CHAT_APPS = new Set(["Discord", "Telegram", "LINE", "Slack"]);
 
 async function pressKey(key: string, mods: string[] = []): Promise<void> {
   const m = mods.length ? ` using {${mods.join(", ")}}` : "";
-  await osa(`tell application "System Events" to keystroke "${key}"${m}`);
+  const code = KEY_CODES[key.toLowerCase()];
+  if (code === undefined) {
+    await osa(`tell application "System Events" to keystroke "${key}"${m}`);
+    return;
+  }
+  await osa(`tell application "System Events" to key code ${code}${m}`);
 }
 
 async function pressReturn(mods: string[] = []): Promise<void> {
@@ -91,6 +125,8 @@ export interface GuiResult {
   target?: string;
   typed?: string;
   sent: boolean;
+  /** ตรวจด้วยตาแล้วเห็นข้อความขึ้นจริงไหม — true=เห็น · false=ไม่เห็น · null=ตรวจไม่ได้ */
+  verified?: boolean | null;
   shots: { label: string; path: string }[];
   problem?: string;
 }
@@ -124,8 +160,17 @@ export async function typeInApp(opts: {
     return { ok: false, app: resolved.app, sent: false, shots, problem: `สลับไป ${resolved.app} ไม่สำเร็จ (หน้าสุดตอนนี้คือ "${front}")` };
   }
 
-  // สลับห้อง/แท็บก่อน (Discord = Cmd+K ค้นห้อง · Warp = Cmd+P ค้นแท็บ)
-  if (opts.target && resolved.opener) {
+  // สลับแท็บ Warp ด้วยเลขแท็บ (Cmd+1..9) — แม่นกว่าค้นด้วยชื่อมาก
+  const tabNo = opts.target && /^\s*(\d)\s*$/.test(opts.target) ? opts.target.trim() : "";
+  if (tabNo && resolved.app === "Warp") {
+    try {
+      await osa(`tell application "System Events" to key code ${17 + Number(tabNo)} using {command down}`);
+      await wait(1200);
+    } catch { /* สลับไม่ได้ก็พิมพ์ในแท็บปัจจุบัน */ }
+  }
+
+  // สลับห้อง/แท็บด้วยชื่อ (Discord = Cmd+K · Warp = Cmd+P)
+  else if (opts.target && resolved.opener) {
     try {
       await pressKey(resolved.opener.key, resolved.opener.mods);
       await wait(900);
@@ -154,8 +199,22 @@ export async function typeInApp(opts: {
   if (before) shots.push({ label: opts.target ? `ก่อนพิมพ์ (อยู่ที่ ${opts.target})` : "ก่อนพิมพ์", path: before });
 
   try {
+    // ต้องโฟกัสช่องพิมพ์ก่อน ไม่งั้น Cmd+V ตกไปที่อื่น (เทสจริง 4 ส.ค.: สลับห้อง Discord ถูก
+    // แต่ข้อความไม่ลงช่องพิมพ์ แล้วระบบดันรายงานว่าส่งแล้ว)
+    // วิธี: ปิดป๊อปอัปที่ค้าง → เคาะตัวอักษรหนึ่งตัวให้เคอร์เซอร์เข้าช่องพิมพ์ → เลือกทั้งหมด → วางทับ
+    // เฉพาะ "แอปแชท" เท่านั้นที่ใช้ท่าเคาะตัวอักษรแล้วเลือกทับ เพื่อดันเคอร์เซอร์เข้าช่องพิมพ์
+    // ห้ามใช้กับแอปเอกสาร/เอดิเตอร์เด็ดขาด — Cmd+A จะเลือกทั้งไฟล์แล้ววางทับของเดิมหาย
+    // (เทสจริง 4 ส.ค. เผลอทับเนื้อหาไฟล์ที่ TextEdit เปิดค้างไว้ ต้องกด Undo กู้คืน)
+    if (CHAT_APPS.has(resolved.app)) {
+      await osa("tell application \"System Events\" to key code 53"); // Escape ปิดป๊อปอัปที่ค้าง
+      await wait(400);
+      await pressKey("x"); // เคาะหนึ่งตัวให้เคอร์เซอร์เข้าช่องพิมพ์
+      await wait(400);
+      await pressKey("a", ["command down"]); // เลือกเฉพาะตัวที่เพิ่งเคาะในช่องพิมพ์ แล้ววางทับ
+      await wait(250);
+    }
     await pasteText(opts.text);
-    await wait(600);
+    await wait(700);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "error";
     return {
@@ -174,15 +233,66 @@ export async function typeInApp(opts: {
   if (typed) shots.push({ label: opts.send ? "พิมพ์แล้ว กำลังส่ง" : "พิมพ์ค้างไว้ ยังไม่ส่ง", path: typed });
 
   let sent = false;
+  let verified: boolean | null = null;
   if (opts.send) {
     await pressReturn(opts.sendWith === "cmd-return" ? ["command down"] : []);
-    await wait(1500);
-    sent = true;
+    await wait(1800);
     const after = await snap("sent");
-    if (after) shots.push({ label: "หลังกดส่ง", path: after });
+    if (after) {
+      shots.push({ label: "หลังกดส่ง", path: after });
+      // ตรวจด้วยตาว่าข้อความขึ้นในห้องจริงไหม — กดปุ่มแล้วไม่ได้แปลว่าส่งสำเร็จ
+      verified = await seenOnScreen(after, opts.text);
+    }
+    sent = verified !== false;
   }
 
-  return { ok: true, app: resolved.app, target: opts.target, typed: opts.text, sent, shots };
+  return {
+    ok: opts.send ? verified !== false : true,
+    app: resolved.app,
+    target: opts.target,
+    typed: opts.text,
+    sent,
+    verified,
+    shots,
+    problem: verified === false ? "กดส่งแล้วแต่ยังไม่เห็นข้อความขึ้นในหน้าจอ — อาจโฟกัสไม่เข้าช่องพิมพ์ ลองสั่งใหม่หรือบอกห้องให้ชัดกว่านี้" : undefined,
+  };
+}
+
+/**
+ * ตรวจด้วยวิชันว่าข้อความที่เพิ่งส่งขึ้นบนหน้าจอจริงไหม
+ * (เจ้าของสั่งไว้ตั้งแต่ต้น: ห้ามเคลมว่าทำแล้วถ้าไม่มีหลักฐาน — กดคีย์ไม่เท่ากับส่งสำเร็จ)
+ * คืน null = ตรวจไม่ได้ (ถือว่าไม่ยืนยัน แต่ไม่ฟันธงว่าล้มเหลว)
+ */
+export async function seenOnScreen(shotPath: string, text: string): Promise<boolean | null> {
+  try {
+    const { askExtractor } = await import("./kiki");
+    const raw = await askExtractor(
+      `ดูภาพหน้าจอที่ path นี้: ${shotPath}\n\nข้อความที่เพิ่งพยายามส่งคือ: """${text.slice(0, 200)}"""\n\nข้อความนี้ปรากฏเป็น "ข้อความที่ส่งไปแล้ว" ในหน้าต่างแชท/เทอร์มินัลบนภาพหรือยัง (ไม่นับกรณีที่ยังค้างอยู่ในช่องพิมพ์)\nตอบ JSON เท่านั้น: {"sent":true/false,"where":"เห็นตรงไหน หรือเหตุผลสั้น ๆ"}`,
+      { imagePaths: [shotPath], timeoutMs: 60_000 },
+    );
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    return Boolean((JSON.parse(m[0]) as { sent?: boolean }).sent);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * เปิดแอปขึ้นมาหน้าสุดแล้วแคปหน้าจอเฉย ๆ (ไม่แตะคีย์บอร์ด)
+ * ใช้เป็น "หลักฐานภาพ" หลังทำงานผ่าน API — ปลอดภัยกว่าการกดคีย์สลับห้อง
+ */
+export async function showApp(app: string): Promise<{ label: string; path: string }[]> {
+  const resolved = resolveApp(app);
+  if (!resolved) return [];
+  try {
+    await osa(`tell application "${resolved.app}" to activate`);
+    await wait(1600);
+    const s = await snap("proof");
+    return s ? [{ label: `หน้าจอ ${resolved.app} ตอนนี้`, path: s }] : [];
+  } catch {
+    return [];
+  }
 }
 
 /** สลับห้อง/แท็บอย่างเดียว (ไม่พิมพ์อะไร) */

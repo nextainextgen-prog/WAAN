@@ -297,7 +297,7 @@ export async function POST(req: Request) {
     const ctx: Ctx = {
       chatId, text, fromId, fromName, platform, channel, replyText,
       imageFiles, audioFiles, docFiles, videoFiles, msgId, callbackData,
-      voiceNote, justBound,
+      voiceNote, justBound, replyIsScreenshot,
       route,
       is: (id: string) => route.intent === id && route.confidence >= 0.45,
       arg: (k: string) => {

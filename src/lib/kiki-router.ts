@@ -158,7 +158,11 @@ args ใส่เฉพาะที่เกี่ยวข้อง:
 - voice_announce: {"mode":"on|off"} — on = ให้พูดขึ้นมาเองในสาย · off = เงียบ
 - voice_mode: {"mode":"on|off|change"} — on = ให้พูดออกเสียง · off = ให้เลิกพูด ตอบเป็นตัวหนังสือพอ · change = เปลี่ยนเสียงเป็นตัวอื่น
 - tg_chat_summary: {"peer":"ชื่อคน/กลุ่มที่จะให้สรุป"}
-- finance_budget: {"amount":"ตัวเลขงบถ้าระบุ","category":"หมวดถ้าระบุ"}`;
+- finance_budget: {"amount":"ตัวเลขงบถ้าระบุ","category":"หมวดถ้าระบุ"}
+- gui_type: {"app":"ชื่อแอปบนเครื่อง เช่น Discord, Warp, LINE, Telegram","target":"ห้อง/ช่อง/แท็บ ถ้าระบุ","message":"ข้อความที่จะพิมพ์ (ตัดคำสั่งอย่าง 'พิมพ์ว่า' ออก เอาเฉพาะเนื้อความ)","send":true/false}
+  ทั้งสี่ค่านี้สำคัญมาก ต้องพยายามกรอกให้ครบเสมอ — ถ้าเจ้าของ reply ภาพหน้าจอ ให้ดูจากบริบทว่าแอป/ห้องไหน
+- gui_switch: {"app":"ชื่อแอป","target":"ห้อง/แท็บที่จะเปิด"}
+- warp_cmd: {"command":"คำสั่งหรือข้อความที่จะพิมพ์ใน Warp","tab":"ชื่อแท็บ ถ้าระบุ"}`;
 
 async function routeWithGemini(prompt: string): Promise<RouteResult | null> {
   const key = process.env.GEMINI_API_KEY?.trim();

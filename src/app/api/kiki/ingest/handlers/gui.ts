@@ -16,10 +16,49 @@ export const guiHandler: Handler = async (ctx) => {
   const { msgId, route, is, arg, reply } = ctx;
   if (!is("gui_type") && !is("gui_switch") && !is("warp_cmd")) return null;
 
-  const { typeInApp, switchTo, runInWarp } = await import("@/lib/kiki-gui");
-  const appName = arg("app") || (is("warp_cmd") ? "Warp" : "");
-  const target = arg("target") || arg("tab");
-  const message = arg("message") || arg("command");
+  const { typeInApp, switchTo, runInWarp, guessAppFromText, currentAppName } = await import("@/lib/kiki-gui");
+  // ตัวอ่านเจตนาบางรอบกรอก args ไม่ครบ (ใช้ชื่อคีย์อื่น/ไม่ใส่ชื่อแอป) — เดาต่อเองแทนที่จะถามกลับ
+  // ลำดับ: ที่สั่งมาตรง ๆ → Warp (ถ้าเป็นคำสั่งเทอร์มินัล) → เดาจากคำพูด → แอปที่อยู่บนจอ (ตอน reply ภาพหน้าจอ)
+  const said = arg("app");
+  const appName =
+    (/^(unknown|ไม่ทราบ|-)$/i.test(said) ? "" : said) ||
+    (is("warp_cmd") ? "Warp" : "") ||
+    guessAppFromText(`${ctx.text} ${ctx.replyText}`) ||
+    (ctx.replyIsScreenshot ? (await currentAppName()) || "" : "");
+  const target = arg("target") || arg("tab") || arg("channel") || arg("room");
+  const message = arg("message") || arg("command") || arg("text");
+
+  // Discord มี API ของบอทอยู่แล้ว → ส่งผ่าน API ชัวร์กว่าการกดคีย์บนหน้าจอมาก
+  // (เทสจริง: กดคีย์ใส่หน้าต่าง Discord แล้วโฟกัสหลุด ข้อความไม่เข้าช่องพิมพ์)
+  // แล้วค่อยแคปหน้าจอ Discord แนบเป็นหลักฐานตามที่เจ้าของสั่ง
+  if (/discord/i.test(appName) && !is("gui_switch") && message) {
+    const { discordApiReady, sendToChannel } = await import("@/lib/kiki-discord-api");
+    if (discordApiReady()) {
+      const sent = await sendToChannel(target || process.env.DISCORD_TEXT_CH_ID || "", message);
+      const shots: { label: string; path: string }[] = [];
+      if (sent.ok) {
+        // แค่เปิด Discord ขึ้นมาแล้วแคป — ไม่กดคีย์สลับห้อง (เคยทำแล้วป๊อปอัปค้างบนจอเจ้าของ)
+        const { showApp } = await import("@/lib/kiki-gui");
+        shots.push(...(await showApp("Discord").catch(() => [])));
+      }
+      const sends: Send[] = [];
+      for (const shot of shots) {
+        try {
+          sends.push({ kind: "photo", dataBase64: fs.readFileSync(shot.path).toString("base64"), filename: path.basename(shot.path), caption: "หน้าจอ Discord หลังส่ง" });
+        } catch { /* ภาพหาย ข้าม */ }
+      }
+      sends.push({
+        kind: "text",
+        text: await vexLine(
+          sent.ok
+            ? `ส่งเข้าห้อง #${sent.channelName} ใน Discord แล้ว\nข้อความ: ${message.slice(0, 300)}\nยืนยันจากระบบ Discord แล้วว่าข้อความถูกสร้างจริง${sends.length ? " และแคปหน้าจอแนบมาให้" : ""}`
+            : `ส่งเข้า Discord ไม่สำเร็จ: ${sent.problem || "ไม่ทราบสาเหตุ"}`,
+        ),
+        replyTo: msgId,
+      });
+      return reply(sends);
+    }
+  }
 
   let r;
   if (is("gui_switch")) {
@@ -53,11 +92,18 @@ export const guiHandler: Handler = async (ctx) => {
     } catch { /* ภาพหาย ข้าม */ }
   }
 
+  // รายงานตามหลักฐานจริงเท่านั้น — "กดปุ่มส่งแล้ว" ไม่เท่ากับ "ข้อความขึ้นในห้องแล้ว"
   const facts = r.ok
     ? [
         `แอป: ${r.app}${r.target ? ` · ${r.target}` : ""}`,
         r.typed ? `พิมพ์: ${r.typed.slice(0, 300)}` : "",
-        r.sent ? "กดส่งแล้ว" : r.typed ? "พิมพ์ค้างไว้ ยังไม่กดส่ง" : "",
+        r.sent && r.verified === true
+          ? "ส่งขึ้นในห้องแล้ว (ตรวจจากภาพหน้าจอแล้วเห็นจริง)"
+          : r.sent && r.verified === null
+            ? "กดส่งแล้ว แต่ตรวจภาพยืนยันไม่ได้ — ช่วยดูภาพให้หน่อยว่าขึ้นจริงไหม"
+            : r.typed
+              ? "พิมพ์ค้างไว้ ยังไม่กดส่ง"
+              : "",
         sends.length ? `แนบภาพหน้าจอ ${sends.length} รูปเป็นหลักฐาน` : "แคปหน้าจอไม่สำเร็จ เลยไม่มีหลักฐานภาพรอบนี้",
       ].filter(Boolean)
     : [`ทำไม่สำเร็จ: ${r.problem || "ไม่ทราบสาเหตุ"}`];

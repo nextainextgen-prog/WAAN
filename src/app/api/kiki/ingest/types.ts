@@ -45,6 +45,8 @@ export interface Ctx {
   msgId?: number | string;
   callbackData: string;
   voiceNote: string; // ข้อความที่ถอดมาจากเสียงที่เจ้าของอัดส่งมา (ว่าง = พิมพ์มา)
+  /** กำลัง reply "ภาพหน้าจอเครื่อง" ที่ Vex แคปมาให้ — คำว่าห้อง/ช่อง/แท็บ หมายถึงของในภาพนั้น ไม่ใช่กลุ่มแชท */
+  replyIsScreenshot: boolean;
   justBound: boolean; // เพิ่งผูกเจ้าของในข้อความนี้เอง
 
   // ===== ผลจากตัวอ่านเจตนา =====
