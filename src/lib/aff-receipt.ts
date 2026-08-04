@@ -211,6 +211,20 @@ export async function buildReceiptPdf(d: ReceiptData): Promise<Buffer> {
   // ต้นฉบับมี "(...)" อยู่แล้ว → วาดเฉพาะชื่อกึ่งกลางในวงเล็บ (ไม่ใส่วงเล็บซ้ำ)
   put(`${d.prefix}${d.name}`, POS.signParen.cx, POS.signParen.y + LIFT, "center", BODY, POS.signParen.max);
 
+  // ---- "จ่ายชำระวันที่ ......" ใต้บล็อกผู้จ่ายเงิน ----
+  // ต้นฉบับของบริษัทมีบรรทัดนี้ แต่ไฟล์เทมเพลตเปล่าที่ใช้วางทับไม่มี → วาดเพิ่มให้ตรงตำแหน่งเดิม
+  // ตำแหน่ง: เทียบสัดส่วนจากต้นฉบับ — อยู่ระหว่างวงเล็บชื่อผู้จ่ายเงิน (baseline 119.2) กับบรรทัดหมายเหตุ (baseline 41.7)
+  {
+    const label = "จ่ายชำระวันที่";
+    // ขนาด = ตัวอักษรที่ "พิมพ์มากับฟอร์ม" (เช่น ลงชื่อ.../ผู้จ่ายเงิน) ซึ่งใหญ่กว่าค่าที่เรากรอกลงช่อง (BODY)
+    const FORM = 18;
+    const x = 195.7, y = 93.5, lineWidth = 184; // กว้างเท่าต้นฉบับ (ป้าย + เส้นปะ)
+    const labelW = font.widthOfTextAtSize(label, FORM);
+    const dotW = font.widthOfTextAtSize(".", FORM);
+    const dots = ".".repeat(Math.max(0, Math.round((lineWidth - labelW) / dotW)));
+    page.drawText(label + dots, { x, y, size: FORM, font, color: rgb(0, 0, 0) });
+  }
+
   // ---- หน้า 2: สำเนาบัตร ปชช. ผู้รับเงิน (แนบท้าย) ----
   if (d.idCardImagePath && fs.existsSync(d.idCardImagePath)) {
     const bytes = fs.readFileSync(d.idCardImagePath);

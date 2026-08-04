@@ -110,9 +110,9 @@ export async function findTasks(ref: string) {
   const rows = await openTasks();
   const words = r
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
     .split(/\s+/)
-    .filter((w) => w.length >= 2 && !/^(เสร็จ|ปิด|งาน|แล้ว|ข้อ|ที่|ทำ|ลบ|เอา|ออก|ครับ|หน่อย)$/.test(w));
+    .filter((w) => w.length >= 3 && !/^(เสร็จ|ปิด|งาน|แล้ว|ข้อ|ที่|ทำ|ลบ|เอา|ออก|ครับ|หน่อย)$/.test(w));
   if (!words.length) return [];
   const scored = rows
     .map((t) => {
@@ -121,7 +121,7 @@ export async function findTasks(ref: string) {
       for (const w of words) if (hay.includes(w)) score += w.length >= 4 ? 3 : 1;
       return { t, score };
     })
-    .filter((x) => x.score > 0)
+    .filter((x) => x.score >= 3) // กันเศษพยางค์ไทยจับงานผิดตัว
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, 3).map((x) => x.t);
 }
@@ -151,9 +151,9 @@ export async function matchTriggers(text: string) {
   const hits = rows.filter((r) => {
     const words = (r.triggerText || "")
       .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
       .split(/\s+/)
-      .filter((w) => w.length >= 2 && !/^(ถ้า|แล้ว|เมื่อ|ตอน|ให้|ผม|กู|ไป|ถึง|มา)$/.test(w));
+      .filter((w) => w.length >= 3 && !/^(ถ้า|แล้ว|เมื่อ|ตอน|ให้|ผม|กู|ไป|ถึง|มา)$/.test(w));
     if (!words.length) return false;
     const need = Math.min(words.length, 2); // อย่างน้อย 2 คำสำคัญต้องโผล่ (กันเตือนมั่ว)
     return words.filter((w) => t.includes(w)).length >= need;

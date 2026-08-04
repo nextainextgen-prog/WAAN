@@ -138,6 +138,25 @@ async function writeKnowledgeNote(params: {
   return { notePath: noteRel };
 }
 
+/**
+ * เก็บ "ข้อความที่พิมพ์มาในแชท" เข้าคลังความรู้ (ไม่มีไฟล์/ลิงก์)
+ * ใช้ตอนพี่โด้ป้อนข้อมูลใหม่ที่ระบบยังไม่มีเข้ามาในห้องคุมระบบตรง ๆ
+ */
+export async function ingestKnowledgeText(rawText: string, sourceLabel = "พิมพ์ในแชท", userNote?: string): Promise<KnowledgeResult> {
+  if (!getVaultPath()) return { ok: false, error: "ยังไม่ได้ตั้งค่า Obsidian vault" };
+  const body = rawText.trim();
+  if (body.length < 15) return { ok: false, error: "ข้อความสั้นเกินไป ยังไม่พอเก็บเป็นโน้ต" };
+  const expanded = await expandToNote(body, sourceLabel, userNote);
+  const { notePath } = await writeKnowledgeNote({
+    title: expanded.title,
+    summary: expanded.summary,
+    body: `${expanded.body}\n\n---\n\n## ต้นฉบับที่พิมพ์มา\n\n${body}`,
+    sourceLabel,
+    userNote,
+  });
+  return { ok: true, title: expanded.title, summary: expanded.summary, notePath };
+}
+
 // ===== เก็บไฟล์เข้าคลังความรู้ =====
 export async function ingestKnowledgeFile(filePath: string, filename: string, userNote?: string): Promise<KnowledgeResult> {
   if (!getVaultPath()) return { ok: false, error: "ยังไม่ได้ตั้งค่า Obsidian vault" };

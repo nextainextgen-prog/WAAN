@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findProfile, saveProfile, attachmentPath, type AffProfile } from "./aff-profile";
+import { findProfile, saveProfile, saveAttachment, attachmentPath, type AffProfile } from "./aff-profile";
 import { findAffByUsername } from "./sheets";
 import { buildReceiptPdf } from "./aff-receipt";
 import { fetchSystemWithdraw, thunderSessionReady, type SystemFetchResult } from "./thunder-admin";
@@ -28,6 +28,10 @@ export interface AffMakeResult {
   images?: { path: string; caption: string }[]; // พรีวิวเอกสาร + ตารางเทียบ + ภาพระบบ
   allOk?: boolean;
   note?: string;
+  // ลูกค้าใหม่: วานไปดึงหน้ายืนยันตัวตนจากระบบมาทำเอกสารแนบให้เองก่อน แล้วค่อยทำใบสำคัญรับเงินต่อ
+  kycCreated?: boolean;
+  kycDoc?: { path: string; filename: string };
+  kycNote?: string; // จุดที่ต้องให้คนตรวจ (เช่น อ่านเลขบัตรไม่ได้)
 }
 
 const WHT_RATE = 3;
@@ -70,20 +74,31 @@ export function parseEdit(text: string): EditOverrides {
   if (gm) o.gross = Number(gm[1].replace(/,/g, ""));
   const tx = g(/เลข(?:ประจำตัว)?(?:ผู้เสีย)?ภาษี\s*:?\s*(\d{10,13})/);
   if (tx) o.taxId = tx;
-  const bk = g(/ธนาคาร\s*:?\s*([^\n]+?)(?:\s{2,}|\s*(?:เลขบัญชี|ชื่อบัญชี)|$)/);
-  if (bk) o.bank = bk.trim();
-  const ac = g(/เลขบัญชี\s*:?\s*([\d\- ]{6,})/);
+  // ธนาคาร: หยุดที่คำถัดไปไม่กี่คำ ห้ามกวาดทั้งบรรทัด (เดิมกวาดยาว → ประโยคคำสั่งหลุดลงเอกสาร)
+  const bk = g(/ธนาคาร\s*:?\s*((?:ไทยพาณิชย์|กสิกร(?:ไทย)?|กรุงเทพ|กรุงไทย|กรุงศรี(?:อยุธยา)?|ทหารไทย(?:ธนชาต)?|ttb|ออมสิน|ธ\.?ก\.?ส\.?|ยูโอบี|ซีไอเอ็มบี|เกียรตินาคิน|แลนด์\s*แอนด์\s*เฮ้าส์|ไอซีบีซี|ทิสโก้)[ก-๙A-Za-z]*)/i);
+  if (bk) o.bank = `ธนาคาร${bk.trim().replace(/^ธนาคาร/, "")}`;
+  const ac = g(/(?:เลขบัญชี|เลขที่บัญชี|บัญชีเลขที่)\s*:?\s*([\d\- ]{6,})/);
   if (ac) o.account = ac.replace(/\D/g, "");
-  // ชื่อผู้รับ (ไม่ใช่ "ชื่อบัญชี")
-  const nm = text.match(/(?:^|\n)\s*(?:ชื่อ-สกุล|ชื่อผู้รับ|ชื่อ)(?!บัญชี)\s*:?\s*([^\n]+)/);
-  if (nm && !/บัญชี/.test(nm[0])) Object.assign(o, splitPrefix(nm[1].trim()));
+  // ชื่อผู้รับ: รับเฉพาะ "คำนำหน้า + ชื่อ สกุล" (คำไทยไม่เกิน 2 คำ) และหยุดที่คำเชื่อม/คำสั่ง
+  // เดิม: /ชื่อ\s*:?\s*([^\n]+)/ → พิมพ์ "ชื่อผิดครับ แก้เป็น นายสมชาย" แล้วได้ชื่อ = ทั้งประโยค
+  // คำไทยเขียนติดกัน จึงกันด้วย lookahead ไม่ให้กินคำที่ขึ้นต้นด้วยคำเชื่อม (เช่น "แล้วยอด 1500")
+  const STOP = "(?!แล้ว|และ|กับ|ยอด|ที่อยู่|เลข|ธนาคาร|บัญชี|วันที่|หมู่|ตำบล|แขวง|อำเภอ|เขต|จังหวัด|ครับ|ค่ะ|คะ|ด้วย|นะ|หน่อย|แก้|เปลี่ยน|ปรับ)";
+  const NAME_RE = `((?:นางสาว|น\\.ส\\.|นาย|นาง)\\s*${STOP}[ก-๙]+(?:\\s+${STOP}[ก-๙]+)?)`;
+  const nm = text.match(new RegExp(`(?:ชื่อ-สกุล|ชื่อผู้รับ|ชื่อ)(?!บัญชี)\\s*:?\\s*${NAME_RE}`));
+  if (nm) Object.assign(o, splitPrefix(nm[1].replace(/\s+/g, " ").trim()));
+  else {
+    // ไม่มีคำว่า "ชื่อ" นำ แต่พิมพ์คำนำหน้ามาตรง ๆ เช่น "นายสมชาย ใจดี"
+    const bare = text.match(new RegExp(`(?:^|\\s)${NAME_RE}(?:\\s|$)`));
+    if (bare) Object.assign(o, splitPrefix(bare[1].replace(/\s+/g, " ").trim()));
+  }
   const house = g(/(?:บ้านเลขที่|เลขที่บ้าน)\s*:?\s*(\d+(?:\/\d+)?)/);
   if (house) o.houseNo = house;
   const moo = g(/หมู่(?:ที่)?\s*:?\s*(\d+)/); if (moo) o.moo = moo;
   // ต./ตำบล/แขวง = tambon · อ./อำเภอ/เขต = amphoe · จ./จังหวัด/กรุงเทพ = changwat
-  const tb = g(/(?:ตำบล|แขวง|ต\.)\s*([ก-๙]+)/); if (tb) o.tambon = tb;
-  const am = g(/(?:อำเภอ|เขต|อ\.)\s*([ก-๙]+)/); if (am) o.amphoe = am;
-  const cw = g(/(?:จังหวัด|จ\.)\s*([ก-๙]+)/) || (/กรุงเทพ(?:มหานคร|ฯ)?/.test(text) ? "กรุงเทพมหานคร" : undefined);
+  // ต้องมีตัวคั่น/ต้นข้อความนำหน้าเสมอ — เดิม "ต." "อ." "จ." ลอย ๆ ไปแมตช์กลางคำอื่นได้ (เช่น "อ.ย.")
+  const tb = g(/(?:^|[\s,(])(?:ตำบล|แขวง|ต\.)\s*([ก-๙]+)/); if (tb) o.tambon = tb;
+  const am = g(/(?:^|[\s,(])(?:อำเภอ|เขต|อ\.)\s*([ก-๙]+)/); if (am) o.amphoe = am;
+  const cw = g(/(?:^|[\s,(])(?:จังหวัด|จ\.)\s*([ก-๙]+)/) || (/กรุงเทพ(?:มหานคร|ฯ)?/.test(text) ? "กรุงเทพมหานคร" : undefined);
   if (cw) o.changwat = cw;
   return o;
 }
@@ -136,7 +151,12 @@ export async function parseEditSmart(text: string): Promise<EditOverrides> {
   const addrIncomplete = !rx.houseNo || !rx.tambon || !rx.amphoe;
   if ((wantsAddr && addrIncomplete) || (wantsName && !rx.name)) {
     const ai = await parseEditAI(text);
-    return sanitizeAddr({ ...ai, ...rx }); // regex ทับ AI สำหรับ key ที่ regex จับได้ (ตัวเลขแม่นกว่า)
+    // ตัวเลข (ยอด/บัญชี/ภาษี/วันที่) ให้ regex ชนะ — ส่วนข้อความ (ชื่อ/ที่อยู่) ให้ AI ชนะ
+    // เดิม regex ทับ AI ทุกคีย์ → พอ regex จับมั่ว (กวาดทั้งบรรทัด) มันชนะค่าที่ AI ตีความถูก
+    const numeric: (keyof EditOverrides)[] = ["gross", "account", "taxId", "day", "month", "yearBE", "moo", "houseNo"];
+    const merged: EditOverrides = { ...rx, ...ai };
+    for (const k of numeric) if ((rx as Record<string, unknown>)[k] != null) (merged as Record<string, unknown>)[k] = (rx as Record<string, unknown>)[k];
+    return sanitizeAddr(merged);
   }
   return sanitizeAddr(rx);
 }
@@ -144,7 +164,8 @@ export async function parseEditSmart(text: string): Promise<EditOverrides> {
 function addrLine(p: AffProfile): string {
   // ถ้า road ขึ้นต้นด้วย ซ./ซอย/ถ./ถนน อยู่แล้ว → ไม่เติม "ถนน" ซ้ำ (เช่น ซอยไม่ควรเป็น "ถนน ซ.สวัสดี")
   const roadPart = p.road && p.road !== "-" ? (/^(?:ซ\.|ซอย|ถ\.|ถนน)/.test(p.road) ? ` ${p.road}` : ` ถนน ${p.road}`) : "";
-  return `${p.houseNo}${p.moo ? ` หมู่ ${p.moo}` : ""}${roadPart} ต.${p.tambon} อ.${p.amphoe} จ.${p.changwat}`;
+  const mooPart = p.moo && p.moo !== "-" ? ` หมู่ ${p.moo}` : ""; // "-" = ที่อยู่ไม่มีหมู่ (เช่น กทม.)
+  return `${p.houseNo}${mooPart}${roadPart} ต.${p.tambon} อ.${p.amphoe} จ.${p.changwat}`;
 }
 
 // แยกที่อยู่ (string เดียวจากชีต) → ส่วนประกอบสำหรับกรอกใบเสร็จ
@@ -177,6 +198,77 @@ function buildSummary(o: { username: string; p: AffProfile; df: ReturnType<typeo
   ].join("\n");
 }
 
+/**
+ * ลูกค้าใหม่ที่ยังไม่มีเอกสารยืนยันตัวตนในคลัง — ทำให้เองทั้งชุด (แทนที่จะขอให้แอดมินส่งมา)
+ *  1) เปิด /admin/kyc ค้นด้วยยูสเซอร์ → เอารายการล่าสุด → กด "ดูข้อมูล"
+ *  2) เก็บ ชื่อ/ธนาคาร/เลขบัญชี/ที่อยู่ + อ่านเลขบัตร 13 หลักจากรูปบัตร (ตรวจ checksum)
+ *  3) แคปหน้าป๊อปอัป → ทำเป็นหน้าเอกสารยืนยันตัวตน (PDF) แบบเดียวกับที่แอดมินทำมือ
+ *  4) บันทึกเข้าคลัง AFF ตามยูสเซอร์ (profile.md + attachment.png) ให้ครั้งต่อไปใช้ได้ทันที
+ */
+export async function ingestKycProfile(
+  username: string,
+  dir: string,
+): Promise<{ ok: boolean; profile?: AffProfile; doc?: { path: string; filename: string }; note?: string }> {
+  const { fetchKyc, readIdCard, splitKycAddress } = await import("./thunder-kyc");
+  const { buildKycDocPdf } = await import("./aff-kyc-doc");
+  const { pdfFileToPngs } = await import("./pdf-to-images");
+
+  const r = await fetchKyc(username);
+  if (!r.ok || !r.record) {
+    const why =
+      r.error === "not_found" ? `ไม่พบหน้ายืนยันตัวตนของ "${username}" ในระบบ (ยังไม่ได้ยืนยันตัวตน)` :
+      r.error === "no_session" || r.error === "session_expired" ? "เซสชันระบบหลังบ้านหมดอายุ — รัน npm run thunder:auth" :
+      `ดึงหน้ายืนยันตัวตนไม่สำเร็จ (${r.error})`;
+    return { ok: false, note: why };
+  }
+  const k = r.record;
+  const notes: string[] = [];
+
+  // เลขบัตร + คำนำหน้า อ่านจากรูปบัตรในหน้า KYC (หน้า KYC ไม่มีช่องนี้)
+  let taxId = "";
+  let prefix = "";
+  if (k.photo) {
+    const id = await readIdCard(k.photo);
+    taxId = id.taxId;
+    prefix = id.prefix;
+  }
+  if (!taxId) notes.push("อ่านเลขประจำตัวผู้เสียภาษีจากบัตรไม่ได้ ต้องกรอกเอง");
+  if (!prefix) prefix = "นาย/นาง/นางสาว (รอตรวจ)";
+
+  const addr = splitKycAddress(k.address);
+  if (!addr.tambon || !addr.amphoe || !addr.changwat) notes.push("ที่อยู่จากระบบแยกตำบล/อำเภอ/จังหวัดได้ไม่ครบ ต้องตรวจ");
+
+  const profile: AffProfile = {
+    username,
+    prefix: prefix.includes("รอตรวจ") ? "" : prefix,
+    name: `${k.firstName} ${k.lastName}`.replace(/\s+/g, " ").trim(),
+    taxId,
+    houseNo: addr.houseNo,
+    moo: addr.moo,
+    road: addr.road,
+    tambon: addr.tambon,
+    amphoe: addr.amphoe,
+    changwat: addr.changwat,
+    bank: k.bank,
+    account: k.account,
+    updatedAt: new Date().toISOString().slice(0, 10),
+  };
+
+  // หน้าเอกสารยืนยันตัวตน (PDF) + เก็บเป็นเอกสารแนบของใบสำคัญรับเงิน (PNG)
+  const doc = await buildKycDocPdf({ username, fullName: profile.name, shot: k.modalShot, outDir: dir });
+  let attachOk = false;
+  try {
+    const pngs = await pdfFileToPngs(doc.pdfPath, dir, { maxPages: 1, scale: 2 });
+    if (pngs[0]) attachOk = await saveAttachment(username, fs.readFileSync(pngs[0]));
+  } catch {
+    /* ลองทางสำรองด้านล่าง */
+  }
+  if (!attachOk) await saveAttachment(username, k.modalShot).catch(() => {});
+  await saveProfile(profile).catch(() => {});
+
+  return { ok: true, profile, doc: { path: doc.pdfPath, filename: doc.filename }, note: notes.join(" · ") };
+}
+
 export async function makeAffReceipt(input: {
   noti: AffNoti;
   chatId?: string;
@@ -190,8 +282,15 @@ export async function makeAffReceipt(input: {
   fs.mkdirSync(dir, { recursive: true });
 
   // 1) โปรไฟล์ลูกค้า (Obsidian) + ผสาน override ที่แก้ + บันทึกกลับ (จำไว้ครั้งหน้า)
-  const base = await findProfile(username, noti.accountName);
-  if (!base) return { status: "new_customer", username, profile: null };
+  let base = await findProfile(username, noti.accountName);
+  // ลูกค้าใหม่/ยังไม่มีเอกสารยืนยันตัวตน → ไปดึงหน้า KYC จากระบบหลังบ้านมาทำเอกสารแนบให้เองก่อน
+  let kyc: { created: boolean; doc?: { path: string; filename: string }; note?: string } = { created: false };
+  if (!base) {
+    const ing = await ingestKycProfile(username, dir);
+    if (!ing.ok) return { status: "new_customer", username, profile: null, note: ing.note };
+    base = ing.profile!;
+    kyc = { created: true, doc: ing.doc, note: ing.note };
+  }
   const profile: AffProfile = { ...base };
   const PROFILE_KEYS: (keyof AffProfile)[] = ["prefix", "name", "taxId", "houseNo", "moo", "road", "tambon", "amphoe", "changwat", "bank", "account"];
   let changed = false;
@@ -302,5 +401,8 @@ export async function makeAffReceipt(input: {
     images: [...previews, ...check.images],
     allOk,
     note,
+    kycCreated: kyc.created,
+    kycDoc: kyc.doc,
+    kycNote: kyc.note,
   };
 }

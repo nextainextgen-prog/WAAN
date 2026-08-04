@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { thaiDate } from "@/lib/calendar";
-import { getKikiChatIds, getSetting, setSetting, askKiki, saveKikiChat, sanitizeVexText } from "@/lib/kiki";
+import { getKikiChatIds, getSetting, setSetting, askKiki, saveKikiChat, sanitizeVexText, vexLine } from "@/lib/kiki";
 import { financeSnapshot, snapshotFacts, financeCardHtml, fmtBaht, upcomingBills, detectRecurringBills, cashForecast30 } from "@/lib/kiki-finance";
 import { PENDING_CATEGORY } from "@/lib/kiki-gmail";
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
@@ -303,7 +303,7 @@ export async function POST(req: Request) {
         continue;
       }
       if (d.body.length > 3200) {
-        sends.push({ chatId: chatTo, kind: "text", text: `งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}") — ผลยาว แนบเป็นไฟล์ให้เปิดอ่าน 📤` });
+        sends.push({ chatId: chatTo, kind: "text", text: await vexLine(`งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}") — ผลยาว แนบเป็นไฟล์ให้เปิดอ่าน`) });
         sends.push({ chatId: chatTo, kind: "document", dataBase64: Buffer.from(d.body, "utf8").toString("base64"), filename: `hermes-${today}.md`, caption: taskShort } as CronSend & { filename: string });
       } else {
         const t = `งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}")\n\n${d.body}`;

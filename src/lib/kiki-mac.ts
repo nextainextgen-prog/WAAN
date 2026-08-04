@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, execFile } from "node:child_process";
-import { KIKI_GUARD } from "./kiki";
+import { KIKI_GUARD, vexLine } from "./kiki";
 
 /**
  * Vex คุมเครื่อง Mac แทนเจ้าของ (สั่งผ่านแชทตอนไม่อยู่หน้าคอม)
@@ -33,44 +33,44 @@ export async function quickMac(text: string): Promise<MacResult | null> {
   if (/แคป(หน้า)?จอ|screenshot|หน้าจอตอนนี้/.test(t)) {
     const p = path.join(os.tmpdir(), `vex-screen-${Date.now()}.png`);
     await run("screencapture", ["-x", p]);
-    return { text: "หน้าจอตอนนี้ครับ", imagePaths: [p] };
+    return { text: await vexLine("หน้าจอตอนนี้ครับ"), imagePaths: [p] };
   }
   if (/ดิสก์|พื้นที่เครื่อง/.test(t)) {
     const out = await run("df", ["-h", "/"]);
     const line = out.split("\n")[1]?.split(/\s+/) || [];
-    return { text: `ดิสก์เครื่องครับ 💻\n\nใช้ไป ${line[2] || "?"} จาก ${line[1] || "?"} (${line[4] || "?"})\nเหลือว่าง ${line[3] || "?"}` };
+    return { text: await vexLine(`ดิสก์เครื่อง: ใช้ไป ${line[2] || "?"} จาก ${line[1] || "?"} (${line[4] || "?"}) เหลือว่าง ${line[3] || "?"}`) };
   }
   if (/แบต/.test(t)) {
     const out = await run("pmset", ["-g", "batt"]);
     const m = out.match(/(\d+%).*?(charging|discharging|charged|AC attached)?/i);
-    return { text: `แบตเตอรี่ ${m?.[1] || "?"} ${/charging|AC/i.test(out) ? "· เสียบสายอยู่ ⬆️" : "· ใช้แบตอยู่"}` };
+    return { text: await vexLine(`แบตเตอรี่ ${m?.[1] || "?"} ${/charging|AC/i.test(out) ? "เสียบสายอยู่" : "ใช้แบตอยู่"}`) };
   }
   const openApp = text.match(/เปิด(?:แอป|โปรแกรม)\s*([A-Za-zก-๙0-9 .]+)/);
   if (openApp) {
     const app = openApp[1].trim();
     await run("open", ["-a", app]);
-    return { text: `เปิด ${app} ให้แล้วครับ ✅` };
+    return { text: await vexLine(`เปิด ${app} ให้แล้ว`) };
   }
   const openWeb = text.match(/เปิดเว็บ\s*(\S+)/);
   if (openWeb) {
     const url = openWeb[1].startsWith("http") ? openWeb[1] : `https://${openWeb[1]}`;
     await run("open", [url]);
-    return { text: `เปิด ${url} ใน Chrome ให้แล้วครับ ✅` };
+    return { text: await vexLine(`เปิด ${url} ใน Chrome ให้แล้ว`) };
   }
   if (/เปิดเพลง/.test(t)) {
     await run("osascript", ["-e", 'tell application "Music" to play']);
-    return { text: "เปิดเพลงแล้วครับ 🎯" };
+    return { text: await vexLine("เปิดเพลงแล้ว") };
   }
   if (/ปิดเพลง|หยุดเพลง/.test(t)) {
     await run("osascript", ["-e", 'tell application "Music" to pause']);
-    return { text: "หยุดเพลงแล้วครับ ✅" };
+    return { text: await vexLine("หยุดเพลงแล้ว") };
   }
   const vol = text.match(/วอลุ่ม|เสียงเครื่อง/);
   if (vol) {
     const n = text.match(/(\d{1,3})/);
     if (n) {
       await run("osascript", ["-e", `set volume output volume ${Math.min(100, Number(n[1]))}`]);
-      return { text: `ตั้งเสียงเครื่อง ${Math.min(100, Number(n[1]))}% แล้วครับ ✅` };
+      return { text: await vexLine(`ตั้งเสียงเครื่อง ${Math.min(100, Number(n[1]))}% แล้ว`) };
     }
   }
   return null; // ไม่เข้าคำสั่งด่วน → ส่งต่อ agent

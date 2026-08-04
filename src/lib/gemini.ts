@@ -110,6 +110,54 @@ function askGeminiCli(prompt: string, opts: GeminiOptions, cli: string): Promise
   });
 }
 
+/**
+ * ถาม Gemini พร้อม "รูปภาพ" (vision) — ใช้อ่านข้อมูลจากภาพ เช่น เลขบัตรประชาชนบนบัตรในรูป KYC
+ * ต้องมี GEMINI_API_KEY (ทาง CLI ไม่รองรับรูป)
+ */
+export async function askGeminiImage(
+  prompt: string,
+  image: Buffer,
+  opts: GeminiOptions & { mimeType?: string } = {},
+): Promise<string> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new Error("อ่านรูปด้วย Gemini ไม่ได้ — ยังไม่ได้ตั้ง GEMINI_API_KEY");
+  const model = opts.model || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const body: Record<string, unknown> = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inline_data: { mime_type: opts.mimeType || "image/jpeg", data: image.toString("base64") } },
+            { text: prompt },
+          ],
+        },
+      ],
+    };
+    if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
+    const genCfg: Record<string, unknown> = {};
+    if (opts.maxOutputTokens) genCfg.maxOutputTokens = opts.maxOutputTokens;
+    if (opts.temperature !== undefined) genCfg.temperature = opts.temperature;
+    if (Object.keys(genCfg).length) body.generationConfig = genCfg;
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal },
+    );
+    if (!res.ok) throw new Error(`Gemini vision ตอบกลับ ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts;
+    const text = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
+    if (!text.trim()) throw new Error("Gemini vision ไม่มีข้อความตอบกลับ");
+    return text.trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function askGemini(prompt: string, opts: GeminiOptions = {}): Promise<string> {
   // REST มาก่อนถ้ามี key (เสถียรกว่า) ไม่งั้นใช้ CLI ถ้ามี binary จริง
   if (process.env.GEMINI_API_KEY?.trim()) return askGeminiApi(prompt, opts);

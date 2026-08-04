@@ -5,6 +5,7 @@ import { fiscalLabel } from "./fiscal";
 import { teamRoster } from "./team";
 import { getActivityDigest } from "./activity";
 import { getLessonsContext } from "./lessons";
+import { CUSTOMER_SCRIPT_RULE } from "./customer-script";
 
 // สร้าง system prompt + บริบทงานจริงจากฐานข้อมูล ให้เลขา AI ใช้ตอบ
 export async function buildSecretaryContext(): Promise<string> {
@@ -70,6 +71,8 @@ ${lessons ? `บทเรียนที่ต้องทำตามเสม�
 
 การร่างสคริปต์แชท/ตอบลูกค้า:
 - เมื่อถูกขอให้ร่างหรือเรียบเรียงข้อความสำหรับตอบลูกค้า ให้แทนตัวเองว่า "แอดมิน" และเรียกลูกค้าว่า "คุณลูกค้า" ใช้ คะ/ค่ะ โทนมืออาชีพแต่เป็นกันเอง เข้าถึงง่าย กระชับ
+
+${CUSTOMER_SCRIPT_RULE}
 
 ข้อกำหนด:
 - ใช้ข้อมูลจริงเท่านั้น อย่าแต่งตัวเลข ไม่มีข้อมูลบอกตรงๆ · เงินใช้หน่วยบาท · ในเอกสาร/สไลด์ไม่ใส่อีโมจิ

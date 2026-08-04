@@ -41,6 +41,7 @@ import {
   webResearch,
   isShoppingQuery,
   sanitizeVexText,
+  vexLine,
 } from "@/lib/kiki";
 import {
   extractFinance,
@@ -168,11 +169,11 @@ export async function POST(req: Request) {
     const raw = await getSetting("kiki_pending_social");
     const pend = raw ? (JSON.parse(raw) as { url: string; text: string; what: string }) : null;
     await setSetting("kiki_pending_social", "");
-    if (!pend) return ok([{ kind: "text", text: "ไม่มีร่างที่ค้างอยู่แล้วครับ" }]);
+    if (!pend) return ok([{ kind: "text", text: await vexLine("ไม่มีร่างที่ค้างอยู่แล้วครับ") }]);
     const { sendDraft, discardDraft } = await import("@/lib/kiki-chrome");
     if (callbackData === "kiki:social:no") {
       await discardDraft(pend.url).catch(() => {});
-      return ok([{ kind: "text", text: "ทิ้งร่างแล้วครับ ไม่ได้ส่ง ✅ (ปิดแท็บให้แล้ว)" }]);
+      return ok([{ kind: "text", text: await vexLine("ทิ้งร่างแล้วครับ ไม่ได้ส่ง ✅ (ปิดแท็บให้แล้ว)") }]);
     }
     const r = await sendDraft(pend.url).catch((e) => ({ ok: false, msg: e instanceof Error ? e.message.slice(0, 150) : "ส่งไม่สำเร็จ", shotBase64: undefined }));
     const outs: Send[] = [];
@@ -198,7 +199,7 @@ export async function POST(req: Request) {
         transcripts.push(await transcribeAudio(a.path, a.mime || "audio/ogg"));
       } catch (e) {
         const why = e instanceof Error ? e.message : String(e);
-        return ok([{ kind: "text", text: `ฟังเสียงไม่ออกครับ ⚠️ (${why.slice(0, 120)})\nพิมพ์มาแทนก่อนได้ไหมครับ` }]);
+        return ok([{ kind: "text", text: await vexLine(`ฟังเสียงไม่ออกครับ ⚠️ (${why.slice(0, 120)})\nพิมพ์มาแทนก่อนได้ไหมครับ`) }]);
       }
     }
     const spoken = transcripts.join("\n").trim();
@@ -358,7 +359,7 @@ export async function POST(req: Request) {
         }
       }
       if (!reads.length) {
-        return reply([{ kind: "text", text: `อ่านไฟล์ไม่ได้ครับ ⚠️ ${fails.join(" · ")}`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`อ่านไฟล์ไม่ได้ครับ ⚠️ ${fails.join(" · ")}`), replyTo: msgId }]);
       }
       const answer = await askKiki(
         text || "(เจ้าของส่งไฟล์มาโดยไม่ได้พิมพ์อะไร)",
@@ -479,7 +480,7 @@ export async function POST(req: Request) {
       const { ensureChrome, socialLoginStatus, chromeCdpUrl } = await import("@/lib/kiki-chrome");
       const st = await ensureChrome();
       if (!st.ok) {
-        return reply([{ kind: "text", text: `เปิด Chrome ของผมไม่ได้ครับ ⚠️ ${st.msg}\n\nสั่งเปิดเองได้ที่เครื่อง: npm run kiki:chrome`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`เปิด Chrome ของผมไม่ได้ครับ ⚠️ ${st.msg}\n\nสั่งเปิดเองได้ที่เครื่อง: npm run kiki:chrome`), replyTo: msgId }]);
       }
       const rows = await socialLoginStatus().catch(() => []);
       const block = vexList({
@@ -501,7 +502,7 @@ export async function POST(req: Request) {
       let target = linkFromText;
       if (!target && is("social_post")) target = "https://x.com/compose/post";
       if (!target) {
-        return reply([{ kind: "text", text: "ส่งลิงก์โพสต์ที่จะให้ตอบมาด้วยครับ (หรือ reply ข้อความที่มีลิงก์นั้น) แล้วบอกว่าจะให้ตอบว่าอะไร", replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine("ส่งลิงก์โพสต์ที่จะให้ตอบมาด้วยครับ (หรือ reply ข้อความที่มีลิงก์นั้น) แล้วบอกว่าจะให้ตอบว่าอะไร"), replyTo: msgId }]);
       }
       // ให้ Vex ร่างข้อความเอง (โทนเหมือนเจ้าของพิมพ์) — อ่านโพสต์ก่อนถ้าเป็นการตอบ
       let postCtx = "";
@@ -515,7 +516,7 @@ export async function POST(req: Request) {
         `[ร่างข้อความโซเชียล] เจ้าของสั่ง: """${text}"""\n${postCtx}\n\nเขียน "ข้อความที่จะโพสต์/ตอบจริง" ในนามเจ้าของ (โทนเหมือนเขาพิมพ์เอง ไม่ต้องแนะนำตัว ไม่ต้องมีคำนำ) ตอบเฉพาะตัวข้อความเท่านั้น`,
       ).catch(() => "");
       const message = sanitizeVexText(drafted).text.replace(/<[^>]+>/g, "").trim().slice(0, 900);
-      if (!message) return reply([{ kind: "text", text: "ร่างข้อความไม่สำเร็จครับ ลองบอกใหม่ว่าจะให้ตอบแนวไหน", replyTo: msgId }]);
+      if (!message) return reply([{ kind: "text", text: await vexLine("ร่างข้อความไม่สำเร็จครับ ลองบอกใหม่ว่าจะให้ตอบแนวไหน"), replyTo: msgId }]);
 
       const d = await draftReply(target, message).catch((e) => ({
         ok: false, url: target, platform: platformOf(target), typed: "", shotBase64: undefined,
@@ -524,13 +525,13 @@ export async function POST(req: Request) {
       const sends: Send[] = [];
       if (d.shotBase64) sends.push({ kind: "photo", dataBase64: d.shotBase64, filename: "draft.png", caption: "หน้าจอจริงตอนนี้ (พิมพ์ค้างไว้ ยังไม่ส่ง)" });
       if (!d.ok) {
-        sends.push({ kind: "text", text: `ยังส่งไม่ได้ครับ ⚠️ ${d.msg}\n\nข้อความที่ร่างไว้:\n${message}`, replyTo: msgId });
+        sends.push({ kind: "text", text: `ยังส่งไม่ได้ครับ ⚠️ ${d.msg}\n\nข้อความที่ร่างไว้:\n${message}`, replyTo: msgId }); // canned-ok: โชว์ข้อความที่ร่างไว้ตรงตัว ห้ามให้ AI แต่งใหม่
         return reply(sends);
       }
       await setSetting("kiki_pending_social", JSON.stringify({ url: d.url, text: message, what: is("social_post") ? "โพสต์ใหม่" : "ตอบโพสต์" }));
       sends.push({
         kind: "text",
-        text: `พิมพ์ค้างไว้ในหน้าจริงแล้วครับ (${d.platform.toUpperCase()}) ยังไม่กดส่ง\n\nข้อความ:\n${message}\n\nกดยืนยันแล้วผมกดส่งให้เลย`,
+        text: `พิมพ์ค้างไว้ในหน้าจริงแล้วครับ (${d.platform.toUpperCase()}) ยังไม่กดส่ง\n\nข้อความ:\n${message}\n\nกดยืนยันแล้วผมกดส่งให้เลย`, // canned-ok: โชว์ข้อความที่พิมพ์ค้างไว้ตรงตัว + ปุ่มยืนยัน
         replyTo: msgId,
         buttons: [[{ text: "ส่งเลย", data: "kiki:social:send" }, { text: "ยกเลิก", data: "kiki:social:no" }]],
       });
@@ -545,16 +546,16 @@ export async function POST(req: Request) {
       (!/ฝากบอก|ฝากแคป|ฝากทัก/.test(text) ? text.match(/^\s*(?:ผม)?ฝาก(?:มัน|ไป)\s*(?:ไป)?((?:สร้าง|ทำ|จัด|หา|เช็ค|รวบรวม|เตรียม)[\s\S]{5,})/) : null);
     if (hermesM || is("hermes")) {
       const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
-      if (!kikiHermesReady()) return reply([{ kind: "text", text: `Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`, replyTo: msgId }]);
+      if (!kikiHermesReady()) return reply([{ kind: "text", text: await vexLine(`Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`), replyTo: msgId }]);
       const task = (hermesM?.[1] || text).trim();
       await queueHermesJob(chatId, task);
-      return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งต่อให้ Hermes ทำเบื้องหลัง\n\nงาน: ${task.slice(0, 200)}\n\nใช้เวลาได้ถึง 15 นาที เสร็จเมื่อไหร่ผมเอาผลมาส่งเอง ระหว่างนี้สั่งงานอื่นได้ปกติ`, replyTo: msgId }]);
+      return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งต่อให้ Hermes ทำเบื้องหลัง\n\nงาน: ${task.slice(0, 200)}\n\nใช้เวลาได้ถึง 15 นาที เสร็จเมื่อไหร่ผมเอาผลมาส่งเอง ระหว่างนี้สั่งงานอื่นได้ปกติ`, replyTo: msgId }]); // canned-ok: โควตงานที่รับมาตรงตัว
     }
 
     // ===== ลบรายการเงินล่าสุด (ทางลัด — เฉพาะพูดถึง "ล่าสุด/เมื่อกี้" ชัด ๆ) =====
     if (/(ลบ|ยกเลิก|เอาออก).{0,12}(อันเมื่อกี้|ล่าสุด|เมื่อกี้)|บันทึกผิด|ลงผิด/i.test(text)) {
       const last = await deleteLastTxn();
-      if (!last) return reply([{ kind: "text", text: "ยังไม่มีรายการให้ลบเลยครับ 🎯", replyTo: msgId }]);
+      if (!last) return reply([{ kind: "text", text: await vexLine("ยังไม่มีรายการให้ลบเลยครับ 🎯"), replyTo: msgId }]);
       const t = `ลบให้แล้วครับ ✅\n\n${last.type === "income" ? "รับ" : "จ่าย"} ${fmtBaht(last.amount)} ฿ · ${last.category}${last.note ? ` · ${last.note}` : ""}`;
       return reply([{ kind: "text", text: t, replyTo: msgId }]);
     }
@@ -563,7 +564,7 @@ export async function POST(req: Request) {
     if (is("finance_edit")) {
       const r = await editFinance([replyText, text].filter(Boolean).join("\n"));
       if (!r.applied.length) {
-        return reply([{ kind: "text", text: `ยังไม่ได้แตะอะไรนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงรายการไหน"}\n\nบอกชื่อรายการ+ยอดชัด ๆ ได้เลย เช่น "ลบรายการเงินเดือน 20,739.12 ที่ซ้ำ"`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ยังไม่ได้แตะอะไรนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงรายการไหน"}\n\nบอกชื่อรายการ+ยอดชัด ๆ ได้เลย เช่น "ลบรายการเงินเดือน 20,739.12 ที่ซ้ำ"`), replyTo: msgId }]);
       }
       const { png, snapFacts } = await financeCardPng();
       const t = await vexSay(
@@ -610,7 +611,7 @@ export async function POST(req: Request) {
     if (ownAccM) {
       const { addOwnAccount } = await import("@/lib/kiki-finance");
       const list = await addOwnAccount(ownAccM[1].trim());
-      return reply([{ kind: "text", text: `จำแล้วครับ ✅ โอนไปหา "${ownAccM[1].trim()}" = ย้ายเงินตัวเอง ไม่นับเป็นรายจ่าย\n\nบัญชีตัวเองทั้งหมด: ${list.join(" · ")}`, replyTo: msgId }]);
+      return reply([{ kind: "text", text: `จำแล้วครับ ✅ โอนไปหา "${ownAccM[1].trim()}" = ย้ายเงินตัวเอง ไม่นับเป็นรายจ่าย\n\nบัญชีตัวเองทั้งหมด: ${list.join(" · ")}`, replyTo: msgId }]); // canned-ok: ต่อท้ายด้วยลิสต์บัญชีจริง
     }
 
     // ===== ยอดเงินในบัญชี + เส้นเงินสด 30 วัน (2.1) =====
@@ -620,12 +621,12 @@ export async function POST(req: Request) {
       const amt = Number(balM[1].replace(/,/g, ""));
       await setBalance(amt);
       const fc = await cashForecast30().catch(() => null);
-      return reply([{ kind: "text", text: `ตั้งยอดตั้งต้น ${fmtBaht(amt)} ฿ แล้วครับ ✅ ต่อจากนี้ผมคำนวณยอดคงเหลือจากรายการที่บันทึกให้เอง\n\n${fc ? fc.lines.join("\n") : ""}`.trim(), replyTo: msgId }]);
+      return reply([{ kind: "text", text: `ตั้งยอดตั้งต้น ${fmtBaht(amt)} ฿ แล้วครับ ✅ ต่อจากนี้ผมคำนวณยอดคงเหลือจากรายการที่บันทึกให้เอง\n\n${fc ? fc.lines.join("\n") : ""}`.trim(), replyTo: msgId }]); // canned-ok: ต่อท้ายด้วยเส้นเงินสดที่คำนวณจริง
     }
     if (is("finance_forecast")) {
       const { cashForecast30 } = await import("@/lib/kiki-finance");
       const fc = await cashForecast30().catch(() => null);
-      if (!fc) return reply([{ kind: "text", text: `ยังคำนวณไม่ได้ครับ — บอกยอดตั้งต้นก่อน เช่น "ยอดในบัญชีตอนนี้ 25,000" แล้วผมจะพยากรณ์ 30 วันข้างหน้าให้ (บิลประจำ+pace ใช้จริง)`, replyTo: msgId }]);
+      if (!fc) return reply([{ kind: "text", text: await vexLine(`ยังคำนวณไม่ได้ครับ — บอกยอดตั้งต้นก่อน เช่น "ยอดในบัญชีตอนนี้ 25,000" แล้วผมจะพยากรณ์ 30 วันข้างหน้าให้ (บิลประจำ+pace ใช้จริง)`), replyTo: msgId }]);
       return reply([{ kind: "text", text: fc.lines.join("\n"), replyTo: msgId }]);
     }
 
@@ -694,15 +695,14 @@ export async function POST(req: Request) {
     // ===== โหมดตอบเสียงตลอด =====
     if (/ตอบเสียงตลอด|โหมดเสียง(?!.{0,6}(ปิด|ออก))|พูดตลอด|ตอบเป็นเสียงทุกครั้ง/.test(text) && !/ปิด|เลิก|หยุด|ไม่เอา/.test(text)) {
       await setSetting("kiki_voice_always", "1");
-      const sends: Send[] = [{ kind: "text", text: `เปิดโหมดตอบเสียงตลอดแล้วครับ ✅ ทุกคำตอบจะมีเสียงแนบ
-เบื่อเมื่อไหร่พิมพ์ "ปิดโหมดเสียง"`, replyTo: msgId }];
+      const sends: Send[] = [{ kind: "text", text: await vexLine(`เปิดโหมดตอบเสียงตลอดแล้วครับ ทุกคำตอบจะมีเสียงแนบ เบื่อเมื่อไหร่พิมพ์ "ปิดโหมดเสียง"`), replyTo: msgId }];
       const ogg = await ttsOgg("เปิดโหมดพูดตลอดแล้วครับผม ต่อไปนี้ผมพูดให้ฟังทุกคำตอบเลย");
       if (ogg) sends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
       return reply(sends);
     }
     if (/(ปิด|เลิก|หยุด|ไม่เอา).{0,10}(โหมดเสียง|ตอบเสียง|พูดตลอด)|ตอบข้อความพอ/.test(text)) {
       await setSetting("kiki_voice_always", "");
-      return reply([{ kind: "text", text: "ปิดโหมดตอบเสียงตลอดแล้วครับ ✅ จะพูดเฉพาะตอนพี่พูดมา หรือสั่ง \"ตอบเสียง\"", replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine("ปิดโหมดตอบเสียงตลอดแล้วครับ ✅ จะพูดเฉพาะตอนพี่พูดมา หรือสั่ง \"ตอบเสียง\""), replyTo: msgId }]);
     }
 
     // ===== Telegram userbot: ยืนยัน/ยกเลิกการส่งที่ค้างอยู่ =====
@@ -712,14 +712,14 @@ export async function POST(req: Request) {
         await setPendingDm(null);
         try {
           await sendAsOwner(pending.peerId, pending.message);
-          return reply([{ kind: "text", text: `ส่งหา ${pending.peerName} แล้วครับ 📤 (ในนามบัญชีพี่เอง)`, replyTo: msgId }]);
+          return reply([{ kind: "text", text: await vexLine(`ส่งหา ${pending.peerName} แล้วครับ 📤 (ในนามบัญชีพี่เอง)`), replyTo: msgId }]);
         } catch (e) {
-          return reply([{ kind: "text", text: `ส่งไม่สำเร็จครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 120) : "error"})`, replyTo: msgId }]);
+          return reply([{ kind: "text", text: await vexLine(`ส่งไม่สำเร็จครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 120) : "error"})`), replyTo: msgId }]);
         }
       }
       if (pending && /^\s*(ยกเลิก|ไม่ส่ง|ไม่เอา)/.test(text)) {
         await setPendingDm(null);
-        return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่ส่ง", replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine("ยกเลิกแล้วครับ ✅ ไม่ส่ง"), replyTo: msgId }]);
       }
     }
 
@@ -729,13 +729,13 @@ export async function POST(req: Request) {
       const pendingDev = await getPendingDev();
       if (pendingDev && text === "[ปุ่ม:ยกเลิกพัฒนา]") {
         await setPendingDev(null);
-        return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่พัฒนา", replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine("ยกเลิกแล้วครับ ✅ ไม่พัฒนา"), replyTo: msgId }]);
       }
       if (pendingDev && text === "[ปุ่ม:พัฒนาเลย]") {
         await setPendingDev(null);
-        if (await devJobRunning()) return reply([{ kind: "text", text: `มีงานพัฒนารันอยู่แล้วครับ ⚠️ รอตัวเดิมจบก่อน (สูงสุด 45 นาที) ค่อยสั่งตัวใหม่`, replyTo: msgId }]);
+        if (await devJobRunning()) return reply([{ kind: "text", text: await vexLine(`มีงานพัฒนารันอยู่แล้วครับ ⚠️ รอตัวเดิมจบก่อน (สูงสุด 45 นาที) ค่อยสั่งตัวใหม่`), replyTo: msgId }]);
         await queueDevJob(chatId, pendingDev);
-        return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งสเปกให้วิศวกร (Claude ตัวเดียวกับที่พี่ใช้) ลงมือแก้โค้ดผมแล้ว\n\nใช้เวลาได้ถึง 45 นาที เสร็จแล้วรายงานพร้อม commit — ช่วงท้ายผมจะรีสตาร์ทตัวเองแป๊บนึง ถ้าเงียบช่วงสั้น ๆ คือกำลังเกิดใหม่ครับ`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`รับงานแล้วครับ 🎯 ส่งสเปกให้วิศวกร (Claude ตัวเดียวกับที่พี่ใช้) ลงมือแก้โค้ดผมแล้ว\n\nใช้เวลาได้ถึง 45 นาที เสร็จแล้วรายงานพร้อม commit — ช่วงท้ายผมจะรีสตาร์ทตัวเองแป๊บนึง ถ้าเงียบช่วงสั้น ๆ คือกำลังเกิดใหม่ครับ`), replyTo: msgId }]);
       }
     }
 
@@ -760,13 +760,13 @@ export async function POST(req: Request) {
           if (j?.confident && j.spec) spec = j.spec.trim();
         } catch { /* ถามกลับข้างล่าง */ }
         if (!spec) {
-          return reply([{ kind: "text", text: `ได้ครับ ผมพัฒนาตัวเองได้จริง — แต่ขอสเปกชัด ๆ หน่อยว่าให้เพิ่มอะไร\n\nพิมพ์: พัฒนา: <สิ่งที่อยากได้>`, replyTo: msgId }]);
+          return reply([{ kind: "text", text: await vexLine(`ได้ครับ ผมพัฒนาตัวเองได้จริง — แต่ขอสเปกชัด ๆ หน่อยว่าให้เพิ่มอะไร\n\nพิมพ์: พัฒนา: <สิ่งที่อยากได้>`), replyTo: msgId }]);
         }
       }
       await setPendingDev(spec);
       return reply([{
         kind: "text",
-        text: `จะส่งสเปกนี้ให้วิศวกรแก้โค้ดผมจริง ๆ นะครับ:\n\n"${spec.slice(0, 500)}"\n\nกติกา: แตะได้เฉพาะโค้ดฝั่งผม (Vex) · tsc ต้องผ่าน · commit+push · เสร็จแล้วรีสตาร์ทตัวเอง+รายงาน\nถ้าของที่ได้ไม่ตรงใจ บอกพี่โด้ให้ย้อน commit ได้เสมอ`,
+        text: `จะส่งสเปกนี้ให้วิศวกรแก้โค้ดผมจริง ๆ นะครับ:\n\n"${spec.slice(0, 500)}"\n\nกติกา: แตะได้เฉพาะโค้ดฝั่งผม (Vex) · tsc ต้องผ่าน · commit+push · เสร็จแล้วรีสตาร์ทตัวเอง+รายงาน\nถ้าของที่ได้ไม่ตรงใจ บอกพี่โด้ให้ย้อน commit ได้เสมอ`, // canned-ok: สเปกที่จะส่งให้วิศวกร + กติกา ต้องตรงตัว
         replyTo: msgId,
         buttons: [[{ text: "✅ พัฒนาเลย", data: "kiki:dev:yes" }, { text: "❌ ยกเลิก", data: "kiki:dev:no" }]],
       }]);
@@ -778,12 +778,12 @@ export async function POST(req: Request) {
       const pendingGrp = rawGrp ? (JSON.parse(rawGrp) as { title: string }) : null;
       if (pendingGrp && text === "[ปุ่ม:ยกเลิกกลุ่ม]") {
         await setSetting("kiki_pending_group", "");
-        return reply([{ kind: "text", text: "ยกเลิกแล้วครับ ✅ ไม่สร้างกลุ่ม", replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine("ยกเลิกแล้วครับ ✅ ไม่สร้างกลุ่ม"), replyTo: msgId }]);
       }
       if (pendingGrp && (text === "[ปุ่ม:สร้างกลุ่ม]" || /^\s*(สร้างเลย|ลุยเลย|เอาเลย)\s*$/.test(text))) {
         await setSetting("kiki_pending_group", "");
         const { userbotReady: ubReady, createOwnerGroup } = await import("@/lib/kiki-userbot");
-        if (!ubReady()) return reply([{ kind: "text", text: `บัญชี Telegram ยังไม่เชื่อมครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน`, replyTo: msgId }]);
+        if (!ubReady()) return reply([{ kind: "text", text: await vexLine(`บัญชี Telegram ยังไม่เชื่อมครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน`), replyTo: msgId }]);
         try {
           const g = await createOwnerGroup(pendingGrp.title);
           await addKikiChatId(g.chatId);
@@ -794,17 +794,17 @@ export async function POST(req: Request) {
               kind: "text",
               chatId: g.chatId,
               parseMode: "HTML",
-              text: `กลุ่ม "${escHtml(g.title)}" พร้อมใช้แล้วครับ <a href="tg://user?id=${fromId}">พี่</a> — ผมประจำการที่นี่แล้ว ใช้ได้ทุกความสามารถเหมือนกลุ่มหลักเลย 🎯`,
+              text: `กลุ่ม "${escHtml(g.title)}" พร้อมใช้แล้วครับ <a href="tg://user?id=${fromId}">พี่</a> — ผมประจำการที่นี่แล้ว ใช้ได้ทุกความสามารถเหมือนกลุ่มหลักเลย 🎯`, // canned-ok: มีแท็ก HTML tg://user
             });
           }
           sends.push({
             kind: "text",
-            text: `สร้างกลุ่ม "${g.title}" เสร็จแล้วครับ ✅ พี่เป็นเจ้าของกลุ่ม${g.botAdded ? " ผมเข้าไปประจำการ+ทักไว้ในนั้นแล้ว" : " ⚠️ แต่ดึงผมเข้าไม่สำเร็จ — เชิญ @kiki_lekha_bot เข้ากลุ่มให้หน่อยครับ"}\n\nเปิดดูในลิสต์แชท Telegram ได้เลย`,
+            text: await vexLine(`สร้างกลุ่ม "${g.title}" เสร็จแล้วครับ ✅ พี่เป็นเจ้าของกลุ่ม${g.botAdded ? " ผมเข้าไปประจำการ+ทักไว้ในนั้นแล้ว" : " ⚠️ แต่ดึงผมเข้าไม่สำเร็จ — เชิญ @kiki_lekha_bot เข้ากลุ่มให้หน่อยครับ"}\n\nเปิดดูในลิสต์แชท Telegram ได้เลย`),
             replyTo: msgId,
           });
           return reply(sends);
         } catch (e) {
-          return reply([{ kind: "text", text: `สร้างกลุ่มไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`, replyTo: msgId }]);
+          return reply([{ kind: "text", text: await vexLine(`สร้างกลุ่มไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`), replyTo: msgId }]);
         }
       }
     }
@@ -812,7 +812,7 @@ export async function POST(req: Request) {
     // ===== สร้างกลุ่มใหม่: รับคำสั่ง + ตั้งชื่อ + ปุ่มยืนยัน =====
     if (is("tg_create_group") && !text.startsWith("[ปุ่ม")) {
       const { userbotReady: ubReady } = await import("@/lib/kiki-userbot");
-      if (!ubReady()) return reply([{ kind: "text", text: `สร้างกลุ่มต้องใช้บัญชี Telegram พี่ครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน (ครั้งเดียว)`, replyTo: msgId }]);
+      if (!ubReady()) return reply([{ kind: "text", text: await vexLine(`สร้างกลุ่มต้องใช้บัญชี Telegram พี่ครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน (ครั้งเดียว)`), replyTo: msgId }]);
       const nameM = text.match(/สร้างกลุ่ม.{0,8}(?:ชื่อ|ว่า)\s*["“']?([^"”'\n]{2,60})/);
       let title = nameM?.[1]?.trim() || "";
       if (!title) {
@@ -831,7 +831,7 @@ export async function POST(req: Request) {
       await setSetting("kiki_pending_group", JSON.stringify({ title }));
       return reply([{
         kind: "text",
-        text: `จะสร้างกลุ่ม "${title}" ผ่านบัญชีพี่ (พี่เป็นเจ้าของกลุ่มอัตโนมัติ) แล้วดึงผมเข้าไปประจำการครับ\n\nถ้าอยากได้ชื่ออื่น พิมพ์ "สร้างกลุ่มชื่อ ..." มาใหม่ได้เลย`,
+        text: await vexLine(`จะสร้างกลุ่ม "${title}" ผ่านบัญชีพี่ (พี่เป็นเจ้าของกลุ่มอัตโนมัติ) แล้วดึงผมเข้าไปประจำการครับ\n\nถ้าอยากได้ชื่ออื่น พิมพ์ "สร้างกลุ่มชื่อ ..." มาใหม่ได้เลย`),
         replyTo: msgId,
         buttons: [[{ text: "✅ สร้างเลย", data: "kiki:grp:yes" }, { text: "❌ ยกเลิก", data: "kiki:grp:no" }]],
       }]);
@@ -839,7 +839,7 @@ export async function POST(req: Request) {
 
     // ===== Telegram userbot: ลิสต์รายชื่อแชทในบัญชีเจ้าของ =====
     if (is("tg_list_chats")) {
-      if (!userbotReady()) return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram ครับ ⚠️ รัน: npm run kiki:tg-auth`, replyTo: msgId }]);
+      if (!userbotReady()) return reply([{ kind: "text", text: await vexLine(`ยังไม่ได้เชื่อมบัญชี Telegram ครับ ⚠️ รัน: npm run kiki:tg-auth`), replyTo: msgId }]);
       const kind = /ไม่เอากลุ่ม|เฉพาะคน|แค่คน|คนอย่างเดียว/.test(text) ? "user" : /เฉพาะกลุ่ม|เอาแต่กลุ่ม|แค่กลุ่ม/.test(text) ? "group" : "all";
       try {
         const rows = await listDialogs(kind, 40);
@@ -851,11 +851,11 @@ export async function POST(req: Request) {
           return `${i + 1}. ${r.name}${r.username ? ` (@${r.username})` : ""}${r.isGroup ? " · กลุ่ม" : ""}${al ? ` — เรียกว่า "${al.alias}"` : ""}`;
         });
         return reply([
-          { kind: "text", text: `แชทล่าสุดในบัญชีพี่ (${rows.length}${kind === "user" ? " · เฉพาะคน" : kind === "group" ? " · เฉพาะกลุ่ม" : ""}):\n\n${lines.join("\n")}`, replyTo: msgId },
-          { kind: "text", text: `ตั้งชื่อเรียกเองได้เลยครับ เช่น "แชท 3 คืออั๋น แฟนผม" หรือ "แชท <ชื่อ> คือพี่ภูมิ" — ต่อไปสั่ง "ไปบอกอั๋นว่า..." ได้ทันที 🎯` },
+          { kind: "text", text: `แชทล่าสุดในบัญชีพี่ (${rows.length}${kind === "user" ? " · เฉพาะคน" : kind === "group" ? " · เฉพาะกลุ่ม" : ""}):\n\n${lines.join("\n")}`, replyTo: msgId }, // canned-ok: ลิสต์รายชื่อแชทจริง
+          { kind: "text", text: await vexLine(`ตั้งชื่อเรียกเองได้เลยครับ เช่น "แชท 3 คืออั๋น แฟนผม" หรือ "แชท <ชื่อ> คือพี่ภูมิ" — ต่อไปสั่ง "ไปบอกอั๋นว่า..." ได้ทันที 🎯`) },
         ]);
       } catch (e) {
-        return reply([{ kind: "text", text: `ดึงรายชื่อแชทไม่ได้ครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 100) : "error"})`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ดึงรายชื่อแชทไม่ได้ครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 100) : "error"})`), replyTo: msgId }]);
       }
     }
 
@@ -870,18 +870,18 @@ export async function POST(req: Request) {
           const list = JSON.parse((await getSetting("kiki_last_dialog_list")) || "[]") as PeerHit[];
           peer = list[Number(ref) - 1] || null;
         } catch { peer = null; }
-        if (!peer) return reply([{ kind: "text", text: `หมายเลข ${ref} ไม่อยู่ในลิสต์ล่าสุดครับ — พิมพ์ "ขอรายชื่อแชท" ก่อนแล้วค่อยอ้างเลขนะครับ`, replyTo: msgId }]);
+        if (!peer) return reply([{ kind: "text", text: await vexLine(`หมายเลข ${ref} ไม่อยู่ในลิสต์ล่าสุดครับ — พิมพ์ "ขอรายชื่อแชท" ก่อนแล้วค่อยอ้างเลขนะครับ`), replyTo: msgId }]);
       } else {
         const hits = await findPeer(ref).catch(() => []);
-        if (!hits.length) return reply([{ kind: "text", text: `หาแชท "${ref}" ไม่เจอครับ — ลอง "ขอรายชื่อแชท" แล้วอ้างหมายเลขแทน`, replyTo: msgId }]);
-        if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ใช้ "ขอรายชื่อแชท" แล้วอ้างหมายเลขชัวร์กว่าครับ`, replyTo: msgId }]);
+        if (!hits.length) return reply([{ kind: "text", text: await vexLine(`หาแชท "${ref}" ไม่เจอครับ — ลอง "ขอรายชื่อแชท" แล้วอ้างหมายเลขแทน`), replyTo: msgId }]);
+        if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ใช้ "ขอรายชื่อแชท" แล้วอ้างหมายเลขชัวร์กว่าครับ`, replyTo: msgId }]); // canned-ok: ลิสต์แชทให้เลือก
         peer = hits[0];
       }
       // ชื่อเรียก = คำแรกของคำอธิบาย (เก็บคำอธิบายเต็มไว้ใน note + ความจำ)
       const alias = desc.replace(/^(ชื่อ|คือ)\s*/, "").split(/\s+/)[0].replace(/[,.]$/, "");
       await setAlias({ alias, peerId: peer.id, peerName: peer.name, note: desc !== alias ? desc : undefined });
       await rememberOwnerFact(`"${alias}" ใน Telegram = แชท "${peer.name}"${desc !== alias ? ` (${desc})` : ""}`, { category: "คนรอบตัว", source: text });
-      return reply([{ kind: "text", text: `จำแล้วครับ ✅ "${alias}" = แชท ${peer.name}${desc !== alias ? ` (${desc})` : ""}\n\nต่อไปสั่งได้เลย: "ไปบอก${alias}ว่า..." / "สรุปแชทกับ${alias}"`, replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine(`จำแล้วครับ ✅ "${alias}" = แชท ${peer.name}${desc !== alias ? ` (${desc})` : ""}\n\nต่อไปสั่งได้เลย: "ไปบอก${alias}ว่า..." / "สรุปแชทกับ${alias}"`), replyTo: msgId }]);
     }
 
     // ===== ส่งข้อความ/ประกาศเข้ากลุ่มที่ Vex ประจำการ (ส่งเองผ่านบอท ไม่ต้องยืนยัน) =====
@@ -905,12 +905,12 @@ export async function POST(req: Request) {
           `[เขียนประกาศลงกลุ่ม "${titles[target] || target}"] เจ้าของสั่ง: """${text}"""\nเขียน "เนื้อหาที่จะโพสต์จริง" ตามคำสั่ง อิงเรื่องที่คุยกันในบริบท ตอบเฉพาะเนื้อหาที่จะส่ง ไม่ต้องเกริ่น ไม่ต้องถามกลับ`,
           convo,
         ).catch(() => "");
-        if (!content.trim()) return reply([{ kind: "text", text: `เรียบเรียงเนื้อหาไม่สำเร็จครับ ⚠️ ลองสั่งใหม่อีกที`, replyTo: msgId }]);
+        if (!content.trim()) return reply([{ kind: "text", text: await vexLine(`เรียบเรียงเนื้อหาไม่สำเร็จครับ ⚠️ ลองสั่งใหม่อีกที`), replyTo: msgId }]);
         const clean = sanitizeVexText(content).text.replace(/<[^>]+>/g, "");
         const finalHtml = `${wantTag ? `<a href="tg://user?id=${fromId}">พี่โด้</a>\n\n` : ""}${escHtml(clean)}`;
         return reply([
           { kind: "text", chatId: target, parseMode: "HTML", text: finalHtml },
-          { kind: "text", text: `ส่งเข้ากลุ่ม "${titles[target] || target}" แล้วครับ ✅${wantTag ? " (แท็กพี่ไว้บรรทัดแรก)" : ""}\n\nเนื้อหาที่ส่ง:\n${clean.slice(0, 400)}${clean.length > 400 ? "..." : ""}`, replyTo: msgId },
+          { kind: "text", text: `ส่งเข้ากลุ่ม "${titles[target] || target}" แล้วครับ ✅${wantTag ? " (แท็กพี่ไว้บรรทัดแรก)" : ""}\n\nเนื้อหาที่ส่ง:\n${clean.slice(0, 400)}${clean.length > 400 ? "..." : ""}`, replyTo: msgId }, // canned-ok: โควตเนื้อหาที่โพสต์เข้ากลุ่มจริง
         ]);
       }
       // ไม่รู้จักกลุ่มไหนเลย → ตกไปทาง userbot ข้างล่าง (กลุ่มนอกที่ Vex ไม่ได้อยู่)
@@ -919,7 +919,7 @@ export async function POST(req: Request) {
     // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====
     if (is("tg_dm")) {
       if (!userbotReady()) {
-        return reply([{ kind: "text", text: `ยังไม่ได้เชื่อมบัญชี Telegram พี่ครับ ⚠️ รันในเทอร์มินัล: npm run kiki:tg-auth (ครั้งเดียว) แล้วผมส่งแทนพี่ได้เลย`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ยังไม่ได้เชื่อมบัญชี Telegram พี่ครับ ⚠️ รันในเทอร์มินัล: npm run kiki:tg-auth (ครั้งเดียว) แล้วผมส่งแทนพี่ได้เลย`), replyTo: msgId }]);
       }
       let dm: { target?: string; message?: string } | null = null;
       try {
@@ -930,16 +930,16 @@ export async function POST(req: Request) {
         const m = raw.match(/\{[\s\S]*\}/);
         dm = m ? (JSON.parse(m[0]) as { target?: string; message?: string }) : null;
       } catch { dm = null; }
-      if (!dm?.target || !dm.message) return reply([{ kind: "text", text: `บอกใหม่อีกทีครับ ใครและข้อความว่าอะไร เช่น "ไปบอกแม่ว่า เดี๋ยวกลับดึก"`, replyTo: msgId }]);
+      if (!dm?.target || !dm.message) return reply([{ kind: "text", text: await vexLine(`บอกใหม่อีกทีครับ ใครและข้อความว่าอะไร เช่น "ไปบอกแม่ว่า เดี๋ยวกลับดึก"`), replyTo: msgId }]);
       const hits = await findPeer(dm.target).catch(() => []);
-      if (!hits.length) return reply([{ kind: "text", text: `หาแชท "${dm.target}" ในบัญชีพี่ไม่เจอครับ 🎯 ลองบอกชื่อตามที่โชว์ใน Telegram หรือ @username`, replyTo: msgId }]);
+      if (!hits.length) return reply([{ kind: "text", text: await vexLine(`หาแชท "${dm.target}" ในบัญชีพี่ไม่เจอครับ 🎯 ลองบอกชื่อตามที่โชว์ใน Telegram หรือ @username`), replyTo: msgId }]);
       if (hits.length > 1) {
-        return reply([{ kind: "text", text: `เจอหลายแชทครับ หมายถึงอันไหน:\n${hits.map((h, i) => `${i + 1}. ${h.name}${h.username ? ` (@${h.username})` : ""}${h.isGroup ? " · กลุ่ม" : ""}`).join("\n")}\n\nสั่งใหม่โดยระบุชื่อเต็ม/username ครับ`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: `เจอหลายแชทครับ หมายถึงอันไหน:\n${hits.map((h, i) => `${i + 1}. ${h.name}${h.username ? ` (@${h.username})` : ""}${h.isGroup ? " · กลุ่ม" : ""}`).join("\n")}\n\nสั่งใหม่โดยระบุชื่อเต็ม/username ครับ`, replyTo: msgId }]); // canned-ok: ลิสต์แชทให้เลือก
       }
       await setPendingDm({ peerId: hits[0].id, peerName: hits[0].name, message: dm.message });
       return reply([{
         kind: "text",
-        text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"`,
+        text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"`, // canned-ok: ข้อความที่จะส่งในนามเจ้าของ ต้องตรงตัว
         replyTo: msgId,
         buttons: [[{ text: "✅ ส่งเลย", data: "kiki:dm:yes" }, { text: "❌ ไม่ส่ง", data: "kiki:dm:no" }]],
       }]);
@@ -951,14 +951,14 @@ export async function POST(req: Request) {
       const hits = await findPeer(chatSumM[1].trim()).catch(() => []);
       if (hits.length === 1) {
         const lines = await readChat(hits[0].id, 80).catch(() => []);
-        if (!lines.length) return reply([{ kind: "text", text: `อ่านแชท ${hits[0].name} ไม่ได้/ไม่มีข้อความครับ`, replyTo: msgId }]);
+        if (!lines.length) return reply([{ kind: "text", text: await vexLine(`อ่านแชท ${hits[0].name} ไม่ได้/ไม่มีข้อความครับ`), replyTo: msgId }]);
         const answer = await askKiki(
           `สรุปบทสนทนาในแชท "${hits[0].name}" ให้เจ้าของ: ประเด็นหลัก ใครพูดอะไรสำคัญ มีอะไรต้องทำ/ตอบไหม`,
           `=== ข้อความล่าสุดในแชท (เก่า→ใหม่) ===\n${lines.join("\n").slice(0, 12_000)}`,
         );
         return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
       }
-      if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ระบุชื่อเต็มอีกทีครับ`, replyTo: msgId }]);
+      if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ระบุชื่อเต็มอีกทีครับ`, replyTo: msgId }]); // canned-ok: ลิสต์แชทให้เลือก
     }
 
     // ===== สั่งเครื่อง Mac (คำสั่งด่วน + agent ทำแทนที่เครื่อง/Warp/Chrome) =====
@@ -981,7 +981,7 @@ export async function POST(req: Request) {
         sends.push({ kind: "text", text: body, replyTo: msgId });
         return reply(sends);
       } catch (e) {
-        return reply([{ kind: "text", text: `ทำที่เครื่องไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ทำที่เครื่องไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`), replyTo: msgId }]);
       }
     }
 
@@ -994,17 +994,17 @@ export async function POST(req: Request) {
       const pick = TTS_VOICES.find((v) => v.toLowerCase() === voiceM[1].toLowerCase());
       if (pick) {
         await setSetting("kiki_tts_voice", pick);
-        const sends: Send[] = [{ kind: "text", text: `เปลี่ยนเสียงเป็น ${pick} แล้วครับ ✅ ฟังตัวอย่างด้านล่างเลย`, replyTo: msgId }];
+        const sends: Send[] = [{ kind: "text", text: await vexLine(`เปลี่ยนเสียงเป็น ${pick} แล้วครับ ✅ ฟังตัวอย่างด้านล่างเลย`), replyTo: msgId }];
         const ogg = await ttsOgg(`สวัสดีครับ นี่เสียงใหม่ของผม ${pick} ครับผม เป็นไงบ้าง ชอบมั้ยครับ`, pick);
         if (ogg) sends.push({ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" });
         return reply(sends);
       }
-      return reply([{ kind: "text", text: `ไม่รู้จักเสียง "${voiceM[1]}" ครับ — พิมพ์ "มีเสียงอะไรบ้าง" ดูรายชื่อได้`, replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine(`ไม่รู้จักเสียง "${voiceM[1]}" ครับ — พิมพ์ "มีเสียงอะไรบ้าง" ดูรายชื่อได้`), replyTo: msgId }]);
     }
     if (/มีเสียง(อะไร|ไหน)บ้าง|เสียงทั้งหมด|รายชื่อเสียง/.test(text)) {
       const { TTS_VOICES } = await import("@/lib/kiki");
       const cur = (await getSetting("kiki_tts_voice")) || "Charon";
-      return reply([{ kind: "text", text: `เสียงที่เลือกได้ (ตอนนี้ใช้ ${cur}):\n\n${TTS_VOICES.join(" · ")}\n\nเปลี่ยนโดยพิมพ์ "เปลี่ยนเสียงเป็น <ชื่อ>" ครับ`, replyTo: msgId }]);
+      return reply([{ kind: "text", text: `เสียงที่เลือกได้ (ตอนนี้ใช้ ${cur}):\n\n${TTS_VOICES.join(" · ")}\n\nเปลี่ยนโดยพิมพ์ "เปลี่ยนเสียงเป็น <ชื่อ>" ครับ`, replyTo: msgId }]); // canned-ok: ลิสต์เสียงทั้งหมด
     }
 
     // ===== เก็บรูปเข้าคลัง (เจ้าของสั่ง "เก็บรูปนี้") — เช็คก่อนเรื่องเงิน =====
@@ -1020,7 +1020,7 @@ export async function POST(req: Request) {
         const r = await saveMedia(v.path, "video", label || v.name);
         if (r) saved.push({ what: "วิดีโอ", desc: r.description || v.name });
       }
-      if (!saved.length) return reply([{ kind: "text", text: "เก็บไม่สำเร็จครับ ⚠️ ลองส่งใหม่อีกทีนะครับ", replyTo: msgId }]);
+      if (!saved.length) return reply([{ kind: "text", text: await vexLine("เก็บไม่สำเร็จครับ ⚠️ ลองส่งใหม่อีกทีนะครับ"), replyTo: msgId }]);
       const block = vexList({
         title: `เก็บเข้าคลังแล้ว ${saved.length} ไฟล์`,
         items: saved.map((x) => ({ main: `${x.what}${label ? ` — ${label}` : ""}`, sub: x.desc.slice(0, 160) || undefined })),
@@ -1042,13 +1042,13 @@ export async function POST(req: Request) {
         } catch { /* ไฟล์เสีย ข้าม */ }
       }
       if (sends.length) {
-        sends.unshift({ kind: "text", text: `เจอ ${sends.length} ไฟล์ครับ`, replyTo: msgId });
+        sends.unshift({ kind: "text", text: await vexLine(`เจอ ${sends.length} ไฟล์ครับ`), replyTo: msgId });
         return reply(sends);
       }
       // ระบบเก่า (รูปที่เก็บก่อนมีตาราง KikiMedia)
       const found = await findPersonalImages(text);
       if (found.length) {
-        const old: Send[] = [{ kind: "text", text: `เจอในคลังเก่าครับ ${found.length} รูป`, replyTo: msgId }];
+        const old: Send[] = [{ kind: "text", text: await vexLine(`เจอในคลังเก่าครับ ${found.length} รูป`), replyTo: msgId }];
         for (const f of found) {
           try {
             old.push({ kind: "photo", dataBase64: fs.readFileSync(f.path).toString("base64"), filename: path.basename(f.path), caption: f.label || undefined });
@@ -1056,7 +1056,7 @@ export async function POST(req: Request) {
         }
         if (old.length > 1) return reply(old);
       }
-      return reply([{ kind: "text", text: "หาไม่เจอครับ — ผมเก็บเฉพาะไฟล์ที่พี่สั่งให้เก็บเท่านั้น (ส่งมาเฉย ๆ ผมดูให้แต่ไม่ได้เก็บ)", replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine("หาไม่เจอครับ — ผมเก็บเฉพาะไฟล์ที่พี่สั่งให้เก็บเท่านั้น (ส่งมาเฉย ๆ ผมดูให้แต่ไม่ได้เก็บ)"), replyTo: msgId }]);
     }
 
     // ===== เจ้าของสอน/ปรับนิสัย Vex (พัฒนาตัวเองผ่านแชท) =====
@@ -1077,7 +1077,7 @@ export async function POST(req: Request) {
         }).catch(() => "")
       ).trim().replace(/^["'“”]|["'“”]$/g, "") || rawRule;
       if (/^SKIP$/i.test(rule)) {
-        return reply([{ kind: "text", text: `ยังไม่ชัดว่าจะให้ผมปรับอะไรครับ บอกอีกทีว่าต่อไปให้ทำแบบไหน เดี๋ยวจำถาวรให้`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ยังไม่ชัดว่าจะให้ผมปรับอะไรครับ บอกอีกทีว่าต่อไปให้ทำแบบไหน เดี๋ยวจำถาวรให้`), replyTo: msgId }]);
       }
       await rememberOwnerFact(rule, { category: VEX_RULE_CATEGORY, source: text });
       const t = await vexSay(
@@ -1091,7 +1091,7 @@ export async function POST(req: Request) {
       const all = await listOwnerFacts();
       const rules = all.filter((f) => f.category === VEX_RULE_CATEGORY);
       if (!rules.length) {
-        return reply([{ kind: "text", text: 'ยังไม่มีกฎพิเศษเลยครับ อยากให้ผมทำตัวยังไงบอกได้ เช่น "ต่อไปนี้ตอบสั้น ๆ พอ"', replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine('ยังไม่มีกฎพิเศษเลยครับ อยากให้ผมทำตัวยังไงบอกได้ เช่น "ต่อไปนี้ตอบสั้น ๆ พอ"'), replyTo: msgId }]);
       }
       const block = vexList({
         title: `กฎที่พี่สอนผมไว้ (${rules.length} ข้อ)`,
@@ -1116,7 +1116,7 @@ export async function POST(req: Request) {
         sends.push({ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId });
         return reply(sends);
       }
-      return reply([{ kind: "text", text: "จับคู่รายการไม่ได้เลยครับ ⚠️ ขอลิสต์ใหม่แล้วอ้างเลขข้อได้เลย", replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine("จับคู่รายการไม่ได้เลยครับ ⚠️ ขอลิสต์ใหม่แล้วอ้างเลขข้อได้เลย"), replyTo: msgId }]);
     }
     if (is("finance_pending") && !/^\s*[\d,]/.test(text) && !replyText) {
       const { PENDING_CATEGORY } = await import("@/lib/kiki-gmail");
@@ -1135,7 +1135,7 @@ export async function POST(req: Request) {
         });
         return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
       }
-      return reply([{ kind: "text", text: "ไม่มีรายการค้างระบุเลยครับ เคลียร์หมดแล้ว", replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine("ไม่มีรายการค้างระบุเลยครับ เคลียร์หมดแล้ว"), replyTo: msgId }]);
     }
 
     // ===== ตอบคำถาม "ค่าอะไร" ของรายการจากเมลธนาคาร (หมวด รอระบุ) =====
@@ -1154,7 +1154,7 @@ export async function POST(req: Request) {
         const todayList = await itemizedText("today").catch(() => "");
         const sends: Send[] = [];
         if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
-        sends.push({ kind: "text", text: `เข้าใจแล้วครับ ✅ ${done.msg}`, replyTo: msgId });
+        sends.push({ kind: "text", text: await vexLine(`เข้าใจแล้วครับ ✅ ${done.msg}`), replyTo: msgId });
         if (todayList) sends.push({ kind: "text", text: todayList });
         return reply(sends);
       }
@@ -1198,7 +1198,7 @@ export async function POST(req: Request) {
     const diaryM = text.match(/^\s*(?:จดไดอารี่|บันทึกวันนี้|ไดอารี่)\s*[:：]?\s*([\s\S]+)/);
     if (diaryM && diaryM[1].trim().length >= 5) {
       await saveJournal(diaryM[1].trim());
-      return reply([{ kind: "text", text: "จดลงไดอารี่แล้วครับ ✅ สิ้นเดือนผมสรุปภาพรวมให้", replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine("จดลงไดอารี่แล้วครับ ✅ สิ้นเดือนผมสรุปภาพรวมให้"), replyTo: msgId }]);
     }
 
     // ===== บันทึกรายรับรายจ่าย (สลิป/ข้อความ) =====
@@ -1268,7 +1268,7 @@ export async function POST(req: Request) {
       const all = await listOwnerFacts();
       const profile = all.filter((f) => f.category !== VEX_RULE_CATEGORY);
       if (!all.length) {
-        return reply([{ kind: "text", text: 'ยังไม่รู้อะไรเกี่ยวกับพี่เลยครับ เล่ามาได้ หรือบอกว่า "จำไว้ว่า ..." ผมเก็บให้ถาวร', replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine('ยังไม่รู้อะไรเกี่ยวกับพี่เลยครับ เล่ามาได้ หรือบอกว่า "จำไว้ว่า ..." ผมเก็บให้ถาวร'), replyTo: msgId }]);
       }
       // ขอ "ลิสต์" ตรง ๆ เท่านั้นถึงจะดัมป์เป็นรายการ
       if (/ลิสต์|ลิส|รายการ|ทีละข้อ|ทั้งหมดกี่|มีกี่ข้อ|ขอดูรายการ/.test(text)) {
@@ -1319,7 +1319,7 @@ export async function POST(req: Request) {
     if (is("calendar_edit")) {
       const r = await editCalendar([replyText, text].filter(Boolean).join("\n"), chatId);
       if (!r.applied.length) {
-        return reply([{ kind: "text", text: `ยังไม่ได้แตะนัดไหนนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงนัดไหน"}\nบอกชื่อนัดชัด ๆ อีกทีได้เลย`, replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ยังไม่ได้แตะนัดไหนนะครับ ⚠️ ${r.reason || "ไม่แน่ใจว่าหมายถึงนัดไหน"}\nบอกชื่อนัดชัด ๆ อีกทีได้เลย`), replyTo: msgId }]);
       }
       const t = await vexSay(
         `เพิ่งจัดการตารางนัดตามคำสั่งสำเร็จ ${r.applied.length} รายการ (sync Google Calendar ให้แล้วด้วย) — ยืนยันสั้น ๆ`,
@@ -1462,7 +1462,7 @@ export async function POST(req: Request) {
         const html = m[0];
         const name = `สรุป-${new Date().toISOString().slice(0, 10)}.html`;
         return reply([
-          { kind: "text", text: `สรุปเสร็จแล้วครับ 📤 เปิดไฟล์ด้านล่างได้เลย`, replyTo: msgId },
+          { kind: "text", text: await vexLine(`สรุปเสร็จแล้วครับ 📤 เปิดไฟล์ด้านล่างได้เลย`), replyTo: msgId },
           { kind: "document", dataBase64: Buffer.from(html, "utf8").toString("base64"), filename: name, caption: `🌐 ${text.slice(0, 80)}` },
         ]);
       }
@@ -1540,6 +1540,6 @@ export async function POST(req: Request) {
     return reply(outSends);
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
-    return ok([{ kind: "text", text: `สมองค้างแป๊บครับ ⚠️ (${detail.slice(0, 200)})\nลองพิมพ์ใหม่อีกทีนะครับ` }]);
+    return ok([{ kind: "text", text: `สมองค้างแป๊บครับ ⚠️ (${detail.slice(0, 200)})\nลองพิมพ์ใหม่อีกทีนะครับ` }]); // canned-ok: ตัวดักพังชั้นสุดท้าย — ตอน LLM ล่มต้องยังตอบได้
   }
 }

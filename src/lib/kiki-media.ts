@@ -82,9 +82,10 @@ export async function findMedia(query: string, limit = 4): Promise<MediaHit[]> {
   if (ordered.length < limit) {
     const words = query
       .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
       .split(/\s+/)
-      .filter((w) => w.length >= 2 && !/^(ขอ|รูป|ภาพ|วิดีโอ|คลิป|หน่อย|ที่|เคย|ส่ง|เก็บ|ไว้|ให้|ดู)$/.test(w));
+      // ไทยไม่มีช่องว่างคั่นคำ → เศษคำสั้น ๆ จับมั่วได้ง่าย (เคสจริง: "อย" ไปแมตช์คำอื่น) จึงต้องยาวพอ
+      .filter((w) => w.length >= 3 && !/^(ขอ|รูป|ภาพ|วิดีโอ|คลิป|หน่อย|ที่|เคย|ส่ง|เก็บ|ไว้|ให้|ดู)$/.test(w));
     if (words.length) {
       const more = await db.kikiMedia.findMany({ orderBy: { createdAt: "desc" }, take: 200 });
       const scored = more
@@ -95,7 +96,7 @@ export async function findMedia(query: string, limit = 4): Promise<MediaHit[]> {
           for (const w of words) if (hay.includes(w)) score += w.length >= 4 ? 3 : 1;
           return { r, score };
         })
-        .filter((x) => x.score > 0)
+        .filter((x) => x.score >= 3) // ต้องแมตช์คำที่มีน้ำหนักจริง ไม่ใช่เศษพยางค์
         .sort((a, b) => b.score - a.score);
       ordered.push(...scored.slice(0, limit - ordered.length).map((x) => x.r));
     }

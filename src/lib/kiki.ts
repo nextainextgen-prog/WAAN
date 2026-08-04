@@ -276,7 +276,7 @@ const STOP = new Set([
 function keywords(query: string): string[] {
   const raw = (query || "")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 2 && !STOP.has(w));
   return [...new Set(raw)].slice(0, 12);
@@ -336,7 +336,7 @@ export async function retrievePersonalNotes(query: string, opts: { maxFiles?: nu
       while (i !== -1 && n < 8) { n++; i = body.indexOf(kw, i + kw.length); }
       score += n;
     }
-    if (score > 0) scored.push({ file, score, content });
+    if (score >= 3) scored.push({ file, score, content }); // กันเศษพยางค์ไทยลากไฟล์ไม่เกี่ยวเข้ามา
   }
   if (!scored.length) return "";
   scored.sort((a, b) => b.score - a.score);
@@ -362,7 +362,7 @@ export async function retrievePersonalNotes(query: string, opts: { maxFiles?: nu
 function slugify(s: string): string {
   return (
     s
-      .replace(/[^\p{L}\p{N}\s-]/gu, "")
+      .replace(/[^\p{L}\p{N}\p{M}\s-]/gu, "")
       .trim()
       .replace(/\s+/g, "-")
       .slice(0, 60) || "โน้ต"
@@ -618,6 +618,58 @@ export function sanitizeVexText(text: string): { text: string; parseMode?: "HTML
     .replace(/__([^_\n]+)__/g, "<b>$1</b>")
     .replace(/^#{1,4}\s+(.+)$/gm, "<b>$1</b>");
   return { text: t, parseMode: "HTML" };
+}
+
+/**
+ * พูดใจความเดิมด้วย "คำของ Vex" (เจ้าของสั่ง 4 ส.ค. 2026: "อย่าฟิกคำไว้")
+ *
+ * ใช้ครอบข้อความระบบทุกจุดที่เป็นการ "คุยกับเจ้าของ" — ใจความ/ตัวเลข/คำสั่งคงเดิม 100%
+ * แต่ถ้อยคำไม่ซ้ำเดิมทุกครั้ง · เร็ว (Gemini flash ~1 วิ) · ล่ม = ส่งข้อความเดิมออกไป ไม่มีทางเงียบ
+ *
+ * ไม่ใช้กับ: ลิสต์ข้อมูล (ผ่าน kiki-format), ข้อความ error ตัวสุดท้ายของ try/catch, เนื้อหาที่เจ้าของจะก็อปไปใช้
+ */
+export async function vexLine(meaning: string, opts: { maxLines?: number } = {}): Promise<string> {
+  const src = (meaning || "").trim();
+  if (!src) return src;
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return src;
+  try {
+    const rules = await vexRulesContext().catch(() => "");
+    const system = `${KIKI_PERSONA}
+
+${rules}
+
+[งาน] เขียน "ใจความข้างล่าง" ใหม่ด้วยคำพูดของคุณเอง ส่งเข้าแชทให้เจ้าของได้เลย
+กติกาเหล็ก:
+- ข้อเท็จจริงต้องครบและตรงเป๊ะ ห้ามเพิ่ม ห้ามตัดทิ้ง ห้ามเดาต่อ
+- ตัวเลข ชื่อคน ชื่อไฟล์ ลิงก์ ชื่อคำสั่ง (เช่น npm run ...) ข้อความในเครื่องหมายคำพูด และแท็ก HTML = คัดลอกมาทั้งดุ้น ห้ามแก้แม้แต่ตัวเดียว
+- ห้ามขึ้นต้นซ้ำแบบเดิมทุกครั้ง ห้ามทักทาย ห้ามถามกลับถ้าใจความเดิมไม่ได้ถาม
+- สั้นกว่าหรือเท่าเดิม ไม่เกิน ${opts.maxLines ?? 4} บรรทัด
+- ห้ามใส่แท็ก <copy> (อันนั้นไว้ใช้เฉพาะข้อความที่เจ้าของจะก็อปไปส่งต่อคนอื่น)
+- ตอบเฉพาะข้อความที่จะส่ง ไม่ต้องอธิบายอะไรทั้งสิ้น`;
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: `ใจความที่ต้องสื่อ:\n"""${src}"""` }] }],
+        generationConfig: { temperature: 0.9, thinkingConfig: { thinkingBudget: 0 } },
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+    if (j.error?.message) return src;
+    const out = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+    // กันโมเดลเผลอครอบ <copy> (ตัวนั้นกลายเป็นกล่องก็อปในแชท ไม่เหมาะกับข้อความระบบ) และเผลอครอบเครื่องหมายคำพูดทั้งก้อน
+    const clean = out
+      .replace(/<\/?copy>/g, "")
+      .replace(/^["'“”`]+|["'“”`]+$/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return clean || src;
+  } catch {
+    return src; // พูดใหม่ไม่ได้ = ส่งของเดิม ดีกว่าเงียบ
+  }
 }
 
 // ตัวสกัดข้อมูลทุกตัว (เงิน/นัด/หนี้/เมล ฯลฯ) เรียกผ่านนี่: Claude CLI ก่อน → Gemini สำรองเมื่อช้า/ล่ม
