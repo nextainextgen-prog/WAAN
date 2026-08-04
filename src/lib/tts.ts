@@ -34,6 +34,19 @@ export const GEMINI_VOICES = [
 export const DEFAULT_VOICE = "Iapetus";
 export const DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts";
 
+/**
+ * ลำดับโมเดล TTS ที่จะไล่ลองเมื่อตัวก่อนหน้าตันโควตา
+ *
+ * โควตาของ Gemini เป็น "จำนวนคำขอต่อวันต่อโมเดล" (Tier 1 = 100/วัน) ไม่ใช่เรื่องยอดเงิน
+ * แต่ละโมเดลนับแยกกัน → สลับตัวได้เมื่อตัวหนึ่งตัน (เจอจริง 5 ส.ค.: 2.5 ตันแต่ 3.1 ยังว่าง)
+ * เสียงยังเป็นตัวเดิม (Iapetus) ทุกโมเดล เจ้าของจึงไม่ได้ยินความต่าง
+ */
+const TTS_MODEL_CHAIN = [
+  "gemini-2.5-flash-preview-tts",
+  "gemini-3.1-flash-tts-preview",
+  "gemini-2.5-pro-preview-tts",
+] as const;
+
 export interface SpeakOptions {
   voice?: string;      // ทับเสียงที่ตั้งไว้ (ใช้ตอนให้ลองฟังเสียงใหม่)
   maxChars?: number;   // ตัดข้อความก่อนอ่าน (ดีฟอลต์ 900 — เท่าของเดิม)
@@ -64,6 +77,52 @@ async function pcmToOgg(pcm: Buffer, sampleRate = 24000): Promise<Buffer> {
   return out;
 }
 
+// ===== แคชเสียงตามเนื้อความ =====
+//
+// โควตา 100 คำขอ/วัน/โมเดล ถือว่าน้อยมากสำหรับผู้ช่วยที่เปิดทั้งวัน
+// ประโยคที่พูดซ้ำ ("วันนี้ว่างครับ" · "เรียบร้อยครับ") ไม่ควรเปลืองโควตารอบสอง
+const CACHE_DIR = path.join(process.cwd(), ".run-logs", "tts-cache");
+
+async function cacheKey(text: string, voice: string, model: string): Promise<string> {
+  const { createHash } = await import("node:crypto");
+  return createHash("sha1").update(`${model}|${voice}|${text}`).digest("hex").slice(0, 20);
+}
+
+async function fromCache(k: string): Promise<Buffer | null> {
+  try { return await fs.readFile(path.join(CACHE_DIR, `${k}.ogg`)); } catch { return null; }
+}
+
+async function toCache(k: string, buf: Buffer): Promise<void> {
+  try {
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    await fs.writeFile(path.join(CACHE_DIR, `${k}.ogg`), buf);
+  } catch { /* แคชไม่ได้ก็ไม่เป็นไร */ }
+}
+
+/** นับคำขอที่ยิงไปวันนี้ต่อโมเดล — ไว้โชว์ในการ์ดและกันชนเพดานแบบไม่รู้ตัว */
+async function noteRequest(model: string): Promise<void> {
+  try {
+    const { setSetting } = await import("./kiki");
+    const today = new Date().toISOString().slice(0, 10);
+    const raw = (await getSetting("vex_tts_calls")) || "{}";
+    const m = JSON.parse(raw) as Record<string, Record<string, number>>;
+    if (!m[today]) Object.keys(m).forEach((d) => delete m[d]); // เก็บเฉพาะวันนี้
+    m[today] = m[today] || {};
+    m[today][model] = (m[today][model] || 0) + 1;
+    await setSetting("vex_tts_calls", JSON.stringify(m));
+  } catch { /* นับไม่ได้ก็ข้าม */ }
+}
+
+export async function ttsCallsToday(): Promise<Record<string, number>> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const m = JSON.parse((await getSetting("vex_tts_calls")) || "{}") as Record<string, Record<string, number>>;
+    return m[today] || {};
+  } catch {
+    return {};
+  }
+}
+
 /** ตัดอิโมจิ/มาร์กอัปก่อนอ่านออกเสียง — ไม่งั้น TTS อ่าน "เครื่องหมายเตือน" ออกมาด้วย */
 export function cleanForSpeech(text: string): string {
   return String(text || "")
@@ -78,7 +137,7 @@ export function cleanForSpeech(text: string): string {
 
 type Provider = (text: string, voice: string, model: string) => Promise<Buffer | null>;
 
-const geminiProvider: Provider = async (text, voice, model) => {
+const callGemini = async (text: string, voice: string, model: string): Promise<Buffer | null> => {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) return null;
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
@@ -109,7 +168,30 @@ const geminiProvider: Provider = async (text, voice, model) => {
     }
     return null; // รวมกรณี error ของโมเดล เช่น "Model tried to generate text" (เจอจริงตอนเทียบเสียง)
   }
+  await noteRequest(model);
   return pcmToOgg(Buffer.from(b64, "base64"), 24000);
+};
+
+/**
+ * ไล่ลองโมเดลตามลำดับจนกว่าจะได้เสียง + แคชผลไว้ใช้ซ้ำ
+ * เสียงเป็นตัวเดียวกันทุกโมเดล เจ้าของจึงไม่ได้ยินความต่างเวลาสลับ
+ */
+const geminiProvider: Provider = async (text, voice, model) => {
+  // เริ่มจากโมเดลที่ตั้งไว้ แล้วค่อยไล่ตัวที่เหลือในสาย
+  const chain = [model, ...TTS_MODEL_CHAIN.filter((m) => m !== model)];
+  for (const m of chain) {
+    const k = await cacheKey(text, voice, m);
+    const hit = await fromCache(k);
+    if (hit) return hit;
+  }
+  for (const m of chain) {
+    const buf = await callGemini(text, voice, m).catch(() => null);
+    if (buf) {
+      await toCache(await cacheKey(text, voice, m), buf);
+      return buf;
+    }
+  }
+  return null;
 };
 
 const PROVIDERS: Record<string, Provider> = {

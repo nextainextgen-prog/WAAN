@@ -152,12 +152,25 @@ async function jobLine(): Promise<string> {
 }
 
 async function quotaLine(): Promise<string> {
+  // โควตาเสียงพูดของ Gemini เป็น "คำขอต่อวันต่อโมเดล" (Tier 1 = 100/วัน) ไม่ใช่เรื่องยอดเงิน
+  // แต่ละโมเดลนับแยก ระบบจึงสลับตัวเองได้ — โชว์ให้เห็นว่าเหลือเท่าไหร่จะได้ไม่ตันแบบไม่รู้ตัว
+  let ttsLine = "เสียงพูด 🟢";
+  try {
+    const { ttsCallsToday } = await import("./tts");
+    const calls = await ttsCallsToday();
+    const used = Object.values(calls).reduce((a, b) => a + b, 0);
+    const models = Object.keys(calls).length || 1;
+    const cap = 100 * Math.max(models, 1);
+    const left = Math.max(0, cap - used);
+    const icon = left > 40 ? "🟢" : left > 10 ? "🟡" : "🔴";
+    ttsLine = `เสียงพูด ${icon} ใช้ไป ${used} คำขอ (เหลือ ~${left} วันนี้)`;
+  } catch { /* อ่านไม่ได้ก็โชว์แบบเดิม */ }
+
   const bad = await getSetting("vex_quota_bad");
   const list = bad ? (JSON.parse(bad) as Record<string, number>) : {};
   const fresh = Object.entries(list).filter(([, at]) => Date.now() - at < 6 * 60 * 60_000);
-  if (!fresh.length) return "สมอง 🟢 · ถอดเสียง 🟢 · เสียงพูด 🟢";
-  const names = fresh.map(([k]) => k).join(" · ");
-  return `🟡 ${names} หมดโควตา (ใช้ทางสำรองอยู่)`;
+  if (!fresh.length) return `สมอง 🟢 · ถอดเสียง 🟢 · ${ttsLine}`;
+  return `🟡 ${fresh.map(([k]) => k).join(" · ")} ตันโควตา (สลับตัวสำรองแล้ว) · ${ttsLine}`;
 }
 
 /** จดว่าบริการไหนโดนจำกัดโควตา — ให้การ์ดกับห้องเฝ้าระวังรู้ */

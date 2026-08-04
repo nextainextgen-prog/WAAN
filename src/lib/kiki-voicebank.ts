@@ -82,7 +82,7 @@ export async function buildBank(force = false): Promise<{ made: number; skipped:
       const f = bankFile(key, i);
       const id = `${key}-${i}`;
       const have = existsSync(f);
-      const isKanya = eng[id] === "kanya";
+      const isKanya = eng[id] !== "gemini"; // ไม่มีบันทึก = ไม่รู้ที่มา ถือว่าต้องอัปเกรด
       // มีแล้วและเป็นเสียงที่ต้องการ = ข้าม · เป็น Kanya = พยายามอัปเกรดเป็น Gemini
       if (!force && have && !isKanya) { skipped++; continue; }
       if (!force && have && isKanya && geminiDead) { skipped++; continue; }
@@ -107,7 +107,13 @@ export async function buildBank(force = false): Promise<{ made: number; skipped:
 /** ยังมีประโยคที่อัดด้วย Kanya ค้างอยู่ไหม (รอโควตา Gemini กลับมาแล้วอัปเกรด) */
 export async function bankNeedsUpgrade(): Promise<number> {
   const eng = await engineMap();
-  return Object.values(eng).filter((v) => v === "kanya").length;
+  let n = 0;
+  for (const [key, lines] of Object.entries(BANK)) {
+    for (let i = 0; i < lines.length; i++) {
+      if (existsSync(bankFile(key, i)) && eng[`${key}-${i}`] !== "gemini") n++;
+    }
+  }
+  return n;
 }
 
 /** หยิบเสียงจากคลัง — คืน null ถ้ายังไม่ได้อัด (ผู้เรียกตกไป Kanya) */
