@@ -88,6 +88,121 @@ export async function getKikiOwnerId(): Promise<string | null> {
   return getSetting(KIKI_OWNER_KEY);
 }
 
+// ===== ตัวตนเจ้าของหนึ่งเดียว ผูกได้หลายบัญชี (เฟส 0.5 — 4 ส.ค. 2026) =====
+//
+// เดิม: owner = Telegram user id ตัวเดียว + "คนแรกที่ทัก = เจ้าของถาวร"
+// พอมีช่องทางที่สอง (Discord) id มาคนละระบบ → Vex จะไม่รู้จักเจ้าของ และเสี่ยงถูกตั้ง owner ทับ
+// ใหม่: เก็บเป็นรายการ ["telegram:<id>", "discord:<id>"] ทั้งหมดชี้ไปเจ้าของคนเดียวกัน
+// ทุกที่ที่เช็คสิทธิ์ต้องเรียก isOwnerAccount() ห้ามเทียบ id ดิบเอง
+
+export const KIKI_OWNER_ACCOUNTS_KEY = "kiki_owner_accounts"; // JSON array ของ "<platform>:<id>"
+export const KIKI_LINK_CODE_KEY = "kiki_link_code"; // รหัสผูกบัญชีที่ยังไม่หมดอายุ
+
+export type OwnerPlatform = "telegram" | "discord";
+
+const accountKey = (platform: string, id: string) => `${platform.trim().toLowerCase()}:${String(id).trim()}`;
+
+/**
+ * รายการบัญชีของเจ้าของทั้งหมด
+ * ครั้งแรกที่ถูกเรียก: ถ้ายังว่างแต่มี kiki_owner_id เดิมอยู่ → seed เป็น ["telegram:<id เดิม>"]
+ * (ย้ายข้อมูลอัตโนมัติ ไม่ต้องแตะ DB ด้วยมือ และ Telegram เดิมไม่มีทางหลุด owner)
+ */
+export async function ownerAccounts(): Promise<string[]> {
+  let list: string[] = [];
+  try {
+    const raw = await getSetting(KIKI_OWNER_ACCOUNTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) list = parsed.filter((x): x is string => typeof x === "string" && x.includes(":"));
+  } catch {
+    list = []; // พังก็ถือว่าว่าง แล้วให้ seed ข้างล่างซ่อมให้
+  }
+  if (list.length) return list;
+  const legacy = await getKikiOwnerId();
+  if (legacy) {
+    list = [accountKey("telegram", legacy)];
+    await setSetting(KIKI_OWNER_ACCOUNTS_KEY, JSON.stringify(list));
+  }
+  return list;
+}
+
+/** บัญชีนี้คือเจ้าของหรือเปล่า — ตัวเช็คสิทธิ์ตัวเดียวของทั้งระบบ */
+export async function isOwnerAccount(platform: string, id: string): Promise<boolean> {
+  if (!id) return false;
+  return (await ownerAccounts()).includes(accountKey(platform, id));
+}
+
+/** ผูกบัญชีใหม่เข้ากับเจ้าของ — เรียกได้เฉพาะหลังผ่านขั้นยืนยันแล้วเท่านั้น */
+export async function linkOwnerAccount(platform: string, id: string): Promise<boolean> {
+  if (!id) return false;
+  const key = accountKey(platform, id);
+  const list = await ownerAccounts();
+  if (list.includes(key)) return false;
+  list.push(key);
+  await setSetting(KIKI_OWNER_ACCOUNTS_KEY, JSON.stringify(list));
+  // ช่องทางแรกสุดของระบบยังเป็น Telegram — คงคีย์เดิมไว้ให้โค้ดเก่าที่เรียก getKikiOwnerId() ทำงานต่อได้
+  if (platform === "telegram" && !(await getKikiOwnerId())) await setSetting(KIKI_OWNER_KEY, id);
+  return true;
+}
+
+/** ถอนบัญชีออก (กันล็อกตัวเอง: ห้ามถอนตัวสุดท้าย) */
+export async function unlinkOwnerAccount(platform: string, id: string): Promise<boolean> {
+  const key = accountKey(platform, id);
+  const list = await ownerAccounts();
+  if (list.length <= 1 || !list.includes(key)) return false;
+  await setSetting(KIKI_OWNER_ACCOUNTS_KEY, JSON.stringify(list.filter((x) => x !== key)));
+  return true;
+}
+
+// ===== รหัสผูกบัญชีข้ามช่องทาง =====
+// เจ้าของสั่งจากช่องทางที่เป็น owner อยู่แล้ว → ได้รหัส → พิมพ์/พูดรหัสในช่องทางใหม่ → ผูกสำเร็จ
+// ก่อนผูกสำเร็จ ช่องทางใหม่ตอบได้แค่ผลของการกรอกรหัสเท่านั้น ห้ามรั่วข้อมูลอื่นออกไป
+
+const LINK_CODE_TTL_MS = 10 * 60_000;
+
+export interface LinkCode {
+  code: string;
+  platform: string; // ช่องทางที่จะผูก
+  expiresAt: number;
+}
+
+/** ออกรหัส 4 หลักให้ผูกช่องทางใหม่ (อ่านออกเสียงได้ ไม่มีเลขซ้ำติดกัน) */
+export async function issueLinkCode(platform: string): Promise<LinkCode> {
+  let code = "";
+  while (code.length < 4) {
+    const d = String(Math.floor(Math.random() * 10));
+    if (d !== code.slice(-1)) code += d;
+  }
+  const payload: LinkCode = { code, platform: platform.trim().toLowerCase(), expiresAt: Date.now() + LINK_CODE_TTL_MS };
+  await setSetting(KIKI_LINK_CODE_KEY, JSON.stringify(payload));
+  return payload;
+}
+
+export async function peekLinkCode(): Promise<LinkCode | null> {
+  try {
+    const raw = await getSetting(KIKI_LINK_CODE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as LinkCode;
+    if (!p?.code || Date.now() > p.expiresAt) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ลองใช้รหัสผูกบัญชี — เรียกจากช่องทางที่ "ยังไม่ใช่เจ้าของ"
+ * ok=true เท่านั้นที่ผูกสำเร็จ · รหัสใช้ได้ครั้งเดียวแล้วล้างทิ้งเสมอ
+ */
+export async function redeemLinkCode(platform: string, id: string, typed: string): Promise<{ ok: boolean; reason?: string }> {
+  const pending = await peekLinkCode();
+  if (!pending) return { ok: false, reason: "ไม่มีรหัสที่ยังใช้ได้" };
+  if (pending.platform !== platform.trim().toLowerCase()) return { ok: false, reason: "รหัสนี้ออกไว้ให้ช่องทางอื่น" };
+  if (pending.code !== typed.trim()) return { ok: false, reason: "รหัสไม่ตรง" };
+  await setSetting(KIKI_LINK_CODE_KEY, "");
+  await linkOwnerAccount(platform, id);
+  return { ok: true };
+}
+
 export async function getKikiChatIds(): Promise<string[]> {
   try {
     return JSON.parse((await getSetting(KIKI_CHATS_KEY)) || "[]");
@@ -106,10 +221,15 @@ export async function addKikiChatId(chatId: string): Promise<void> {
 
 // ===== ประวัติแชทของ kiki (แยกจากวาน) =====
 
-export async function saveKikiChat(role: "user" | "assistant", content: string, scope = "owner"): Promise<string | null> {
+export async function saveKikiChat(
+  role: "user" | "assistant",
+  content: string,
+  scope = "owner",
+  channel = "telegram",
+): Promise<string | null> {
   const c = String(content || "").trim();
   if (!c) return null;
-  const row = await db.kikiChat.create({ data: { role, content: c.slice(0, 6000), scope } });
+  const row = await db.kikiChat.create({ data: { role, content: c.slice(0, 6000), scope, channel } });
   // index เข้าคลังความจำ (ค้นย้อนหลังได้ทุกข้อความ) — ทำเบื้องหลัง ไม่ถ่วงการตอบ
   if (scope === "owner") {
     void import("./kiki-memory")
@@ -117,6 +237,21 @@ export async function saveKikiChat(role: "user" | "assistant", content: string, 
       .catch(() => {});
   }
   return row.id;
+}
+
+// ป้ายบอก "สื่อ" ของข้อความในประวัติ — สายสนทนาเป็นสายเดียวรวมทุกช่องทาง
+// telegram = ค่าปกติ ไม่ต้องติดป้าย (ประวัติเก่า 530 ข้อความหน้าตาเหมือนเดิมเป๊ะ ไม่กวนบริบทของเดิม)
+function channelTag(channel?: string | null): string {
+  switch (channel) {
+    case "discord-voice":
+      return " (พูดในสาย Discord)";
+    case "discord":
+      return " (พิมพ์ใน Discord)";
+    case "cron":
+      return " (ระบบส่งเอง)";
+    default:
+      return "";
+  }
 }
 
 // เฉพาะ scope owner — แชทกลุ่มเทรนเนอร์ของอั๋น (scope aun) ห้ามรั่วเข้าบริบทเจ้าของ และกลับกัน
@@ -128,7 +263,7 @@ export async function kikiConversation(limit = 40): Promise<string> {
   let used = 0;
   for (const r of rows) {
     // ไล่จากใหม่→เก่า ตัดของเก่าทิ้งเมื่อเต็มเพดาน (ของใหม่สำคัญกว่า)
-    const line = `${r.role === "assistant" ? "Vex" : "เจ้าของ"}: ${r.content.replace(/\s+/g, " ").slice(0, 1200)}`;
+    const line = `${r.role === "assistant" ? "Vex" : "เจ้าของ"}${channelTag(r.channel)}: ${r.content.replace(/\s+/g, " ").slice(0, 1200)}`;
     if (used + line.length > 20_000) break;
     used += line.length;
     picked.push(line);

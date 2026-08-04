@@ -19,9 +19,13 @@ import {
   askKiki,
   askExtractor,
   saveKikiChat,
-  getKikiOwnerId,
   setSetting,
-  KIKI_OWNER_KEY,
+  ownerAccounts,
+  isOwnerAccount,
+  linkOwnerAccount,
+  issueLinkCode,
+  redeemLinkCode,
+  peekLinkCode,
   addKikiChatId,
   rememberOwnerFact,
   forgetOwnerFacts,
@@ -149,6 +153,10 @@ export async function POST(req: Request) {
   const chatId = String(body.chatId || "");
   let text = String(body.text || "").trim();
   const fromId = String(body.fromId || "");
+  // ช่องทางที่ข้อความนี้เข้ามา — ท่อเก่า (kiki-bot.mjs) ไม่ส่งมา = telegram เหมือนเดิมทุกอย่าง
+  // platform = ระบบบัญชี (ใช้เช็คสิทธิ์) · channel = สื่อ (ใช้ติดป้ายในประวัติ)
+  const platform = String(body.platform || "telegram").toLowerCase();
+  const channel = String(body.channel || platform).toLowerCase();
   const fromName = String(body.fromName || "").trim();
   const replyText = String(body.replyText || "").trim();
   const imageFiles = (body.imageFiles as string[] | undefined) || [];
@@ -210,12 +218,13 @@ export async function POST(req: Request) {
   }
 
   // ===== กลุ่มเทรนเนอร์ของอั๋น — โหมดแยก มาก่อน owner gate (อั๋นไม่ใช่ owner แต่ต้องคุยได้) =====
-  {
+  // ล็อกไว้เฉพาะ Telegram: กลุ่มนี้เป็นกลุ่ม Telegram เท่านั้น ถ้าไม่กันไว้ ช่องทางอื่นที่บังเอิญมี
+  // chatId ตรงกัน จะหลุดเข้าโหมดอั๋น = ข้อมูล scope aun รั่ว (privacy สองทางที่ตั้งใจกันไว้แต่แรก)
+  if (platform === "telegram") {
     const { getAunChatId, handleTrainerChat, AUN_USER_KEY } = await import("@/lib/kiki-aun");
     const aunChat = await getAunChatId();
     if (aunChat && chatId === aunChat && (text || audioFiles.length || imageFiles.length)) {
-      const ownId = await getKikiOwnerId();
-      const isOwner = fromId === ownId;
+      const isOwner = await isOwnerAccount(platform, fromId);
       // จำ Telegram id ของอั๋นจากคนแรกที่ไม่ใช่เจ้าของ (ไว้กันคนนอกถ้าโดนดึงเข้ากลุ่ม)
       const aunId = await getSetting(AUN_USER_KEY);
       if (!isOwner && !aunId && fromId) await setSetting(AUN_USER_KEY, fromId);
@@ -240,15 +249,50 @@ export async function POST(req: Request) {
     }
   }
 
-  // ===== ผูกเจ้าของ: คนแรกที่คุยกับ Vex = เจ้าของถาวร · คนอื่นเงียบสนิท =====
-  let ownerId = await getKikiOwnerId();
+  // ===== ประตูเจ้าของ (เฟส 0.5 — 4 ส.ค. 2026) =====
+  // เดิม: "คนแรกที่ทัก = เจ้าของถาวร" ซึ่งพังทันทีที่มีช่องทางที่สอง (id คนละระบบ = ถูกตั้ง owner ทับ)
+  // ใหม่: เช็คผ่านตัวตนที่ผูกได้หลายบัญชี · ช่องทางใหม่ไม่มีทางกลายเป็นเจ้าของเองโดยอัตโนมัติ
+  const accounts = await ownerAccounts();
+  let isOwner = await isOwnerAccount(platform, fromId);
   let justBound = false;
-  if (!ownerId && fromId) {
-    await setSetting(KIKI_OWNER_KEY, fromId);
-    ownerId = fromId;
+
+  // ระบบยังไม่เคยมีเจ้าของเลย (เครื่องใหม่/DB ใหม่) → ผูกให้ได้เฉพาะทาง Telegram ซึ่งเป็นช่องทางตั้งต้น
+  // ป้องกันไม่ให้ Discord (หรือช่องทางไหนก็ตามที่เพิ่มทีหลัง) ตั้งตัวเองเป็นเจ้าของได้
+  if (!accounts.length && fromId && platform === "telegram") {
+    await linkOwnerAccount(platform, fromId);
+    isOwner = true;
     justBound = true;
   }
-  if (ownerId && fromId && fromId !== ownerId) return ok([]);
+
+  if (!isOwner) {
+    // ช่องทางที่ยังไม่ผูก: ตอบได้อย่างเดียวคือผลของการกรอกรหัสผูกบัญชี ห้ามรั่วอย่างอื่นออกไปเด็ดขาด
+    const pending = await peekLinkCode();
+    if (pending && pending.platform === platform && /^\s*\d{4}\s*$/.test(text)) {
+      const r = await redeemLinkCode(platform, fromId, text);
+      if (r.ok) {
+        await addKikiChatId(chatId);
+        await saveKikiChat("assistant", `[ผูกบัญชี ${platform} สำเร็จ]`, "owner", channel);
+        return ok([{ kind: "text", text: await vexLine("ผูกบัญชีเรียบร้อยแล้วครับโด้ ต่อจากนี้คุยกับผมทางนี้ได้เหมือนเดิมทุกอย่าง") }]);
+      }
+      return ok([{ kind: "text", text: "รหัสไม่ถูกต้องครับ" }]); // canned-ok: คนนอกอาจกำลังเดารหัส ห้ามให้ AI แต่งจนหลุดบริบทหรือใบ้ต่อ
+    }
+    return ok([]); // ไม่ใช่เจ้าของ = เงียบสนิท เหมือนเดิม
+  }
+
+  // ===== เจ้าของสั่งผูกช่องทางใหม่ (ออกรหัสจากช่องทางที่เป็นเจ้าของอยู่แล้วเท่านั้น) =====
+  const linkM = text.match(/^\s*(?:ผูก|เชื่อม|เพิ่ม)\s*(discord|ดิสคอร์ด|ดิส)\b/i);
+  if (linkM) {
+    const c = await issueLinkCode("discord");
+    return ok([
+      {
+        kind: "text",
+        // canned-ok: รหัสกับขั้นตอนต้องตรงตัวเป๊ะ ห้ามให้ AI เรียบเรียงจนเลขหรือลำดับเพี้ยน
+        text: `รหัสผูก Discord: ${c.code}\n\nพิมพ์เลข 4 หลักนี้ในห้องที่ Vex อยู่ภายใน 10 นาที แล้วบัญชีนั้นจะกลายเป็นบัญชีของโด้เอง`,
+        replyTo: msgId,
+      },
+    ]);
+  }
+
   await addKikiChatId(chatId);
   // จำชื่อกลุ่ม (ไว้ resolve "ไปแจ้งในกลุ่ม X" ว่าหมายถึงแชทไหน)
   const chatTitleIn = String(body.chatTitle || "").trim();
@@ -262,7 +306,7 @@ export async function POST(req: Request) {
     } catch { /* map พังก็สร้างใหม่รอบหน้า */ }
   }
 
-  await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`);
+  await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`, "owner", channel);
 
   // ซอยข้อความยาวเป็นหลายบับเบิล (เจ้าของสั่ง 31 ก.ค.): ย่อหน้าละข้อความ · <copy>...</copy> = กล่องแตะก็อปก้อนเดียว
   const explodeTextSend = (s: Send): Send[] => {
@@ -306,7 +350,7 @@ export async function POST(req: Request) {
   let triggerNote = "";
 
   const reply = async (sendsIn: Send[]) => {
-    for (const s of sendsIn) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text.replace(/<\/?copy>/g, ""));
+    for (const s of sendsIn) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text.replace(/<\/?copy>/g, ""), "owner", channel);
     const fullText = sendsIn.filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
     const voiceAlways = (await getSetting("kiki_voice_always")) === "1";
     let voiceSend: Send | null = null;

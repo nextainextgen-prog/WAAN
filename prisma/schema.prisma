@@ -428,6 +428,9 @@ model KikiChat {
   role      String                        // user | assistant
   content   String
   scope     String   @default("owner")    // owner = แชทเจ้าของ · aun = กลุ่มเทรนเนอร์อั๋น (ห้ามปนกัน — privacy สองทาง)
+  // ช่องทางที่ข้อความนี้เกิดขึ้น — สายสนทนายังเป็นสายเดียวรวมกัน (ทักช่องไหนก็ต่อเรื่องเดิมได้)
+  // ป้ายนี้มีไว้ให้ Vex รู้ "บริบทของสื่อ" ต่างหาก: พูดในสาย ≠ พิมพ์มา (เฟส 0.5 — 4 ส.ค. 2026)
+  channel   String   @default("telegram")  // telegram | discord | discord-voice | cron
 
   @@index([scope, createdAt])
 }
