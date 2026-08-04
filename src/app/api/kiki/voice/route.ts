@@ -92,6 +92,13 @@ export async function POST(req: Request) {
   const { woke, rest } = matchWake(heard);
 
   let command = heard;
+  // เรียกชื่อพร้อมคำสั่งในประโยคเดียว = เจตนาชัด 100% ไม่ต้องกรองอะไรอีก
+  // นอกนั้นต้องผ่านตัวกรอง "พูดกับเราหรือเปล่า" ทุกกรณี รวมทั้งตอนอยู่ในหน้าต่างคุย
+  //
+  // ข้อมูลจริงจากวันแรก: เสียงทีวี/เสียงสะท้อนที่บังเอิญมีคำว่า "Vex" ปลุกสำเร็จ
+  // แล้วหน้าต่าง 30 วิทำให้เสียงรบกวนถัดมาถูกนับเป็นคำสั่งทั้งหมด ("ติ๊กต็อก บูม บูม")
+  // → หน้าต่างคุยแปลว่า "ไม่ต้องเรียกชื่อซ้ำ" ไม่ได้แปลว่า "รับทุกเสียงที่ได้ยิน"
+  let trusted = woke && Boolean(rest);
   if (mode === "wake") {
     if (woke) {
       // เรียกชื่อแล้วไม่มีคำสั่งตามมา = เปิดหน้าต่างรอเงียบ ๆ ห้ามถามว่า "มีอะไรครับ"
@@ -99,20 +106,18 @@ export async function POST(req: Request) {
       if (!rest) return NextResponse.json({ action: { do: "cue", cue: "wake" }, heard });
       command = rest;
     } else if (inWindow) {
-      command = heard; // อยู่ในหน้าต่างคุย ไม่ต้องเรียกซ้ำ
+      command = heard; // อยู่ในหน้าต่างคุย ไม่ต้องเรียกซ้ำ — แต่ยังต้องผ่านตัวกรองข้างล่าง
     } else {
       return NextResponse.json({ action: { do: "ignore", why: "ยังไม่ได้เรียกชื่อ" }, heard });
     }
   } else {
-    // โหมดอิสระ — ยังต้องกรองว่าพูดกับเราไหม
-    if (!inWindow && !woke) {
-      const convo = await kikiConversation(6).catch(() => "");
-      if (!(await addressedToVex(heard, convo))) {
-        return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard });
-      }
-    }
     if (woke && rest) command = rest;
-    // ทางออกอัตโนมัติของโหมดอิสระ
+    // ทางออกอัตโนมัติของโหมดอิสระ — ไม่มีใครพูดด้วยนาน หรือเปิดค้างเกินครึ่งชั่วโมง
+    const idle = now - Number((await getSetting(LAST_HEARD_KEY)) || now);
+    if (idle > OPEN_IDLE_EXIT_MS) {
+      await setMode("wake");
+      return NextResponse.json({ action: { do: "ignore", why: "อิสระเงียบนานเกิน กลับโหมดเรียกชื่อ" }, heard });
+    }
     const age = await openModeAge();
     if (age > OPEN_ASK_AGAIN_MS) {
       await setMode("wake");
@@ -120,6 +125,17 @@ export async function POST(req: Request) {
       const say = await vexLine("โหมดอิสระครบครึ่งชั่วโมงแล้วครับ ผมกลับไปโหมดเรียกชื่อก่อน อยากให้เปิดอีกบอกได้");
       return NextResponse.json({ action: { do: "say", text: say, heard }, heard });
     }
+  }
+
+  // ===== ด่านสุดท้าย: ประโยคนี้พูดกับเราจริงไหม =====
+  // ใช้กับทุกโหมดและทุกกรณี ยกเว้นเรียกชื่อพร้อมคำสั่งมาในประโยคเดียว
+  // "ไม่แน่ใจ = เงียบ" — เจ้าของเปิดไมค์ค้างทั้งวัน เสียงทีวี/พึมพำ/คุยโทรศัพท์เข้ามาตลอด
+  if (!trusted) {
+    const convo = await kikiConversation(6).catch(() => "");
+    if (!(await addressedToVex(command, convo))) {
+      return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard });
+    }
+    trusted = true;
   }
 
   // ยืดหน้าต่างคุยทุกครั้งที่คุยจริง — เรียกครั้งเดียวคุยยาวได้

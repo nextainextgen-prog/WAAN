@@ -375,7 +375,7 @@ async function handleUtterance(oggPath) {
     });
     if (!res.ok) return;
     const { action, heard } = await res.json();
-    if (heard) console.log(`  ได้ยิน: "${heard}"${action.do === "ignore" ? ` → ข้าม (${action.why})` : ""}`);
+    if (heard) console.log(`  ได้ยิน: "${heard}" → ${action.do === "ignore" ? `ข้าม (${action.why})` : action.do}`);
     switch (action.do) {
       case "stop":
         player.stop(true);
@@ -398,7 +398,14 @@ async function handleUtterance(oggPath) {
         break;
       case "say": {
         const ogg = await tts(action.text);
-        if (ogg) await speak(ogg);
+        if (ogg) { await speak(ogg); break; }
+        // แปลงเป็นเสียงไม่ได้ (โควตา TTS หมด / เจ้าให้บริการล่ม) — ห้ามให้คำตอบหายเงียบ
+        // เจ้าของพูดมาแล้วไม่ได้อะไรกลับเลยคือแย่ที่สุด ตกไปลงห้องแชทแทน
+        console.warn("  แปลงเป็นเสียงไม่ได้ → ตกไปลงห้องแชทแทน");
+        try {
+          const ch = await client.channels.fetch(TEXT_CH);
+          await ch.send(`🔇 (พูดไม่ได้ตอนนี้ — โควตาเสียงหมดหรือบริการล่ม)\n${htmlToDiscord(action.text).slice(0, 1800)}`);
+        } catch { /* ห้องแชทก็ส่งไม่ได้ = จนปัญญาจริง */ }
         break;
       }
     }
@@ -490,7 +497,17 @@ async function pollOutbox() {
         if (it.target === "discord-voice") {
           if (!ownerInVoice) continue; // ออกจากห้องระหว่างทาง = ปล่อยค้างไว้ในกล่อง รอรอบหน้า
           const ogg = await tts(it.speak);
-          if (!ogg) { done.push({ id: it.id, error: "แปลงเป็นเสียงไม่ได้" }); continue; }
+          if (!ogg) {
+            // โควตาเสียงหมด/บริการล่ม — ลงห้องแชทแทนแล้วปิดงาน อย่าให้ค้างในกล่องจนถูกทิ้ง
+            try {
+              const ch = await client.channels.fetch(TEXT_CH);
+              await ch.send(`🔇 ${it.topic ? `**${it.topic}** — ` : ""}${htmlToDiscord(it.speak).slice(0, 1800)}`);
+              done.push({ id: it.id });
+            } catch {
+              done.push({ id: it.id, error: "แปลงเป็นเสียงไม่ได้ และส่งเข้าห้องแชทก็ไม่ได้" });
+            }
+            continue;
+          }
           const spoke = await speak(ogg);
           if (spoke) done.push({ id: it.id });
         } else {
