@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { transcribeAudio, kikiConversation, getSetting, setSetting, saveKikiChat, askKikiVoice } from "@/lib/kiki";
+import { setActivity } from "@/lib/kiki-monitor";
 import {
   getMode, setMode, MODE_LABEL, matchWake, isStopCommand, isUndoCommand, matchModeCommand,
   isCloseCommand, quickAddressed, addressedToVex, looksLikeEcho, maybeWakeShort,
@@ -40,6 +41,7 @@ export async function POST(req: Request) {
   const mark = (k: string, from: number) => { timing[k] = Date.now() - from; };
 
   // ===== ถอดเสียง =====
+  void setActivity("🎙️", "ได้ยินแล้ว กำลังถอดเสียง");
   const tStt = Date.now();
   const audioBytes = await fs.stat(path).then((st) => st.size).catch(() => 0);
   let heard = "";
@@ -130,11 +132,13 @@ export async function POST(req: Request) {
   // ===== งานที่ต้องออกไปหาข้อมูล = ตอบรับก่อน แล้วไปทำเบื้องหลัง =====
   // เจ้าของสั่ง: "ถ้าผมบอกแล้วก็พูดทันทีว่า รับทราบครับ เดี๋ยวไปหาข้อมูลให้"
   if (NEEDS_LOOKUP.test(command) && command.length > 8) {
+    void setActivity("🔍", `กำลังหา: ${command.slice(0, 50)}`);
     void runInBackground(command);
     return NextResponse.json({ action: { do: "cue", bank: "onit" }, heard, timing, background: true });
   }
 
   // ===== สายด่วน: ตอบเลย =====
+  void setActivity("🧠", `กำลังคิด: ${command.slice(0, 50)}`);
   const tBrain = Date.now();
   let spoken = "";
   try {
@@ -148,6 +152,7 @@ export async function POST(req: Request) {
   await setSetting(LAST_SPOKEN_KEY, spoken);
   await saveKikiChat("assistant", spoken, "owner", "discord-voice");
   timing.รวม = Date.now() - t0;
+  void setActivity("🗣️", "กำลังพูดตอบ");
   return NextResponse.json({ action: { do: "say", text: spoken }, heard, timing });
 }
 
@@ -185,6 +190,7 @@ async function runInBackground(command: string) {
       return;
     }
     // เนื้อเต็มลงห้องแชท · เสียงพูดแค่แก่น
+    void setActivity("✅", `หาเสร็จแล้ว: ${topic}`);
     await queueOut({ target: "discord-text", topic, text: full, priority: 2 });
     const { askKikiVoice: brief } = await import("@/lib/kiki");
     const say = await brief(

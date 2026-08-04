@@ -98,7 +98,17 @@ const geminiProvider: Provider = async (text, voice, model) => {
     error?: { message?: string };
   };
   const b64 = j.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData?.data;
-  if (!b64) return null; // รวมกรณี error ของโมเดล เช่น "Model tried to generate text" (เจอจริงตอนเทียบเสียง)
+  if (!b64) {
+    // โดนจำกัดโควตา = จดไว้ให้การ์ดมอนิเตอร์กับห้องเฝ้าระวังรู้ (เจอจริง 4 ส.ค. แล้วเงียบหายไปเฉย ๆ)
+    if (res.status === 429 || /quota|rate/i.test(j.error?.message || "")) {
+      void import("./kiki-monitor").then(async (m) => {
+        if (await m.noteQuotaHit("เสียงพูด")) {
+          await m.raiseAlert("quota-tts", "warn", "โควตาเสียงพูด Gemini หมด — สลับไปใช้ Kanya ในเครื่องอัตโนมัติ (รีเซ็ตพรุ่งนี้)");
+        }
+      }).catch(() => {});
+    }
+    return null; // รวมกรณี error ของโมเดล เช่น "Model tried to generate text" (เจอจริงตอนเทียบเสียง)
+  }
   return pcmToOgg(Buffer.from(b64, "base64"), 24000);
 };
 

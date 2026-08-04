@@ -40,6 +40,14 @@ function ownerChatId() {
 }
 
 async function tg(text) {
+  // ยิงเข้าห้องเฝ้าระวังของ Vex ควบคู่ไปด้วย (เจ้าของสั่ง 5 ส.ค. 2026)
+  // ต่อจากระบบเฝ้าระวังเดิม ไม่สร้างตัวที่สอง — ของเดิมมีตัวนับกัน false alarm อยู่แล้ว
+  fetch((process.env.APP_URL || "http://localhost:3000") + "/api/kiki/watch-alert", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-internal-token": process.env.INTERNAL_API_TOKEN || "" },
+    body: JSON.stringify({ key: "watchdog", sev: "bad", text: String(text || "").replace(/<[^>]+>/g, "").slice(0, 400) }),
+  }).catch(() => {});
+
   const chat = ownerChatId();
   if (!TOKEN || !chat) return false;
   try {

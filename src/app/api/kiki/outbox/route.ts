@@ -30,13 +30,14 @@ export async function POST(req: Request) {
   // 3) หยิบงานรอบใหม่ — เสียงเอาทีละชิ้น (พูดทับกันไม่ได้) · ข้อความเอาได้หลายชิ้น
   const voice = body.inVoice ? await pendingOut("discord-voice", 1) : [];
   const text = await pendingOut("discord-text", 5);
+  const watch = await pendingOut("discord-watch", 5); // ห้องเฝ้าระวัง
 
   const items = [];
   for (const r of voice) {
     // ย่อเป็นภาษาพูดตรงนี้ ใช้สมองฝั่งเว็บ — ท่อไม่ต้องรู้จักโมเดลอะไรเลย
     items.push({ id: r.id, target: r.target, topic: r.topic, speak: await toSpeech(r.topic || "ที่ฝากไว้", r.text || "") });
   }
-  for (const r of text) {
+  for (const r of [...text, ...watch]) {
     items.push({ id: r.id, target: r.target, topic: r.topic, text: r.text, payload: r.payload ? JSON.parse(r.payload) : null });
   }
 

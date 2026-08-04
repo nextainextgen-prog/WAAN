@@ -44,7 +44,7 @@ export async function announceEnabled(): Promise<boolean> {
 }
 
 export interface QueueItem {
-  target: "discord-text" | "discord-voice";
+  target: "discord-text" | "discord-voice" | "discord-watch";
   topic?: string;
   text?: string;
   payload?: unknown; // Send ตัวเต็ม (รูป/ไฟล์/ปุ่ม)

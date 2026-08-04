@@ -297,6 +297,32 @@ export async function POST(req: Request) {
     if (started) console.log(`[vex] ปล่อยงานจากคิว ${started} งาน`);
   } catch { /* รอบหน้าลองใหม่ */ }
 
+  // ===== G1.95) คิดดัง ๆ — งานที่ทำนานเกินไปต้องส่งเสียงบอก ไม่ใช่เงียบหายสามนาที =====
+  try {
+    const { ownerInVoice, announceEnabled, queueOut } = await import("@/lib/kiki-outbox");
+    if ((await announceEnabled()) && (await ownerInVoice())) {
+      const long = await db.kikiHermesJob.findMany({
+        where: { status: "running", canceled: false, startedAt: { lt: new Date(Date.now() - 60_000) } },
+        take: 2,
+      });
+      for (const j of long) {
+        const mins = Math.round((Date.now() - (j.startedAt || j.createdAt).getTime()) / 60_000);
+        const key = `vex_loud_${j.id}_${mins}`;
+        if (await getSetting(key)) continue;
+        if (mins !== 1 && mins !== 3 && mins !== 6) continue; // พูดที่ 1, 3, 6 นาที ไม่รัวเกินไป
+        await setSetting(key, "1");
+        const task = j.task.replace(/^\[พัฒนา\]\s*/, "").slice(0, 60);
+        await queueOut({
+          target: "discord-voice",
+          topic: task,
+          // canned-ok: ต้องบอกตรง ๆ ว่ายังไม่เสร็จ ห้ามให้ถ้อยคำกลายเป็นเคลมว่าเสร็จแล้ว
+          text: `เรื่อง${task}ที่สั่งไว้นะครับ ยังทำอยู่ ผ่านไป ${mins} นาทีแล้ว`,
+          priority: 1,
+        });
+      }
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
   // ===== G2) งานที่ฝาก Hermes เสร็จแล้ว → ส่งผลเข้าแชท =====
   try {
     for (const d of await collectHermesDeliveries()) {

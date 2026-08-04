@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, pipeline } from "node:stream";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import prism from "prism-media";
 import {
   Client, GatewayIntentBits, Partials, Events,
@@ -580,6 +580,10 @@ async function pollOutbox() {
           }
           const spoke = await speak(ogg);
           if (spoke) done.push({ id: it.id });
+        } else if (it.target === "discord-watch") {
+          const ch = watchCh || (await client.channels.fetch(TEXT_CH));
+          await ch.send(htmlToDiscord(it.text || "").slice(0, 1900));
+          done.push({ id: it.id });
         } else {
           const ch = await client.channels.fetch(TEXT_CH);
           const head = it.topic ? `**${it.topic}**\n` : "";
@@ -633,6 +637,9 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`ห้องข้อความ ${TEXT_CH} · ห้องบันทึก ${LOG_CH} · ห้องเสียง ${VOICE_CH} · เจ้าของ ${OWNER}`);
   if (!OWNER) console.warn("⚠️ ยังไม่ได้ตั้ง DISCORD_OWNER_ID — API จะไม่รู้ว่าใครเป็นเจ้าของ");
   await buildCues();
+  await setupMonitorChannels();
+  setInterval(updateMonitor, 30_000);
+  setTimeout(updateMonitor, 3000);
   // ตั้งตัววนหยิบงานก่อนเข้าห้องเสียง — ถ้าห้องเสียงต่อไม่ได้ ฝั่งข้อความต้องยังทำงานได้ปกติ
   // (เคยพลาด: connectVoice ค้างรอสถานะ Ready 20 วิ แล้วบล็อกไม่ให้ตัววนหยิบงานเริ่มเลย)
   setInterval(pollOutbox, 5000);
@@ -715,6 +722,79 @@ client.on(Events.InteractionCreate, async (itx) => {
     console.error("ปุ่มพัง:", e?.message);
   }
 });
+
+// ===== ห้องมอนิเตอร์ + ห้องเฝ้าระวัง (เจ้าของสั่ง 5 ส.ค.) =====
+//
+// #มอนิเตอร์ = การ์ดใบเดียวแก้ทับตัวเอง ไม่เด้งแจ้งเตือน เหลือบดูก็เห็นสถานะสด
+//              บรรทัด "ตอนนี้" เปลี่ยนตามที่ทำจริง = รู้ได้ว่าได้ยินหรือยังโดยไม่ต้องถาม
+// #เฝ้าระวัง  = เงียบเมื่อปกติ มีข้อความเมื่อไหร่คือมีเรื่องต้องลงมือ
+let monitorCh = null;
+let watchCh = null;
+let monitorMsg = null;
+
+/** หาห้องจากชื่อ ถ้าไม่มีก็สร้างให้เลย (บอทมีสิทธิ์ Administrator) */
+async function ensureChannel(name, topic) {
+  try {
+    const guild = await client.guilds.fetch(GUILD || (await client.channels.fetch(VOICE_CH)).guildId);
+    const full = await guild.fetch();
+    const found = full.channels.cache.find((c) => c.name === name && c.type === 0);
+    if (found) return found;
+    const made = await full.channels.create({ name, type: 0, topic });
+    console.log(`สร้างห้อง #${name} ให้แล้ว`);
+    return made;
+  } catch (e) {
+    console.error(`สร้าง/หาห้อง #${name} ไม่ได้:`, e?.message);
+    return null;
+  }
+}
+
+async function setupMonitorChannels() {
+  monitorCh = await ensureChannel("มอนิเตอร์", "สถานะสดของ Vex — การ์ดใบเดียวอัปเดตทุก 30 วิ");
+  watchCh = await ensureChannel("เฝ้าระวัง", "เรื่องที่ต้องลงมือ — เงียบเมื่อทุกอย่างปกติ");
+  if (monitorCh) {
+    // ใช้ข้อความเดิมถ้ายังอยู่ (จะได้ไม่มีการ์ดเก่าค้างเต็มห้อง)
+    try {
+      const recent = await monitorCh.messages.fetch({ limit: 20 });
+      monitorMsg = recent.find((m) => m.author.id === client.user.id) || null;
+    } catch { /* หาไม่เจอก็สร้างใหม่ */ }
+  }
+}
+
+/** เก็บสถานะเซอร์วิสจาก LaunchAgent */
+function serviceUp(label) {
+  try {
+    const out = execSync(`launchctl print gui/$(id -u)/com.changoh.${label} 2>/dev/null | grep -m1 "state = "`, { encoding: "utf8" });
+    return /running/.test(out);
+  } catch {
+    return false;
+  }
+}
+
+async function updateMonitor() {
+  if (!monitorCh) return;
+  try {
+    const res = await fetch(APP_URL + "/api/kiki/monitor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({
+        inVoice: ownerInVoice,
+        voiceConnected: Boolean(connection),
+        services: {
+          เว็บ: serviceUp("web"),
+          Telegram: serviceUp("kiki"),
+          Discord: serviceUp("vexdiscord"),
+          ตา: serviceUp("vexeyes"),
+        },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return;
+    const { card } = await res.json();
+    if (!card?.text) return;
+    if (monitorMsg) await monitorMsg.edit(card.text).catch(async () => { monitorMsg = await monitorCh.send(card.text); });
+    else monitorMsg = await monitorCh.send(card.text);
+  } catch { /* รอบหน้าลองใหม่ */ }
+}
 
 client.on(Events.Error, (e) => console.error("discord error:", e?.message));
 client.on(Events.ShardDisconnect, (_, id) => console.warn(`shard ${id} หลุด — discord.js จะต่อกลับเอง`));
