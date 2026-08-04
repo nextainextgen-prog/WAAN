@@ -132,6 +132,15 @@ const REPLY_BOXES: Record<SocialPlatform, string[]> = {
   unknown: ['div[contenteditable="true"]', "textarea"],
 };
 
+// ตัวชี้ว่า "ล็อกอินอยู่จริง" — ต้องเจอก่อนถึงจะยอมพิมพ์
+// (เทส 4 ส.ค.: หน้า compose ของ X ตอนไม่ได้ล็อกอินก็มีช่อง textbox ให้พิมพ์ ระบบเลยเคลมว่าพิมพ์สำเร็จทั้งที่ไม่ได้เข้าโพสต์จริง)
+const LOGGED_IN_PROBE: Record<SocialPlatform, string> = {
+  x: '[data-testid="SideNav_AccountSwitcher_Button"], [data-testid="AppTabBar_Home_Link"], [data-testid="tweetButtonInline"], [data-testid="tweetButton"]',
+  facebook: '[aria-label="Your profile"], [aria-label="บัญชีของคุณ"], div[role="feed"], [aria-label="Account"]',
+  instagram: 'a[href="/explore/"], svg[aria-label="Home"], a[href*="/direct/inbox"]',
+  unknown: "",
+};
+
 const SEND_BUTTONS: Record<SocialPlatform, string[]> = {
   x: ['[data-testid="tweetButtonInline"]', '[data-testid="tweetButton"]'],
   facebook: ['div[aria-label="Comment"]', 'div[aria-label="ความคิดเห็น"]'],
@@ -152,12 +161,60 @@ export interface DraftResult {
  * เปิดโพสต์ → พิมพ์ข้อความค้างไว้ในช่องตอบ → แคปหน้าจอ → "ไม่กดส่ง"
  * แท็บถูกเปิดค้างไว้ในเบราว์เซอร์จริง เพื่อให้กดส่งทีหลังได้ (หรือเจ้าของแก้เองในจอ)
  */
+/**
+ * เปิดแท็บด้วย Chrome เอง (ไม่ใช่ผ่าน Playwright)
+ * สำคัญ: แท็บที่ Playwright สร้าง จะถูกปิดทิ้งตอนตัดการเชื่อมต่อ CDP (เทสเจอจริง 4 ส.ค.)
+ * → ร่างที่พิมพ์ค้างไว้จะหายก่อนเจ้าของกดยืนยัน ต้องให้เบราว์เซอร์เป็นเจ้าของแท็บเอง
+ */
+async function newBrowserTab(url: string): Promise<void> {
+  const r = await fetch(`${chromeCdpUrl()}/json/new?${encodeURIComponent(url)}`, {
+    method: "PUT",
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!r.ok) throw new Error(`เปิดแท็บใน Chrome ไม่ได้ (${r.status})`);
+}
+
+function samePage(a: string, b: string): boolean {
+  const norm = (u: string) => u.split("?")[0].replace(/\/$/, "").toLowerCase();
+  return norm(a) === norm(b) || norm(a).startsWith(norm(b)) || norm(b).startsWith(norm(a));
+}
+
 export async function draftReply(url: string, message: string): Promise<DraftResult> {
   const platform = platformOf(url);
-  return withPage(
-    async (page) => {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-      await page.waitForTimeout(4000);
+  const st = await ensureChrome();
+  if (!st.ok) throw new Error(st.msg || "ต่อ Chrome ไม่ได้");
+  await newBrowserTab(url);
+  const { browser, ctx } = await connect();
+  try {
+    // รอให้แท็บโหลด แล้วหาให้เจอ (โซเชียลชอบ redirect ระหว่างโหลด)
+    let page: Page | undefined;
+    for (let i = 0; i < 12 && !page; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const cand = ctx.pages().filter((p) => samePage(p.url(), url));
+      page = cand[cand.length - 1];
+    }
+    if (!page) {
+      return { ok: false, url, platform, typed: "", msg: "เปิดแท็บแล้วแต่หาไม่เจอใน Chrome (ลองใหม่อีกทีครับ)" };
+    }
+    return await (async () => {
+      await page.waitForTimeout(3500);
+      // ต้องล็อกอินจริงก่อน ไม่งั้นพิมพ์ลงช่องมั่ว แล้วรายงานผิดว่าสำเร็จ
+      const probe = LOGGED_IN_PROBE[platform];
+      if (probe) {
+        const seen = await page.locator(probe).first().count().catch(() => 0);
+        if (!seen) {
+          const shot = await page.screenshot({ timeout: 15_000 }).catch(() => null);
+          await page.close().catch(() => {});
+          return {
+            ok: false,
+            url,
+            platform,
+            typed: "",
+            shotBase64: shot ? shot.toString("base64") : undefined,
+            msg: `ยังไม่ได้ล็อกอิน ${platform.toUpperCase()} ในโปรไฟล์ Chrome ของผมครับ — ล็อกอินในหน้าต่าง Chrome ที่ผมเปิดไว้ก่อน แล้วสั่งใหม่อีกที`,
+          };
+        }
+      }
       let box = null;
       for (const sel of REPLY_BOXES[platform]) {
         const l = page.locator(sel).first();
@@ -193,9 +250,10 @@ export async function draftReply(url: string, message: string): Promise<DraftRes
         shotBase64: shot ? shot.toString("base64") : undefined,
         msg: "พิมพ์ค้างไว้แล้ว รอกดส่ง",
       };
-    },
-    { keepOpen: true },
-  );
+    })();
+  } finally {
+    await browser.close().catch(() => {}); // ตัด CDP เฉย ๆ — แท็บที่ Chrome เป็นเจ้าของยังเปิดค้างไว้
+  }
 }
 
 /** กดส่งข้อความที่พิมพ์ค้างไว้ในแท็บเดิม (เรียกหลังเจ้าของกดปุ่มยืนยันเท่านั้น) */
@@ -204,8 +262,8 @@ export async function sendDraft(url: string): Promise<{ ok: boolean; msg: string
   const { browser, ctx } = await connect();
   try {
     const pages = ctx.pages();
-    const key = url.split("?")[0];
-    const page = pages.find((p) => p.url().split("?")[0] === key) || pages.find((p) => p.url().includes(key.slice(0, 40)));
+    const matches = pages.filter((p) => samePage(p.url(), url));
+    const page = matches[matches.length - 1];
     if (!page) return { ok: false, msg: "หาแท็บที่พิมพ์ค้างไว้ไม่เจอแล้ว (อาจถูกปิดไป) — สั่งร่างใหม่อีกทีครับ" };
     let clicked = false;
     for (const sel of SEND_BUTTONS[platform]) {
@@ -238,8 +296,7 @@ export async function discardDraft(url: string): Promise<void> {
   const { browser, ctx } = await connect().catch(() => ({ browser: null, ctx: null }) as { browser: Browser | null; ctx: BrowserContext | null });
   if (!browser || !ctx) return;
   try {
-    const key = url.split("?")[0];
-    for (const p of ctx.pages()) if (p.url().split("?")[0] === key) await p.close().catch(() => {});
+    for (const p of ctx.pages()) if (samePage(p.url(), url)) await p.close().catch(() => {});
   } finally {
     await browser.close().catch(() => {});
   }
@@ -257,8 +314,12 @@ export async function socialLoginStatus(): Promise<{ site: string; loggedIn: boo
     try {
       const ok = await withPage(async (page) => {
         await page.goto(s.url, { waitUntil: "domcontentloaded", timeout: 40_000 });
-        await page.waitForTimeout(3500);
-        return (await page.locator(s.probe).first().count().catch(() => 0)) > 0;
+        // โซเชียลโหลดช้า — รอจนเจอตัวชี้ว่าล็อกอิน สูงสุด 15 วิ (เคยตอบผิดว่า "ยังไม่ล็อกอิน" เพราะรอแค่ 3.5 วิ)
+        for (let i = 0; i < 15; i++) {
+          if ((await page.locator(s.probe).first().count().catch(() => 0)) > 0) return true;
+          await page.waitForTimeout(1000);
+        }
+        return false;
       });
       out.push({ site: s.site, loggedIn: ok });
     } catch {
