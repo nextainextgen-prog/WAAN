@@ -626,18 +626,30 @@ export async function vexRulesContext(): Promise<string> {
 
 // ===== ถอดเสียง (เจ้าของส่ง voice/audio แทนการพิมพ์) — ใช้ Gemini API =====
 
-export async function transcribeAudio(filePath: string, mime = "audio/ogg"): Promise<string> {
+export async function transcribeAudio(filePath: string, mime = "audio/ogg", opts: { fast?: boolean } = {}): Promise<string> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new Error("ยังไม่ได้ตั้งค่า GEMINI_API_KEY สำหรับถอดเสียง");
-  const data = (await fs.readFile(filePath)).toString("base64");
+  const buf = await fs.readFile(filePath);
+  const data = buf.toString("base64");
+
+  // เสียงสั้น (คำเรียก/ตอบรับ) ไม่ต้องแบกบริบท — วัดจริง 5 ส.ค. บริบทยาวทำให้ถอดเสียงกิน 3.5-6 วิ
+  // ซึ่งกลายเป็นคอขวดแทนสมองไปแล้ว · สั้น = ใช้โมเดลเบา ไม่มีบริบท เร็วกว่าเท่าตัว
+  // เสียงสั้น = ตัดบริบททิ้ง (บริบทยาวเปลืองเวลาโดยไม่ช่วยกับคำเรียกสั้น ๆ)
+  // แต่ยังใช้โมเดลเดิม — เทส 5 ส.ค. พบว่า flash-lite ถอดคำสั้นเพี้ยนเป็น "ครับ" เกือบทุกครั้ง
+  // ซึ่งเป็นจุดที่ต้องแม่นที่สุด (คำเรียก) เลยยอมช้ากว่านิดดีกว่าเรียกไม่ติด
+  const isShort = opts.fast ?? buf.length < 12_000;
   const model = "gemini-2.5-flash";
-  // คำไทยเพี้ยนบ่อย (pain point เก่า) → ป้อนบริบท: เรื่องที่คุยล่าสุด + ชื่อเฉพาะที่มักโผล่ ให้เดาคำกำกวมถูกทาง
+
   let hints = "";
-  try {
-    const [convo, facts] = await Promise.all([kikiConversation(6), db.ownerFact.findMany({ where: { active: true, category: "คนรอบตัว" }, take: 15 })]);
-    const names = facts.map((f) => f.fact).join(" · ");
-    hints = `\n\nบริบทช่วยถอด (อย่าเอาไปใส่ในคำตอบ): เรื่องที่คุยกันล่าสุด:\n${convo.slice(-1200)}\nชื่อ/คำเฉพาะที่มักพูดถึง: Vex, วาน, โด้, Codewars, wishlist, Shopee, Lazada${names ? `, ${names.slice(0, 300)}` : ""}`;
-  } catch { /* ไม่มีบริบทก็ถอดตรง ๆ */ }
+  if (!isShort) {
+    // คำไทยเพี้ยนบ่อย → ป้อนบริบท: เรื่องที่คุยล่าสุด + ชื่อเฉพาะที่มักโผล่ ให้เดาคำกำกวมถูกทาง
+    try {
+      const [convo, facts] = await Promise.all([kikiConversation(6), db.ownerFact.findMany({ where: { active: true, category: "คนรอบตัว" }, take: 15 })]);
+      const names = facts.map((f) => f.fact).join(" · ");
+      hints = `\n\nบริบทช่วยถอด (อย่าเอาไปใส่ในคำตอบ): เรื่องที่คุยกันล่าสุด:\n${convo.slice(-1200)}\nชื่อ/คำเฉพาะที่มักพูดถึง: Vex, วาน, โด้, อั๋น, Codewars, wishlist, Shopee, Lazada${names ? `, ${names.slice(0, 300)}` : ""}`;
+    } catch { /* ไม่มีบริบทก็ถอดตรง ๆ */ }
+  }
+
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
@@ -648,12 +660,13 @@ export async function transcribeAudio(filePath: string, mime = "audio/ogg"): Pro
           {
             parts: [
               { inline_data: { mime_type: mime, data } },
-              { text: `ถอดเสียงในไฟล์นี้เป็นข้อความภาษาไทยตรงตามที่พูดทุกคำ ตอบเฉพาะข้อความที่ถอดได้เท่านั้น ไม่ต้องอธิบายอะไรเพิ่ม\nคำกำกวม/ชื่อเฉพาะ ให้เทียบกับบริบทด้านล่างแล้วเลือกคำที่สมเหตุสมผลที่สุด${hints}` },
+              { text: `ถอดเสียงในไฟล์นี้เป็นข้อความภาษาไทยตรงตามที่พูดทุกคำ ตอบเฉพาะข้อความที่ถอดได้เท่านั้น ไม่ต้องอธิบายอะไรเพิ่ม${isShort ? "\nเสียงนี้สั้นมาก อาจเป็นคำเรียกสั้น ๆ เช่น เฮ้เพื่อน / เพื่อน / อยู่มั้ย / ครับ — ถอดตามที่ได้ยินจริง" : ""}\nคำกำกวม/ชื่อเฉพาะ ให้เทียบกับบริบทด้านล่างแล้วเลือกคำที่สมเหตุสมผลที่สุด${hints}` },
             ],
           },
         ],
-        generationConfig: { temperature: 0.1 },
+        generationConfig: { temperature: 0.1, ...(isShort ? { thinkingConfig: { thinkingBudget: 0 } } : {}) },
       }),
+      signal: AbortSignal.timeout(isShort ? 20_000 : 90_000),
     },
   );
   const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
@@ -750,6 +763,46 @@ export async function askKiki(message: string, extraContext?: string): Promise<s
     if (g) return g;
     throw e;
   }
+}
+
+/**
+ * สมองสายด่วนสำหรับเส้นทางเสียง (5 ส.ค. 2026)
+ *
+ * ทำไมต้องมี: askKiki เรียก Claude CLI ซึ่งต้องเปิดโปรเซสใหม่ทุกครั้ง + ยัดบริบท 20,000 ตัวอักษร
+ * วัดจริงแล้ว 15-45 วินาที และเส้นทางเสียงเดิมเรียกมัน "สองรอบ" (คิดคำตอบ + ย่อเป็นคำพูด)
+ * = 60-100 วินาทีกว่าเจ้าของจะได้ยินเสียงตอบ ซึ่งใช้ไม่ได้เลย
+ *
+ * ตัวนี้: Gemini flash + บริบทเท่าที่จำเป็น + สั่งให้ตอบเป็น "คำพูด" ตั้งแต่รอบแรก
+ * เป้า 1.5-2.5 วินาที · ล่ม = ตกไป askKiki เต็มรูปแบบ (ยอมช้าดีกว่าไม่ตอบ)
+ */
+export async function askKikiVoice(message: string, extraContext?: string): Promise<string> {
+  const [rules, facts, convo, tasks, focus] = await Promise.all([
+    vexRulesContext().catch(() => ""),
+    ownerFactsContext().catch(() => ""),
+    kikiConversation(12).catch(() => ""),   // 12 ข้อความพอ (เต็มรูปแบบใช้ 40 = ช้าโดยเปล่าประโยชน์)
+    import("./kiki-tasks").then((t) => t.tasksContext()).catch(() => ""),
+    import("./kiki-jobs").then((j) => j.focusContext()).catch(() => ""),
+  ]);
+  const now = new Date();
+  const sys = [
+    KIKI_PERSONA,
+    rules,
+    `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`,
+    facts, tasks, focus, convo, extraContext || "",
+    `=== สำคัญที่สุด: ตอนนี้คุณกำลัง "พูดออกเสียง" ให้เจ้าของฟังในสาย ===
+- เขาจอดับอยู่ มองไม่เห็นอะไรทั้งนั้น ได้ยินอย่างเดียว
+- ตอบ 1-2 ประโยค ภาษาพูดล้วน ห้ามอ่านลิสต์ ห้ามอ่านตัวเลขทุกตัว เอาเฉพาะแก่น
+- ห้ามใส่มาร์กอัป ห้ามใส่หัวข้อ ห้ามใส่อิโมจิ ห้ามขึ้นต้นซ้ำแบบเดิมทุกครั้ง
+- ถ้าข้อมูลเยอะให้พูดแก่นแล้วปิดท้ายว่า "ที่เหลือลงในห้องแชทให้แล้ว"
+- ไม่แน่ใจว่าเขาหมายถึงอะไร ให้ถามกลับสั้น ๆ ประโยคเดียว ห้ามเดา`,
+  ].filter(Boolean).join("\n\n");
+
+  try {
+    const out = await askGeminiChat(sys, message);
+    const t = out.replace(/<[^>]+>/g, " ").replace(/[*_`#>|]/g, " ").replace(/\s+/g, " ").trim();
+    if (t) return t.slice(0, 900);
+  } catch { /* ตกไปสมองเต็มรูปแบบ */ }
+  return askKiki(message, extraContext);
 }
 
 // สมองสำรอง: Gemini API (เร็ว ใช้ persona เดียวกัน) — ใช้เฉพาะตอน Claude CLI ล่ม/ช้าเกิน

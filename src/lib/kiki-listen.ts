@@ -1,14 +1,17 @@
-import { getSetting, setSetting, askKiki } from "./kiki";
+import { getSetting, setSetting } from "./kiki";
 
 /**
- * โหมดการฟังของ Vex ในห้องเสียง (สเปกข้อ 6 — เฟส 3/6, 4 ส.ค. 2026)
+ * โหมดการฟัง + สายสนทนาของ Vex (สเปกข้อ 6 · ปรับใหญ่ 5 ส.ค. 2026 หลังเจ้าของเทสจริง)
  *
- * ความต่างระหว่าง Siri ที่น่ารำคาญกับผู้ช่วยจริง อยู่ที่รายละเอียดพวกนี้:
- *  - เรียกครั้งเดียวคุยต่อได้หลายประโยค (หน้าต่างคุย) ไม่ใช่เรียกใหม่ทุกประโยค
- *  - ปลุกผิดต้องไม่มีต้นทุน — ปลุกแล้วไม่มีคำสั่งตามมา ให้หลับต่อเงียบ ๆ
- *    ห้ามพูดถามว่า "ครับ มีอะไรครับ" เด็ดขาด
- *  - แม้โหมดอิสระก็ยังต้องกรองว่าประโยคนี้พูดกับเราหรือเปล่า (เขาอาจพึมพำ/คุยโทรศัพท์/เปิดคลิป)
- *  - ไม่แน่ใจ = เงียบ ไม่ใช่เดา
+ * เสียงบ่นจากการใช้จริงวันแรก:
+ *  - "เลิกตั้งให้เรียกชื่อว่า Vex เพราะบางทีผมออกเสียงไม่ถูกมันก็ไม่ตอบ"
+ *  - "ถ้าเรียกรอบแรกแล้วก็อยู่คุยยาวเลย จนกว่าผมจะบอก"
+ *  - "ไม่รู้แล้วว่าเรียกได้ยินมั้ย"
+ *
+ * โครงใหม่:
+ *   เงียบอยู่ → ได้ยินคำเปิด หรือ ประโยคที่เป็นคำสั่งชัด → ตอบรับทันทีจากคลังเสียง (0 วิ)
+ *            → เปิดสาย: ทุกอย่างหลังจากนี้คือคุยกับเรา ไม่ต้องเรียกซ้ำ
+ *            → ปิดเมื่อ: พูดคำจบ หรือ เงียบครบ 1 นาที
  */
 
 export type ListenMode = "wake" | "open" | "silent" | "muted";
@@ -21,7 +24,7 @@ export const MODE_LABEL: Record<ListenMode, string> = {
   muted: "ปิดปาก",
 };
 
-export const DEFAULT_MODE: ListenMode = "wake"; // ค่าเริ่มต้นตามสเปก
+export const DEFAULT_MODE: ListenMode = "wake";
 
 export async function getMode(): Promise<ListenMode> {
   const v = (await getSetting(MODE_KEY)) as ListenMode | null;
@@ -30,61 +33,116 @@ export async function getMode(): Promise<ListenMode> {
 
 export async function setMode(m: ListenMode): Promise<void> {
   await setSetting(MODE_KEY, m);
-  await setSetting(OPEN_SINCE_KEY, m === "open" ? String(Date.now()) : "");
 }
 
-// โหมดอิสระต้องมีทางออกอัตโนมัติ ไม่งั้นเปิดค้างทั้งวันแล้วโดนแทรกตลอด
-const OPEN_SINCE_KEY = "vex_open_since";
-export const OPEN_IDLE_EXIT_MS = 10 * 60_000; // ไม่มีใครพูดด้วย 10 นาที → กลับโหมดเรียกชื่อ
-export const OPEN_ASK_AGAIN_MS = 30 * 60_000; // ครบ 30 นาที → ถามว่ายังเอาอยู่ไหม
-
-export async function openModeAge(): Promise<number> {
-  const v = await getSetting(OPEN_SINCE_KEY);
-  return v ? Date.now() - Number(v) : 0;
-}
-
-// ===== คำปลุก =====
+// ===== คำเปิดสาย =====
 //
-// "Vex" พยางค์เดียว ถอดเสียงไทยออกมาได้หลายแบบมาก — รับให้กว้างไว้ก่อน
-// เพราะปลุกผิดไม่มีต้นทุน (หลับต่อเงียบ ๆ) แต่ปลุกไม่ติดคือพังทั้งประสบการณ์
-const WAKE_RE = /\b(vex|hey vex|ok vex)\b|เว็?ก(ซ์|ส์|ส|ช)?|เฝ้?ก|เว็?คซ์?|แว็?กซ์?/i;
+// เจ้าของเลือกเอง 5 ส.ค.: "เฮ้เพื่อน / เพื่อน / อยู่มั้ย แนวนี้"
+// เลิกใช้ "Vex" เป็นตัวหลักเพราะคำต่างประเทศพยางค์เดียว ตัวถอดเสียงไทยแปลงได้สิบแบบ
+// (เว็ก/เวก/เฝก/แว็กซ์) + การออกเสียงต่างกันทุกครั้ง = ชนไม่ตรงสักที
+//
+// รับให้กว้างไว้ก่อน — ปลุกผิดไม่มีต้นทุน (แค่ตอบ "ครับ" แล้วเงียบต่อ)
+// แต่ปลุกไม่ติดคือพังทั้งประสบการณ์
+// ขอบเขตท้ายคำแบบไทย — \b ของ JS ใช้ไม่ได้ (อักษรไทยนับเป็น non-word ทั้งหมด)
+const TE = "(?![\\u0E01-\\u0E4F])";
 
-/** ประโยคนี้มีคำปลุกไหม + เนื้อคำสั่งที่เหลือหลังตัดคำปลุกออก */
+// รับรูปที่ตัวถอดเสียงมักแปลงเพี้ยนด้วย (เทสจริง 5 ส.ค.: "เฮ้เพื่อน"→"เฮีย"/"เฮือน")
+// แต่ต้องเป็น "คำเต็ม" เท่านั้น ไม่งั้น "เฮ" ไปแมตช์ต้นคำ "เฮือน" แล้วเหลือเศษ "ือน" เป็นคำสั่ง
+const HEY = "เฮ้ย|เห้ย|เฮย|เฮีย|เอีย|เฮ่ย|เอ่ย|เฮ้|เห้|เฮ่|เอ้|เฮ|เห";
+const BUDDY = "เพื่อน|เกลอ|สหาย|พวก";
+
+const WAKE_PATTERNS: RegExp[] = [
+  new RegExp(`^\\s*(?:${HEY})\\s*(?:${BUDDY})${TE}`, "i"),        // เฮ้เพื่อน / เฮ้ย เพื่อน
+  new RegExp(`^\\s*(?:${HEY})${TE}`, "i"),                          // เฮ้ย เฉย ๆ
+  new RegExp(`^\\s*(?:${BUDDY})`, "i"),                             // ขึ้นต้นด้วย "เพื่อน..." (พูดติดกันได้)
+  new RegExp(`\\s(?:${BUDDY})${TE}`, "i"),                           // กลางประโยคต้องเป็นคำเต็ม
+  new RegExp(`^\\s*(?:นี่|นี้|เนี่ย)${TE}`, "i"),
+  /อยู่(มั้ย|ไหม|ป่ะ|เปล่า|รึเปล่า|หรือเปล่า)/,
+  /ได้ยิน(มั้ย|ไหม|ป่ะ|เปล่า)/,
+  /\b(vex|เว็?กซ์?|แว็?กซ์?)\b/i,                                   // ชื่อเดิม เก็บไว้เป็นทางเลือก
+];
+
+/** ประโยคนี้มีคำเปิดสายไหม + เนื้อคำสั่งที่เหลือหลังตัดคำเปิดออก */
 export function matchWake(text: string): { woke: boolean; rest: string } {
   const t = (text || "").trim();
-  if (!WAKE_RE.test(t)) return { woke: false, rest: t };
-  const rest = t.replace(WAKE_RE, " ").replace(/^[\s,.…ๆ]+/, "").replace(/\s+/g, " ").trim();
+  if (!t) return { woke: false, rest: "" };
+  let rest = t;
+  let woke = false;
+  for (const re of WAKE_PATTERNS) {
+    if (!re.test(rest)) continue;
+    woke = true;
+    rest = rest.replace(re, " ");
+  }
+  if (!woke) return { woke: false, rest: t };
+  rest = rest.replace(/^[\s,.…ๆ!?]+/, "").replace(/\s+/g, " ").trim();
   return { woke: true, rest };
 }
 
-// ขอบเขตท้ายคำสำหรับภาษาไทย
+// ===== คำปิดสาย =====
 //
-// \b ของ JS ดูแค่ตัวอักษร ASCII — ตัวไทยทุกตัวถือเป็น "ไม่ใช่ตัวอักษร" หมด
-// ผลคือ /^(พอ)\b/ ไม่แมตช์ "พอ" ที่จบประโยค (ไม่มีตัว ASCII ให้เกิดขอบเขต)
-// เคสจริงตอนเทส: "Vex พอ" สั่งหยุดไม่ติด ทั้งที่เป็นคำสั่งสำคัญที่สุดในระบบ
-// → ใช้ lookahead ว่าตัวถัดไปต้องไม่ใช่พยัญชนะ/สระไทย แทน \b
-const THAI_END = "(?![\\u0E01-\\u0E4F])";
-const WAKE_PREFIX = "(?:vex\\s*|เว็?ก(?:ซ์|ส์|ส|ช)?\\s*)?";
+// เจ้าของบอกเอง 5 ส.ค.: "โอเคร ขอบคุณครับ เยี่ยมม ลุยย จัดไป เดี๋ยวมาต่อ อะไรพวกนี้"
+// ต้องเป็น "ประโยคที่จบในตัว" เท่านั้น — "โอเคแล้วช่วยหาต่อให้หน่อย" ไม่ใช่คำปิด
+const CLOSE_WORDS =
+  "โอเค|โอเคร|okay|ok|ขอบคุณ|ขอบใจ|แต๊งค์|thanks|thank you|เยี่ยม|เจ๋ง|ดีเลย|ดีมาก|สุดยอด|เริ่ด|ลุย|จัดไป|จัดเลย|เอาเลย|ไปเลย|พอแล้ว|แค่นี้|เท่านี้|เดี๋ยวมาต่อ|ไว้คุยกันใหม่|บาย|แล้วเจอกัน";
+// คนพูดคำจบต่อกันหลายคำเป็นปกติ ("โอเค ขอบคุณครับ" · "เยี่ยม ลุย")
+const FILLER = "[\\s ๆครับคะค่ะนะจ้าฮะฮ่ะแล้วเลยมากๆ!.…]*";
+const CLOSE_RE = new RegExp(`^${FILLER}(?:(?:${CLOSE_WORDS})${FILLER}){1,3}$`, "i");
 
-// สั่งหยุดกลางประโยค — ต้องจับได้ตอน Vex กำลังพูดอยู่ (สเปก: "Vex พอ" ต้องหยุดทันที)
-// เรียงตัวยาวก่อนตัวสั้นเสมอ ไม่งั้น "พอ" กินก่อนแล้ว "พอแล้ว" ไม่ได้ทำงาน
-// ไม่เอา "เดี๋ยว" เข้ามาเป็นคำสั่งหยุด — กำกวมเกิน ("เดี๋ยวไปกินข้าว" ไม่ได้สั่งให้หยุด)
+export function isCloseCommand(text: string): boolean {
+  const t = (text || "").replace(/\s+/g, " ").trim();
+  if (!t || t.length > 40) return false; // ยาว = มีเนื้อความอื่นต่อ ไม่ใช่คำปิด
+  return CLOSE_RE.test(t);
+}
+
+// ===== สายสนทนา =====
+//
+// เปิดแล้วคุยยาวไม่ต้องเรียกซ้ำ ปิดเมื่อพูดคำจบหรือเงียบครบ 1 นาที
+const SESSION_KEY = "vex_session_until";
+const SESSION_TOPIC_KEY = "vex_session_topic";
+export const SESSION_IDLE_MS = 60_000; // เจ้าของกำหนดเอง: เงียบ 1 นาที = จบ
+
+export async function openSession(topic = ""): Promise<void> {
+  await setSetting(SESSION_KEY, String(Date.now() + SESSION_IDLE_MS));
+  if (topic) await setSetting(SESSION_TOPIC_KEY, topic.slice(0, 200));
+}
+
+export async function touchSession(): Promise<void> {
+  await setSetting(SESSION_KEY, String(Date.now() + SESSION_IDLE_MS));
+}
+
+export async function closeSession(): Promise<void> {
+  await setSetting(SESSION_KEY, "");
+  await setSetting(SESSION_TOPIC_KEY, "");
+}
+
+export async function sessionOpen(): Promise<boolean> {
+  return Date.now() < Number((await getSetting(SESSION_KEY)) || 0);
+}
+
+export async function sessionTopic(): Promise<string> {
+  return (await getSetting(SESSION_TOPIC_KEY)) || "";
+}
+
+// ===== คำสั่งด่วนที่ต้องจับได้ทันที =====
+
+const THAI_END = "(?![\\u0E01-\\u0E4F])";
+const WAKE_PREFIX = "(?:vex\\s*|เว็?ก(?:ซ์|ส์|ส|ช)?\\s*|เพื่อน\\s*|เฮ้?ย?\\s*)?";
+
+// หยุดพูดกลางประโยค
+// \b ของ JS ใช้กับภาษาไทยไม่ได้ (อักษรไทยนับเป็น non-word ทั้งหมด) — เคยทำให้ "Vex พอ" ไม่ติดเลย
 const STOP_RE = new RegExp(`^${WAKE_PREFIX}(พอแล้ว|พอก่อน|หยุดพูด|หยุด|เงียบ|พอ|stop)${THAI_END}`, "i");
 export function isStopCommand(text: string): boolean {
   return STOP_RE.test((text || "").trim());
 }
 
-// สั่งถอนสิ่งที่เพิ่งส่งไป (สเปกข้อ 9 ระดับความไว้ใจ 2)
-const UNDO_RE = new RegExp(`^${WAKE_PREFIX}(ถอนคืน|เรียกคืน|ถอน|ยกเลิก|undo)${THAI_END}`, "i");
+const UNDO_RE = new RegExp(`^${WAKE_PREFIX}(ถอนคืน|เรียกคืน|ถอน|undo)${THAI_END}`, "i");
 export function isUndoCommand(text: string): boolean {
   return UNDO_RE.test((text || "").trim());
 }
 
-// ===== สั่งเปลี่ยนโหมดด้วยปาก =====
-// ใช้ regex ที่นี่เพราะเป็นคำสั่งสั้น ๆ ต้องตอบไว และห้ามพลาด — ไม่ผ่านตัวอ่านเจตนา
 export function matchModeCommand(text: string): ListenMode | null {
   const t = (text || "").trim();
-  if (!/เว็?ก|vex/i.test(t) && !/^(โหมด|กลับไป)/.test(t)) return null;
+  if (!/เว็?ก|vex|เพื่อน|^โหมด|^กลับไป/i.test(t)) return null;
   if (/ปิดปาก|เงียบไปเลย|หุบปาก|ไม่ต้องฟัง/.test(t)) return "muted";
   if (/ฟังไว้เฉย|ฟังเงียบ|ฟังอย่างเดียว|จดไว้เฉย/.test(t)) return "silent";
   if (/อิสระ|คุยได้เลย|ไม่ต้องเรียก|พูดได้เลย/.test(t)) return "open";
@@ -92,17 +150,48 @@ export function matchModeCommand(text: string): ListenMode | null {
   return null;
 }
 
+// ===== ตัวกรองเร็วในเครื่อง: ประโยคนี้พูดกับเราไหม =====
+//
+// เจ้าของสั่ง 5 ส.ค.: "แยกให้ออกว่าผมคุยกับคุณหรือคุยกับคนอื่น
+//  เวลาผมจะคุยกับคุณผมจะพูดแนวที่ผมบอกไป หรือถ้าเป็นประโยคคำสั่งที่ผมสั่ง"
+//
+// ทำในเครื่องก่อนเสมอ (0 วินาที) ถามสมองเฉพาะตอนกำกวมจริง ๆ
+
+// คำที่บ่งว่าเป็นคำสั่ง/คำถามที่มุ่งมาที่ผู้ช่วย
+const COMMAND_HINT =
+  /ช่วย|หน่อย|ให้ที|ขอ(ดู|ทราบ|รู้)|เช็ค|หา|ค้น|บอก|จด|โน้ต|เตือน|ลง(นัด|ปฏิทิน)|บันทึก|สรุป|ทำ(ให้|ไฟล์)|ส่ง|ตอบ|ทัก|เปิด|ปิด|แคป|รัน|ถึงไหน|ยังไง|เท่าไหร่|กี่|เมื่อไหร่|ที่ไหน|ใคร|ทำไม|อะไร|มั้ย|ไหม|หรือเปล่า|ป่ะ/;
+
+// สัญญาณว่ากำลังคุยกับคนอื่นอยู่ ไม่ใช่กับเรา
+const NOT_FOR_US =
+  /^(ฮัลโหล|ครับพี่|ค่ะพี่|สวัสดีครับพี่|เดี๋ยวโทรกลับ|วางก่อนนะ|แป๊บนะ)/;
+
+export type Addressed = "yes" | "no" | "unsure";
+
 /**
- * ประโยคนี้พูดกับ Vex หรือเปล่า — ใช้ในโหมดอิสระที่ไม่ต้องเรียกชื่อ
- * เจ้าของอาจพึมพำกับตัวเอง คุยโทรศัพท์ หรือเปิดคลิปดู — ห้ามแทรก
- * ไม่แน่ใจ = false (เงียบไว้ก่อนเสมอ)
+ * เดาแบบเร็วในเครื่อง — คืน unsure เมื่อต้องให้สมองช่วยตัดสิน
+ * ประหยัดทั้งเวลาและค่าถอดเสียง: เคสชัด ๆ ไม่ต้องยิงโมเดลเลย
  */
-export async function addressedToVex(text: string, recentContext: string): Promise<boolean> {
+export function quickAddressed(text: string, opts: { inSession: boolean }): Addressed {
   const t = (text || "").trim();
-  if (t.length < 2) return false;
-  if (matchWake(t).woke) return true; // เรียกชื่อมาก็จบ ไม่ต้องคิด
+  if (t.length < 2) return "no";
+  if (matchWake(t).woke) return "yes";
+  if (NOT_FOR_US.test(t)) return "no";
+  if (isStopCommand(t) || isUndoCommand(t) || isCloseCommand(t)) return "yes";
+  if (!opts.inSession) {
+    // นอกสาย: รับเฉพาะคำเปิด หรือประโยคที่เป็นคำสั่งชัดเจนมาก (เจ้าของเลือก "รอคำเปิดอย่างเดียว")
+    return "no";
+  }
+  // ในสาย: ประโยคที่มีรูปคำสั่ง/คำถาม = ใช่แน่ ๆ
+  if (COMMAND_HINT.test(t)) return "yes";
+  // ในสาย ประโยคสั้น ๆ ที่ตอบรับ ("เอา" "ใช่" "ไม่") = ต่อบทสนทนา
+  if (t.length <= 12) return "yes";
+  return "unsure";
+}
+
+/** ตัวตัดสินชั้นสอง — ใช้สมองเฉพาะตอนกำกวม (ไม่แน่ใจ = เงียบ) */
+export async function addressedToVex(text: string, recentContext: string): Promise<boolean> {
   const key = process.env.GEMINI_API_KEY?.trim();
-  if (!key) return false; // ตัดสินไม่ได้ = เงียบ
+  if (!key) return false;
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
       method: "POST",
@@ -110,17 +199,17 @@ export async function addressedToVex(text: string, recentContext: string): Promi
       body: JSON.stringify({
         system_instruction: {
           parts: [{
-            text: `ตัดสินว่าประโยคที่ได้ยินนี้ "พูดกับผู้ช่วย AI (ชื่อ Vex)" หรือเปล่า
-เจ้าของเปิดไมค์ค้างไว้ทั้งวัน เสียงที่เข้ามาอาจเป็น: พึมพำกับตัวเอง · คุยโทรศัพท์กับคนอื่น · เสียงจากคลิป/ทีวี · คุยกับคนในห้อง
-ให้ตอบ true เฉพาะเมื่อมันเป็นคำสั่ง/คำถาม/การคุยที่มุ่งมาที่ผู้ช่วยจริง ๆ
-ไม่แน่ใจ = false เสมอ (แทรกผิดจังหวะแย่กว่าเงียบ)
+            text: `ตัดสินว่าประโยคที่ได้ยินนี้ "พูดกับผู้ช่วย AI" หรือเปล่า
+เจ้าของเปิดไมค์ค้างทั้งวัน เสียงที่เข้ามาอาจเป็น: พึมพำกับตัวเอง · คุยโทรศัพท์ · เสียงจากคลิป/ทีวี · คุยกับคนในห้อง
+ตอนนี้กำลังอยู่ในบทสนทนากับผู้ช่วยอยู่ ประโยคต่อเนื่องจากเรื่องที่คุยกันอยู่ = true
+ไม่แน่ใจ = false (แทรกผิดจังหวะแย่กว่าเงียบ)
 ตอบ JSON: {"toVex":true/false}`,
           }],
         },
-        contents: [{ role: "user", parts: [{ text: `บทสนทนาก่อนหน้า:\n${recentContext.slice(-800)}\n\nประโยคที่เพิ่งได้ยิน:\n"""${t}"""` }] }],
+        contents: [{ role: "user", parts: [{ text: `บทสนทนาก่อนหน้า:\n${recentContext.slice(-700)}\n\nประโยคที่เพิ่งได้ยิน:\n"""${text.trim()}"""` }] }],
         generationConfig: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } },
       }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(6000),
     });
     const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
     const raw = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
@@ -131,9 +220,28 @@ export async function addressedToVex(text: string, recentContext: string): Promi
 }
 
 /**
- * เสียงตัวเองย้อนเข้าไมค์ (เจ้าของเปิดลำโพงแทนหูฟัง) — ห้ามเอามาตอบตัวเอง
- * เทียบกับสิ่งที่ Vex เพิ่งพูดไป ถ้าซ้ำกันมากแปลว่าเป็นเสียงสะท้อน
+ * เสียงสั้น ๆ ที่ถอดออกมาไม่ชัด แต่น่าจะเป็นการเรียก
+ *
+ * เทสจริง 5 ส.ค.: "เฮ้เพื่อน" ถอดได้ "เฮีย" · "อยู่มั้ย" ได้ "เอีย" · "เพื่อน" ได้ "อ๋อ"
+ * คำสั้น ๆ ถอดเพี้ยนเป็นปกติ ถ้ายึดการเทียบคำอย่างเดียวจะเรียกไม่ติดตลอด
+ *
+ * หลักคิด: ปลุกผิดไม่มีต้นทุน (แค่ได้ยิน "ครับ" หนึ่งครั้งแล้วเงียบต่อ)
+ * แต่ปลุกไม่ติด = พังทั้งประสบการณ์ → เอียงไปทางรับไว้ก่อน
+ *
+ * เงื่อนไข: ต้องสั้นจริง (ไม่ใช่ประโยค) และไม่ใช่คำที่รู้แน่ว่าไม่ได้เรียกเรา
  */
+const NOT_A_CALL = /^(ครับ|ค่ะ|คะ|ใช่|ไม่|โอเค|อืม|เออ|อ๋อ|อ้อ|หา|เอ่อ|เอ๋|นะ|จ้า|ฮะ)$/;
+
+export function maybeWakeShort(text: string, audioBytes: number): boolean {
+  const t = (text || "").replace(/[\s.,!?ๆ]/g, "").trim();
+  if (!t || t.length > 8) return false;          // ยาว = เป็นประโยค ไม่ใช่คำเรียก
+  if (audioBytes > 14_000) return false;          // เสียงยาวเกิน ~2 วิ = ไม่ใช่คำเรียกสั้น
+  if (NOT_A_CALL.test(t)) return false;           // คำตอบรับทั่วไป ไม่ใช่การเรียก
+  if (/^[0-9]+$/.test(t)) return false;
+  return true;
+}
+
+/** เสียงตัวเองย้อนเข้าไมค์ (เปิดลำโพงแทนหูฟัง) — ห้ามเอามาตอบตัวเอง */
 export function looksLikeEcho(heard: string, lastSpoken: string): boolean {
   if (!lastSpoken) return false;
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
@@ -141,25 +249,20 @@ export function looksLikeEcho(heard: string, lastSpoken: string): boolean {
   const s = norm(lastSpoken);
   if (h.length < 6) return false;
   if (s.includes(h)) return true;
-  // ทับกันเกินครึ่งของสิ่งที่ได้ยิน = สะท้อน
   let hit = 0;
   for (let i = 0; i + 6 <= h.length; i += 3) if (s.includes(h.slice(i, i + 6))) hit++;
   return hit > 0 && hit / Math.ceil((h.length - 5) / 3) > 0.5;
 }
 
-/** สรุปสั้นมากไว้ตอบกลับด้วยเสียงในสาย (คนละตัวกับ toSpeech ที่ใช้กับงานเชิงรุก) */
-export async function toVoiceReply(fullText: string): Promise<string> {
-  const flat = fullText.replace(/<[^>]+>/g, " ").replace(/[*_`#>|]/g, " ").replace(/\s+/g, " ").trim();
-  if (flat.length <= 220) return flat;
-  try {
-    const t = await askKiki(
-      `[ย่อเป็นคำพูดในสาย] เจ้าของกำลังคุยกับคุณด้วยเสียง จอดับอยู่\n\nคำตอบเต็ม:\n"""${flat.slice(0, 6000)}"""\n\n` +
-        `พูดกลับให้เขาฟังภายใน 1-2 ประโยค เอาแก่นล้วน ห้ามอ่านลิสต์ ห้ามอ่านตัวเลขทุกตัว\n` +
-        `ถ้ามีรายละเอียดเยอะให้ปิดท้ายว่า "ที่เหลือลงในห้องแชทให้แล้ว"\n` +
-        `ตอบเฉพาะข้อความที่จะพูด ภาษาพูดล้วน`,
-    );
-    const out = t.replace(/<[^>]+>/g, " ").replace(/[*_`#>|]/g, " ").replace(/\s+/g, " ").trim();
-    if (out) return out.slice(0, 700);
-  } catch { /* ตกไปทางสำรอง */ }
-  return flat.slice(0, 300);
+/**
+ * ประโยคนี้ดูเหมือนโดนตัดกลางคันไหม
+ * เจอจริงใน log: "เป็นเรื่องที่" · "ที่จับได้ตอนนี้มีแค่" — คนไทยหยุดหายใจกลางประโยค
+ * ถ้าดูค้าง ให้ท่อรอประโยคถัดไปมาต่อก่อนส่งเข้าสมอง
+ */
+export function looksTruncated(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return true;
+  if (t.length < 6) return true;
+  // ลงท้ายด้วยคำเชื่อม/คำนำหน้าที่ต้องมีอะไรตามมา
+  return /(ที่|ซึ่ง|และ|แล้ว|กับ|แต่|เพราะ|ให้|ของ|ใน|จาก|ไป|มา|คือ|ว่า|จะ|ได้|มี|เป็น|ก็|ยัง|ถ้า|พอ|แค่|เอา|ช่วย|ขอ)\s*$/.test(t);
 }

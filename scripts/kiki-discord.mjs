@@ -305,7 +305,10 @@ player.on("error", (e) => console.error("player error:", e?.message));
 // ที่เหลือ (คำปลุก โหมด กรองว่าพูดกับใคร) ตัดสินที่ฝั่งสมอง ไม่ใช่ที่นี่
 
 const MIN_UTTER_MS = 600;
-const SILENCE_MS = 900;
+// คนไทยหยุดหายใจกลางประโยคบ่อย — 900ms ตัดเร็วเกินจนได้เศษประโยค
+// (log จริง: "เป็นเรื่องที่" · "ที่จับได้ตอนนี้มีแค่" แล้วสมองก็เอ๋อเพราะได้ข้อความไม่จบ)
+const SILENCE_MS = 1300;
+const MERGE_WINDOW_MS = 2200; // เศษประโยคที่ตามมาภายในนี้ = ประโยคเดียวกัน ต่อให้ก่อนส่ง
 const MAX_STT_PER_MIN = 25;
 let sttWindow = [];
 const listening = new Set();
@@ -366,6 +369,7 @@ function opusToOgg(opusStream, outPath) {
 
 /** ส่งประโยคที่ได้ยินไปให้สมองตัดสิน แล้วทำตามที่มันสั่ง */
 async function handleUtterance(oggPath) {
+  const t0 = Date.now();
   try {
     const res = await fetch(APP_URL + "/api/kiki/voice", {
       method: "POST",
@@ -374,44 +378,72 @@ async function handleUtterance(oggPath) {
       signal: AbortSignal.timeout(240_000),
     });
     if (!res.ok) return;
-    const { action, heard } = await res.json();
+    const { action, heard, timing } = await res.json();
     if (heard) console.log(`  ได้ยิน: "${heard}" → ${action.do === "ignore" ? `ข้าม (${action.why})` : action.do}`);
+
     switch (action.do) {
       case "stop":
         player.stop(true);
-        console.log("  → สั่งหยุด หยุดพูดทันที");
+        console.log("  → หยุดพูดทันที");
         break;
+
       case "undo":
-        console.log("  → สั่งถอน");
         await fetch(APP_URL + "/api/kiki/ingest", {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
           body: JSON.stringify({ chatId: TEXT_CH, text: "ถอนข้อความที่เพิ่งส่ง", fromId: OWNER, platform: "discord", channel: "discord-voice", msgId: String(Date.now()) }),
         }).catch(() => {});
         break;
-      case "cue":
-        await playCue(action.cue);
+
+      case "cue": {
+        // เสียงตอบรับต้องมาถึงหูภายในเสี้ยววินาที — หยิบจากคลังที่อัดไว้แล้ว ไม่เรียกโมเดลอะไรเลย
+        if (action.bank) {
+          const s2 = await tts({ bankKey: action.bank });
+          if (s2) { await speak(s2.ogg); console.log(`  → พูด "${s2.text}" (${s2.via} ${s2.ms}ms)`); }
+        } else if (action.cue) {
+          await playCue(action.cue);
+        }
         if (action.mode) {
           console.log(`  → เปลี่ยนโหมดเป็น "${action.label}"`);
           renameVoiceChannel(action.label);
         }
         break;
+      }
+
       case "say": {
-        const ogg = await tts(action.text);
-        if (ogg) { await speak(ogg); break; }
-        // แปลงเป็นเสียงไม่ได้ (โควตา TTS หมด / เจ้าให้บริการล่ม) — ห้ามให้คำตอบหายเงียบ
-        // เจ้าของพูดมาแล้วไม่ได้อะไรกลับเลยคือแย่ที่สุด ตกไปลงห้องแชทแทน
-        console.warn("  แปลงเป็นเสียงไม่ได้ → ตกไปลงห้องแชทแทน");
+        // คำตอบจริง — Kanya ในเครื่องเร็วกว่า Gemini 5 เท่า ใช้ตัวนี้เป็นหลัก
+        const s2 = await tts({ text: action.text });
+        if (s2) { await speak(s2.ogg); console.log(`  → พูด (${s2.via} ${s2.ms}ms): "${action.text.slice(0, 70)}"`); break; }
+        console.warn("  พูดไม่ได้ → ลงห้องแชทแทน");
         try {
           const ch = await client.channels.fetch(TEXT_CH);
-          await ch.send(`🔇 (พูดไม่ได้ตอนนี้ — โควตาเสียงหมดหรือบริการล่ม)\n${htmlToDiscord(action.text).slice(0, 1800)}`);
-        } catch { /* ห้องแชทก็ส่งไม่ได้ = จนปัญญาจริง */ }
+          await ch.send(`🔇 ${htmlToDiscord(action.text).slice(0, 1800)}`);
+        } catch { /* จนปัญญาจริง */ }
         break;
       }
     }
+
+    // วัดเวลาจริงทุกขั้น ลงห้องบันทึก — จะได้เห็นว่าขั้นไหนบวม ไม่ต้องเดา (เจ้าของขอเอง)
+    if (timing && action.do !== "ignore") {
+      const total = Date.now() - t0;
+      const parts = Object.entries(timing).filter(([k]) => k !== "รวม").map(([k, v]) => `${k} ${(v / 1000).toFixed(1)}`).join(" · ");
+      logLine(`📊 "${(heard || "").slice(0, 40)}" · รวม ${(total / 1000).toFixed(1)} วิ${parts ? ` — ${parts}` : ""}`);
+    }
   } catch (e) {
     console.error("  ประมวลผลเสียงพลาด:", e?.message);
+    // ล้มแล้วต้องพูด ห้ามเงียบหาย (เจ้าของสั่งเอง)
+    const s2 = await tts({ bankKey: "broke" }).catch(() => null);
+    if (s2) await speak(s2.ogg);
   }
+}
+
+/** เขียนลงห้องบันทึก — ไม่ให้พังกระทบทางหลัก */
+async function logLine(text) {
+  if (!LOG_CH) return;
+  try {
+    const ch = await client.channels.fetch(LOG_CH);
+    await ch.send(String(text).slice(0, 1900));
+  } catch { /* ห้องบันทึกส่งไม่ได้ก็ไม่เป็นไร */ }
 }
 
 /**
@@ -438,6 +470,43 @@ async function renameVoiceChannel(label) {
   }, wait);
 }
 
+// เศษประโยคที่รอต่อ — คนไทยหยุดกลางประโยคบ่อย ต้องรอดูว่ามีต่อไหมก่อนส่งเข้าสมอง
+let pendingUtter = null; // { paths: [], timer }
+
+function queueUtterance(oggPath) {
+  if (pendingUtter?.timer) clearTimeout(pendingUtter.timer);
+  if (!pendingUtter) pendingUtter = { paths: [] };
+  pendingUtter.paths.push(oggPath);
+  pendingUtter.timer = setTimeout(async () => {
+    const paths = pendingUtter.paths;
+    pendingUtter = null;
+    try {
+      const merged = paths.length === 1 ? paths[0] : await concatOgg(paths);
+      await handleUtterance(merged);
+      if (paths.length > 1) console.log(`  (ต่อเศษประโยค ${paths.length} ก้อนเป็นประโยคเดียว)`);
+    } catch (e) {
+      console.error("  ต่อประโยคพลาด:", e?.message);
+    } finally {
+      for (const p of paths) await fs.promises.rm(p, { force: true }).catch(() => {});
+    }
+  }, MERGE_WINDOW_MS);
+}
+
+/** ต่อไฟล์เสียงหลายก้อนเป็นก้อนเดียว (ffmpeg concat) */
+function concatOgg(paths) {
+  return new Promise((resolve, reject) => {
+    const out = path.join(os.tmpdir(), `vex-merge-${Date.now()}.ogg`);
+    const listFile = path.join(os.tmpdir(), `vex-list-${Date.now()}.txt`);
+    fs.writeFileSync(listFile, paths.map((p) => `file '${p}'`).join("\n"));
+    const ff = spawn(FFMPEG, ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", out], { stdio: "ignore" });
+    ff.on("close", (code) => {
+      fs.rmSync(listFile, { force: true });
+      code === 0 ? resolve(out) : reject(new Error("ffmpeg concat exit " + code));
+    });
+    ff.on("error", reject);
+  });
+}
+
 /** เริ่มฟังเจ้าของ — เรียกใหม่ทุกครั้งที่เขาเริ่มพูด */
 function listenTo(userId, receiver) {
   if (listening.has(userId)) return;
@@ -457,7 +526,7 @@ function listenTo(userId, receiver) {
         await fs.promises.rm(outPath, { force: true }).catch(() => {});
         return;
       }
-      await handleUtterance(outPath);
+      queueUtterance(outPath);
     })
     .catch(async () => {
       listening.delete(userId);
@@ -496,7 +565,8 @@ async function pollOutbox() {
       try {
         if (it.target === "discord-voice") {
           if (!ownerInVoice) continue; // ออกจากห้องระหว่างทาง = ปล่อยค้างไว้ในกล่อง รอรอบหน้า
-          const ogg = await tts(it.speak);
+          const spoken = await tts({ text: it.speak, quality: true });
+          const ogg = spoken?.ogg || null;
           if (!ogg) {
             // โควตาเสียงหมด/บริการล่ม — ลงห้องแชทแทนแล้วปิดงาน อย่าให้ค้างในกล่องจนถูกทิ้ง
             try {
@@ -527,17 +597,19 @@ async function pollOutbox() {
 }
 const pendingAck = [];
 
-// ขอไฟล์เสียงจากเว็บ (สมองเป็นคนเลือกเจ้า/เสียงตามค่าตั้งค่า ท่อไม่ต้องรู้จักโมเดลอะไร)
-async function tts(text) {
+// ขอไฟล์เสียงจากเว็บ (สมองเลือกทางเอง: คลังเสียง 0 วิ → Kanya ในเครื่อง → Gemini)
+async function tts(opts) {
+  const body = typeof opts === "string" ? { text: opts } : opts;
   try {
     const res = await fetch(APP_URL + "/api/kiki/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
     });
     if (!res.ok) return null;
-    const { ogg } = await res.json();
-    return ogg ? Buffer.from(ogg, "base64") : null;
+    const j = await res.json();
+    return j.ogg ? { ogg: Buffer.from(j.ogg, "base64"), text: j.text || body.text, via: j.via, ms: j.ms } : null;
   } catch {
     return null;
   }
