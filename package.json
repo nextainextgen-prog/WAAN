@@ -38,7 +38,8 @@
     "thunder:read": "node scripts/thunder-chat-read.mjs",
     "kiki:chrome": "node scripts/kiki-chrome-start.mjs",
     "kiki:check": "node scripts/kiki-check-canned.mjs",
-    "kiki:discord": "node scripts/kiki-discord.mjs"
+    "kiki:discord": "node scripts/kiki-discord.mjs",
+    "vex:eyes": "node scripts/vex-eyes.mjs"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
@@ -57,6 +58,7 @@
     "mailparser": "^3.9.14",
     "mammoth": "^1.12.0",
     "next": "16.2.10",
+    "opusscript": "^0.0.8",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.1.200",
     "pdfkit": "^0.19.1",

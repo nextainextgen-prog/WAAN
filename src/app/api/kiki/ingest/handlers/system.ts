@@ -17,8 +17,13 @@ export const hermesHandler: Handler = async (ctx) => {
     const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
     if (!kikiHermesReady()) return reply([{ kind: "text", text: await vexLine(`Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`), replyTo: msgId }]);
     const task = (hermesM?.[1] || text).trim();
-    await queueHermesJob(chatId, task);
-    return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งต่อให้ Hermes ทำเบื้องหลัง\n\nงาน: ${task.slice(0, 200)}\n\nใช้เวลาได้ถึง 15 นาที เสร็จเมื่อไหร่ผมเอาผลมาส่งเอง ระหว่างนี้สั่งงานอื่นได้ปกติ`, replyTo: msgId }]); // canned-ok: โควตงานที่รับมาตรงตัว
+    const q = await queueHermesJob(chatId, task);
+    const { pushFocus } = await import("@/lib/kiki-jobs");
+    await pushFocus({ kind: "job", ref: q.id, label: task.slice(0, 50) });
+    const wait = q.queued
+      ? `ตอนนี้งานเต็มมืออยู่ เรื่องนี้ต่อคิวเป็นลำดับที่ ${q.ahead + 1} — ถึงคิวเมื่อไหร่ผมเริ่มให้เอง`
+      : "ใช้เวลาได้ถึง 15 นาที";
+    return reply([{ kind: "text", text: `รับงานแล้วครับ 🎯 ส่งต่อให้ Hermes ทำเบื้องหลัง\n\nงาน: ${task.slice(0, 200)}\n\n${wait} เสร็จเมื่อไหร่ผมเอาผลมาส่งเอง ระหว่างนี้สั่งงานอื่นได้ปกติ`, replyTo: msgId }]); // canned-ok: โควตงานที่รับมาตรงตัว
   }
 
   return null;

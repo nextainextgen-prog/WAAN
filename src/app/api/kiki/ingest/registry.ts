@@ -19,6 +19,8 @@ import { wishHandler, debtHandler, recurringHandler, fitnessHandler, diaryHandle
 import { linkSaveHandler, researchHandler, docSummaryHandler } from "./handlers/research";
 import { calendarEditHandler, calendarViewHandler, calendarCreateHandler } from "./handlers/calendar";
 import { chatFallbackHandler } from "./handlers/chat";
+import { jobStatusHandler, autoBackgroundHandler } from "./handlers/jobs";
+import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandler } from "./handlers/reply";
 import { guiHandler } from "./handlers/gui";
 
 /**
@@ -33,6 +35,11 @@ import { guiHandler } from "./handlers/gui";
  * เพิ่มเส้นทางใหม่ = แทรกในลำดับที่ถูก แล้วเพิ่ม intent ใน INTENT_CATALOG (kiki-router.ts)
  */
 export const HANDLERS: Handler[] = [
+  // "Vex ถอน" — ต้องมาก่อนทุกอย่าง มีเวลาแค่ 30 วินาที
+  undoSendHandler,
+  // ยืนยัน/แก้ร่างที่อ่านทวนไปแล้ว — ต้องมาก่อนตัวที่สร้างร่างใหม่
+  confirmReplyHandler,
+
   // ทักครั้งแรก + ไฟล์เอกสาร — ต้องมาก่อนตัวอ่านเจตนา
   introHandler,
   docFilesHandler,
@@ -48,7 +55,8 @@ export const HANDLERS: Handler[] = [
   socialStatusHandler,
   socialDraftHandler,
 
-  // งานเบื้องหลัง
+  // งานเบื้องหลัง — jobStatus ต้องมาก่อน hermes (ไม่งั้น "งานถึงไหนแล้ว" ถูกตีเป็นสั่งงานใหม่ซ้ำ)
+  jobStatusHandler,
   hermesHandler,
 
   // การเงิน
@@ -80,6 +88,9 @@ export const HANDLERS: Handler[] = [
   listChatsHandler,
   aliasHandler,
   groupPostHandler,
+  // ปรับความไว้ใจ ต้องมาก่อนตัวส่งจริง · replyToPerson แทน dmHandler เดิม (มีสไตล์+ความไว้ใจ)
+  trustHandler,
+  replyToPersonHandler,
   dmHandler,
   chatSummaryHandler,
 
@@ -123,7 +134,9 @@ export const HANDLERS: Handler[] = [
   calendarViewHandler,
   calendarCreateHandler,
 
-  // ค้นเว็บ + ทำเอกสาร
+  // ค้นเว็บ + ทำเอกสาร — autoBackground ดักก่อน: งานยาวต้องตอบรับแล้วไปทำเบื้องหลัง
+  // ไม่ใช่ให้เจ้าของนั่งรอจนจบในคำขอเดียว (สเปกข้อ 15ก)
+  autoBackgroundHandler,
   researchHandler,
   docSummaryHandler,
 

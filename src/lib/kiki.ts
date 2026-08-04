@@ -727,18 +727,20 @@ export async function findPersonalImages(query: string, maxResults = 4): Promise
 // ===== สมองของ kiki =====
 
 export async function askKiki(message: string, extraContext?: string): Promise<string> {
-  const [rules, facts, convo, memory, tasks, caps] = await Promise.all([
+  const [rules, facts, convo, memory, tasks, focus, caps] = await Promise.all([
     vexRulesContext(),
     ownerFactsContext(),
     kikiConversation(),
     // ความจำระยะยาว: ค้นบทสนทนาเก่าที่เกี่ยวกับข้อความนี้ (เจ้าของบ่นว่า "จำอะไรไม่ได้เลย")
     import("./kiki-memory").then((m) => m.recallContext(message)).catch(() => ""),
     import("./kiki-tasks").then((t) => t.tasksContext()).catch(() => ""),
+    // กระดานเรื่องที่กำลังค้างระหว่างกัน — ไว้ตีความคำพูดลอย ๆ ("อันนั้นเอาถูกที่สุดนะ")
+    import("./kiki-jobs").then((j) => j.focusContext()).catch(() => ""),
     import("./kiki-router").then((r) => `=== ความสามารถจริงของระบบ (มีของพวกนี้แน่นอน ห้ามปฏิเสธว่าทำไม่ได้) ===\n${r.capabilityLines()}`).catch(() => ""),
   ]);
   const now = new Date();
   const nowLine = `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
-  const parts = [KIKI_PERSONA, caps, rules, nowLine, facts, tasks, memory, convo, extraContext || ""].filter(Boolean);
+  const parts = [KIKI_PERSONA, caps, rules, nowLine, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
   const sys = parts.join("\n\n");
   try {
     return await askClaude(message, { guard: KIKI_GUARD, system: sys, timeoutMs: 150_000 });

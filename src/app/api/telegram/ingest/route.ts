@@ -17,7 +17,18 @@ import { saveDeckFiles } from "@/lib/slide-store";
 import { renderDeckPngs, renderHtmlToPng } from "@/lib/html-pdf";
 import { pageForQuestion, captureAppPage } from "@/lib/screenshot";
 import { extractUrls, fetchUrlContent } from "@/lib/weblink";
-import { saveLinkContentToKnowledge } from "@/lib/knowledge";
+import { saveLinkContentToKnowledge, ingestKnowledgeText } from "@/lib/knowledge";
+import { MAC_RE, quickMac, macAgent } from "@/lib/waan-mac";
+import {
+  CONFIRM_LOOSE_RE,
+  getOpsChatId,
+  setOpsChatId,
+  listPending,
+  clearPending,
+  resolveConfirm,
+  runAndReport,
+  type PendingCmd,
+} from "@/lib/waan-ops";
 import { previewExpiry, extractUsername, extractShopName } from "@/lib/thunder-expiry";
 import { muteGroup, unmuteGroup, listMutedGroups, muteBrand, unmuteBrand, listMutedBrands } from "@/lib/mute";
 import { rememberGroup, resolveGroups, listGroups, type GroupInfo } from "@/lib/groups";
@@ -40,6 +51,7 @@ import {
 import { addTask, updateTask, listTasks, formatBoard, type TaskStatus } from "@/lib/tasks";
 import { readUsage, formatMonitorCard } from "@/lib/usage";
 import { parseTaxIntent, answerTaxIntent } from "@/lib/tax-reply";
+import { formatCustomerScript } from "@/lib/customer-script";
 
 export const runtime = "nodejs";
 export const maxDuration = 240;
@@ -299,6 +311,75 @@ async function handleThunderReport(text: string, threadId: string): Promise<Send
     });
   }
   return sends;
+}
+
+// ===== ห้องคุมระบบ: ยืนยันรันคำสั่งกู้ระบบ + คุมเครื่อง Mac + ป้อนความรู้เข้าคลัง =====
+// ทุกฟังก์ชันในบล็อกนี้ "เจ้าของเท่านั้น" — ผู้เรียกต้องเช็ค isOwner(fromId) ด้วย Telegram id ตัวเลขมาก่อน
+async function handleOps(
+  text: string,
+  chatId: string,
+  threadId: string,
+  replyText: string,
+): Promise<Send[] | null> {
+  const t = text.trim();
+  const thr = threadId || undefined;
+
+  // ผูกห้องนี้เป็นห้องคุมระบบ (แจ้งเซสชันหมดอายุ + สั่งรันคำสั่งกู้ระบบ)
+  if (/(ตั้ง|ผูก|กำหนด).{0,12}(ห้อง|กลุ่ม)?.{0,6}(คุมระบบ|ดูแลระบบ|ops|แจ้งเตือนระบบ|สถานะระบบ)/i.test(t)) {
+    await setOpsChatId(chatId);
+    return [{
+      kind: "text",
+      threadId: thr,
+      parseMode: "HTML",
+      text:
+        "รับทราบค่ะ ✅ ตั้งห้องนี้เป็น <b>ห้องคุมระบบ</b> แล้ว\n" +
+        "ต่อไปเซสชันไหนหมดอายุ วานจะมาถามที่นี่ว่าให้รันให้ไหม — พี่ตอบ \"รันเลย\" ได้เลยค่ะ\n" +
+        "และถ้าพี่พิมพ์ข้อมูลใหม่ที่ระบบยังไม่มีไว้ในห้องนี้ วานจะเก็บเข้าคลัง Obsidian ให้อัตโนมัติค่ะ",
+    }];
+  }
+
+  // ดูว่ามีคำสั่งอะไรรอยืนยันอยู่บ้าง
+  if (/(มีอะไร|อะไร).{0,10}(รอ|ค้าง).{0,10}(ยืนยัน|รัน)|คำสั่งค้าง|รอรันอะไร/i.test(t)) {
+    const items = await listPending();
+    if (!items.length) return [{ kind: "text", text: "ตอนนี้ไม่มีคำสั่งค้างรอยืนยันค่ะ ✅", threadId: thr }];
+    return [{
+      kind: "text",
+      threadId: thr,
+      parseMode: "HTML",
+      text: `มีคำสั่งรอยืนยัน ${items.length} รายการค่ะ\n${items.map((i) => `• <b>${i.service.toUpperCase()}</b> — <code>npm run ${i.script}</code>`).join("\n")}\n\nตอบ "รันเลย <ชื่อ>" เพื่อเลือกได้เลยค่ะ`,
+    }];
+  }
+
+  // "รันเลย" → ต้องรู้ว่ารันตัวไหน (ผูกกับใบแจ้งเตือน) ถ้าคลุมเครือให้ถามก่อน ห้ามเดา
+  if (CONFIRM_LOOSE_RE.test(t)) {
+    const r = await resolveConfirm(t, replyText);
+    if (r.none) {
+      return [{ kind: "text", text: "ตอนนี้ไม่มีคำสั่งค้างรอยืนยันค่ะ (คำขออาจหมดอายุไปแล้ว — เกิน 1 ชั่วโมง)", threadId: thr }];
+    }
+    if (r.ambiguous?.length) {
+      return [{
+        kind: "text",
+        threadId: thr,
+        parseMode: "HTML",
+        text: `มีค้างอยู่ ${r.ambiguous.length} ตัวค่ะ ไม่แน่ใจว่าให้รันตัวไหน — ระบุด้วยนะคะ\n${r.ambiguous.map((i) => `• <b>${i.service.toUpperCase()}</b> — <code>npm run ${i.script}</code>`).join("\n")}\n\nพิมพ์เช่น "รันเลย ${r.ambiguous[0].service}" ค่ะ`,
+      }];
+    }
+    const item = r.picked as PendingCmd;
+    await clearPending(item.id); // กันกดซ้ำ/รันซ้อน
+    // รันเบื้องหลัง — auth เด้งหน้าต่างล็อกอินและรอได้ถึง 10 นาที นานเกินกว่าจะค้าง HTTP request ไว้
+    void runAndReport({ ...item, chatId }, "").catch(() => {});
+    return [{
+      kind: "text",
+      threadId: thr,
+      parseMode: "HTML",
+      text:
+        `กำลังรัน <code>npm run ${item.script}</code> บนเครื่องให้แล้วค่ะ 🚀\n` +
+        `เดี๋ยวหน้าต่างล็อกอินจะเด้งขึ้นมา — พี่ล็อกอินได้เลยค่ะ\n` +
+        `เสร็จแล้ววานจะแคปหน้าจอมารายงานผลให้ที่นี่ (รอสูงสุด 10 นาที)`,
+    }];
+  }
+
+  return null;
 }
 
 // ===== Thunder: รายงานแชทประจำวัน (ผูกห้อง + ถามย้อนหลัง) =====
@@ -748,6 +829,11 @@ export async function POST(req: Request) {
     // Thunder: คลังความรู้ (สอน/ค้นลูกค้า/ตอบจากคลัง) — คืน null ถ้าไม่ตรง ให้ไหลต่อ
     const kbReply = await handleThunderKnowledge(text, threadId);
     if (kbReply) return NextResponse.json({ sends: kbReply });
+    // ห้องคุมระบบ: ยืนยันรันคำสั่ง / คุมเครื่อง — เฉพาะเจ้าของ (id ตัวเลข) คนอื่นพิมพ์ "รันเลย" = เมินเงียบ
+    if (ownerHere) {
+      const ops = await handleOps(text, chatId, threadId, replyText);
+      if (ops) return NextResponse.json({ sends: ops });
+    }
     // Thunder: รายงานแชทประจำวัน (ผูกห้อง / ถามย้อนหลัง)
     const chatRep = await handleChatReport(text, chatId, threadId);
     if (chatRep) return NextResponse.json({ sends: chatRep });
@@ -810,6 +896,50 @@ export async function POST(req: Request) {
       return NextResponse.json({ sends: [{ kind: "text", text: `รับทราบค่ะ✅ ตรวจเอกสาร AFF เสร็จเมื่อไหร่ จะแท็ก ${tag} ${where} ให้ทุกครั้งค่ะ`, threadId }] as Send[] });
     }
     return NextResponse.json({ sends: [{ kind: "text", text: "ขอชื่อคนที่จะแท็กแบบที่ระบบแท็กได้นะคะ — พิมพ์ @ แล้วเลือกชื่อจากรายการ (เช่น @Pop) หรือ reply ข้อความคนนั้นค่ะ", threadId }] as Send[] });
+  }
+
+  // ===== คุมเครื่อง Mac — เจ้าของเท่านั้น (ใช้ได้ทั้งห้องคุมระบบและแชทส่วนตัว) =====
+  // เช็ค isOwner ด้วย Telegram id ตัวเลข: คนอื่นพิมพ์คำเดียวกันจะไม่เข้าเงื่อนไขนี้เลย
+  if (ownerHere && MAC_RE.test(text)) {
+    try {
+      const quick = await quickMac(text);
+      const r = quick || (await macAgent(text));
+      const sends: Send[] = [{ kind: "text", text: r.text, threadId }];
+      for (const p of r.imagePaths || []) {
+        try {
+          sends.push({ kind: "photo", dataBase64: fs.readFileSync(p).toString("base64"), caption: "", threadId });
+          fs.unlink(p, () => {});
+        } catch { /* ไฟล์หาย ข้ามไป */ }
+      }
+      return NextResponse.json({ sends });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return NextResponse.json({ sends: [{ kind: "text", text: `สั่งงานเครื่องไม่สำเร็จค่ะ: ${escHtml(msg)}`, threadId }] as Send[] });
+    }
+  }
+
+  // ===== ป้อนข้อมูลใหม่เข้าคลัง Obsidian — พิมพ์ในห้องคุมระบบได้เลย (เจ้าของเท่านั้น) =====
+  // เจตนาชัดว่า "ให้เก็บ" เท่านั้น (สั่งเก็บ/ขึ้นต้นว่าจำไว้) — ไม่ใช่ทุกข้อความที่พิมพ์ในห้อง
+  if (ownerHere && isGroup && chatId === (await getOpsChatId())) {
+    const wantSave = /^(เก็บ|บันทึก|จำ|เพิ่ม|ป้อน|save|note)\b|เก็บ(ไว้|เข้าคลัง|ลงคลัง|ลง\s*obsidian)|จำไว้(นะ|ด้วย)?|ข้อมูลใหม่/i.test(text);
+    if (wantSave && text.length >= 25) {
+      try {
+        const body = text.replace(/^(เก็บ|บันทึก|จำ|เพิ่ม|ป้อน|save|note)[\s:：]*(ไว้|เข้าคลัง|ลงคลัง|ลง\s*obsidian|ด้วย|หน่อย)?[\s:：]*/i, "").trim();
+        const r = await ingestKnowledgeText(body || text, `พิมพ์ในห้องคุมระบบ (${chatTitle || chatId})`, fromName || undefined);
+        if (!r.ok) return NextResponse.json({ sends: [{ kind: "text", text: `เก็บเข้าคลังไม่สำเร็จค่ะ: ${escHtml(r.error || "ไม่ทราบสาเหตุ")}`, threadId }] as Send[] });
+        return NextResponse.json({
+          sends: [{
+            kind: "text",
+            parseMode: "HTML",
+            threadId,
+            text: `📚 เก็บเข้าคลังความรู้แล้วค่ะ\n<b>${escHtml(r.title || "")}</b>\n${escHtml(r.summary || "")}\n\n<i>${escHtml(r.notePath || "")}</i>\nครั้งหน้าถามถึงเรื่องนี้ วานดึงมาตอบได้เลยค่ะ`,
+          }] as Send[],
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return NextResponse.json({ sends: [{ kind: "text", text: `เก็บเข้าคลังไม่สำเร็จค่ะ: ${escHtml(msg)}`, threadId }] as Send[] });
+      }
+    }
   }
 
   // ===== ดู Usage Monitor ทันที =====
@@ -1084,7 +1214,17 @@ export async function POST(req: Request) {
     reply = af.text;
     await saveChat("assistant", reply);
     const sends: Send[] = [];
-    if (reply) sends.push({ kind: "text", text: reply, threadId: threadId || undefined, buttons: btn.buttons });
+    if (reply) {
+      // ส่วนที่เป็น "ข้อความให้แอดมินเอาไปตอบลูกค้า" → ทำเป็นกล่องคัดลอกได้ (Telegram มีปุ่ม copy ให้)
+      const fmt = formatCustomerScript(reply);
+      sends.push({
+        kind: "text",
+        text: fmt.text,
+        threadId: threadId || undefined,
+        buttons: btn.buttons,
+        ...(fmt.parseMode ? { parseMode: fmt.parseMode } : {}),
+      });
+    }
     for (const fp of af.files) {
       try {
         const b64 = fs.readFileSync(fp).toString("base64");

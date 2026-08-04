@@ -50,8 +50,11 @@ export async function POST(req: Request) {
   }
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "waan-affmake-"));
-  // ใช้ parseEditSmart (regex + Claude) → ใครพิมพ์คำสั่งแก้แบบไหนก็ตีความได้
-  const overrides = editInstruction ? await parseEditSmart(editInstruction) : undefined;
+  // ถ้าบอทส่ง overrides ที่ "แอดมินกดยืนยันแล้ว" มา ใช้ตามนั้นเลย (ไม่ตีความซ้ำ = ไม่มีโอกาสเพี้ยน)
+  // ไม่งั้นค่อยตีความจากคำสั่งข้อความ (ทางเดิม เผื่อเรียกจากที่อื่น)
+  const overrides = body.overrides && Object.keys(body.overrides).length
+    ? (body.overrides as Awaited<ReturnType<typeof parseEditSmart>>)
+    : editInstruction ? await parseEditSmart(editInstruction) : undefined;
   let r;
   try {
     r = await makeAffReceipt({ noti, chatId, outDir: dir, overrides });
@@ -72,6 +75,21 @@ export async function POST(req: Request) {
     try { sends.push({ kind: "photo", dataBase64: fs.readFileSync(p).toString("base64"), caption }); } catch { /* skip */ }
   };
 
+  // ลูกค้าใหม่: วานไปทำ "เอกสารยืนยันตัวตน" จากหน้า KYC ในระบบมาให้เองแล้ว → ส่งเข้ากลุ่มก่อน
+  if (r.kycCreated && r.kycDoc) {
+    try {
+      sends.push({
+        kind: "document",
+        dataBase64: fs.readFileSync(r.kycDoc.path).toString("base64"),
+        filename: r.kycDoc.filename,
+        caption:
+          `✅ ทำเอกสารยืนยันตัวตนลูกค้าใหม่ "${r.username}" เรียบร้อยแล้วค่ะ (ดึงจากหน้ายืนยันตัวตนในระบบให้เอง)` +
+          (r.kycNote ? `\n⚠️ ${r.kycNote}` : ""),
+      });
+    } catch { /* ส่งไฟล์ไม่ได้ก็ยังไปต่อ */ }
+    sends.push({ kind: "text", text: "📄 เก็บเข้าคลังข้อมูล AFF ให้แล้ว กำลังทำเอกสารถอน AFF ต่อให้เลยนะคะ สักครู่ค่ะ" });
+  }
+
   if (r.status === "ok" || r.status === "amount_mismatch") {
     if (r.reportText) sends.push({ kind: "text", text: r.reportText, parseMode: "HTML" });
     for (const im of r.images || []) pushPhoto(im.path, im.caption);
@@ -87,9 +105,13 @@ export async function POST(req: Request) {
     }
     await saveChat("assistant", `[วานจัดทำ+ตรวจเอกสาร AFF ${r.username}]\n${stripHtml(r.reportText || "")}`.slice(0, 3500)).catch(() => {});
   } else if (r.status === "new_customer") {
+    // ปกติวานจะไปดึงหน้ายืนยันตัวตนจากระบบมาทำเอกสารเอง — มาถึงตรงนี้ = ดึงไม่ได้จริง ๆ บอกสาเหตุตรง ๆ
     sends.push({
       kind: "text",
-      text: `ยูสเซอร์ "${r.username}" ยังไม่มีไฟล์ในระบบ น่าจะเป็นลูกค้าใหม่ค่ะ\nรบกวนส่ง "หน้าข้อมูลลูกค้า" (หน้ายืนยันตัวตน + บัตรประชาชน) มาในแชทน้องวาน เดี๋ยวจัดทำเอกสารให้เลยนะคะ`,
+      text:
+        `ยูสเซอร์ "${r.username}" ยังไม่มีเอกสารยืนยันตัวตนในคลัง และทำให้อัตโนมัติไม่สำเร็จค่ะ\n` +
+        `สาเหตุ: ${r.note || "ไม่ทราบ"}\n` +
+        `ถ้าลูกค้ายืนยันตัวตนในระบบแล้ว บอกให้ลองใหม่ได้เลย หรือส่งหน้าข้อมูลลูกค้ามาในแชทก็ได้ค่ะ`,
     });
   } else if (r.status === "no_session") {
     sends.push({ kind: "text", text: `⚠️ ${r.note || "ยังไม่ได้เชื่อมระบบหลังบ้าน"} — รบกวนรัน npm run thunder:auth ค่ะ` });

@@ -145,6 +145,8 @@ async function processMessage(msgs) {
   const text = msgs.map((m) => m.text || m.caption || "").filter(Boolean).join("\n").trim();
   const reply = msg.reply_to_message;
   const replyText = reply ? (reply.text || reply.caption || "") : "";
+  // reply ใส่ "ภาพหน้าจอที่ Vex แคปมา" = คำสั่งเกี่ยวกับสิ่งที่อยู่ในภาพนั้น ไม่ใช่กลุ่มแชท
+  const replyIsScreenshot = Boolean(reply && reply.photo && reply.from && reply.from.is_bot);
 
   // ยังไม่ปิด privacy = ข้อความปกติในกลุ่มมาไม่ถึง Vex — เตือนครั้งเดียวต่อกลุ่ม
   if (PRIVACY_ON && isGroup && !privacyWarned.has(chatId)) {
@@ -206,6 +208,7 @@ async function processMessage(msgs) {
     isGroup,
     chatTitle: msg.chat.title || "",
     replyText,
+    replyIsScreenshot,
     imageFiles,
     audioFiles,
     docFiles,

@@ -164,6 +164,9 @@ const knowledgePending = {}; // chatId -> timestamp (สั่งเก็บไ
 const affPending = {};      // chatId -> timestamp (สั่งตรวจเอกสาร AFF แล้วแต่ยังรอไฟล์ forward ตามมา)
 const affDrafts = {};       // summaryMsgId -> {chatId,notiMsgId,threadId,summary,tag,pdfB64,filename,notiText,until} (ร่างที่รอกดอนุมัติ)
 const editingAff = {};      // chatId -> {notiText,notiMsgId,threadId,until} (กด "แก้ไข" แล้วรอคำสั่งแก้)
+// โหมดแก้เอกสาร AFF แบบใหม่: สะสมสิ่งที่จะแก้ไว้ก่อน แล้วให้แอดมิน "ยืนยัน" ทีเดียว (ไม่ออกเอกสารทันที)
+// chatId -> {notiText,notiMsgId,threadId,summary,overrides,awaitField,cardMsgId,until}
+const affEdit = {};
 const editingMemo = {};     // chatId -> {id, until} (กด "แก้ไข" แล้ว รอคำสั่งแก้เอกสารตัวนี้)
 const lastAffNoti = {};     // chatId -> {notiText,notiMsgId,threadId,until} — noti ล่าสุดที่ทำเอกสารไป (ให้พิมพ์แก้ซ้ำได้ ไม่ต้องกดปุ่ม)
 const BUFFER_TTL = 180000;  // 3 นาที
@@ -455,28 +458,57 @@ async function doAffCheck(chatId, text, files, from, isGroup, msgId, threadId, r
 
 // วานสร้างใบสำคัญรับเงิน Affiliate เอง + ตรวจเอง เมื่อบอทระบบแจ้ง noti (กลุ่มหน้าที่ aff)
 // editInstruction != "" = โหมดแก้ไข (สร้างใหม่ตามที่แก้)
-async function doAffMake(chatId, notiText, from, isGroup, msgId, threadId, editInstruction = "") {
+async function doAffMake(chatId, notiText, from, isGroup, msgId, threadId, editInstruction = "", overrides = null) {
+  // เช็คก่อนลงมือ: ลูกค้ารายนี้มีเอกสารยืนยันตัวตนในคลังแล้วหรือยัง (เร็ว ไม่กี่ ms)
+  // เคสยังไม่มี = ต้องไปทำเอกสารยืนยันตัวตนก่อน ใช้เวลานาน → ต้องบอกในห้องตั้งแต่ต้น ไม่ใช่ปล่อยเงียบ
+  let pre = null;
+  if (!editInstruction && !overrides) {
+    try {
+      const pr = await fetch(APP_URL + "/api/telegram/aff-precheck", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+        body: JSON.stringify({ notiText }),
+      });
+      pre = await pr.json();
+    } catch { /* เช็คไม่ได้ก็ทำต่อแบบเดิม */ }
+  }
+  const isNewCustomer = Boolean(pre?.ok && pre.hasProfile === false);
+
+  // แจ้งในห้องก่อนเริ่ม (เคสลูกค้าใหม่ต้องรู้ว่ากำลังทำเอกสารยืนยันตัวตนให้อยู่)
+  const wipText = await line(chatId, {
+    situation: isNewCustomer
+      ? "ลูกค้ารายนี้เพิ่งแจ้งถอน AFF แต่ยังไม่มีเอกสารยืนยันตัวตนที่ต้องแนบท้ายใบสำคัญรับเงิน — บอกในห้องว่ายังไม่มีเอกสารยืนยันตัวตน เดี๋ยวจัดทำให้ก่อน ขอเวลาสักครู่ (ห้ามบอกให้แอดมินส่งเอกสารมา เพราะเราทำเองได้)"
+      : "บอทระบบเพิ่งแจ้งรายการถอนเงิน Affiliate ที่รออนุมัติเข้ามาในห้อง เรากำลังลงมือจัดทำใบสำคัญรับเงินให้เองโดยไม่ต้องมีใครสั่ง — บอกในห้องสั้น ๆ ว่ากำลังทำอยู่",
+    facts: isNewCustomer
+      ? [`ยูสเซอร์: ${pre?.username || ""}`, "จะไปดึงหน้ายืนยันตัวตนจากระบบมาทำเป็นเอกสารแนบให้เอง", "ทำเสร็จจะส่งเอกสารเข้าห้องนี้ แล้วทำใบถอน AFF ต่อทันที"]
+      : ["ทำเสร็จจะส่งเอกสารกับสรุปให้ในห้องนี้", editInstruction ? `รอบนี้เป็นการแก้ตามที่สั่ง: ${String(editInstruction).slice(0, 200)}` : "ทำให้อัตโนมัติจากข้อมูลในแจ้งเตือน"],
+    fallback: isNewCustomer
+      ? "ยูสเซอร์นี้ยังไม่มีเอกสารยืนยันตัวตนที่ต้องแนบค่ะ เดี๋ยวจัดทำเอกสารให้ก่อน สักครู่นะคะ 🧾"
+      : "🧾 กำลังจัดทำใบสำคัญรับเงินให้อัตโนมัติค่ะ...",
+    timeoutMs: 6000,
+  });
+  const wip = await tg("sendMessage", { chat_id: chatId, text: wipText, ...sendOpts(threadId) }).catch(() => null);
+  noteSpoken(chatId, wipText);
+
+  // ลงมือทำจริง (เคสลูกค้าใหม่จะรวมขั้นตอนดึง KYC + ทำเอกสารยืนยันตัวตนด้วย ใช้เวลานานกว่า)
   let data;
   try {
     const r = await fetch(APP_URL + "/api/telegram/aff-make", {
       method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
-      body: JSON.stringify({ chatId: String(chatId), notiText, isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", fromId: String(from?.id || ""), editInstruction }),
+      body: JSON.stringify({ chatId: String(chatId), notiText, isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", fromId: String(from?.id || ""), editInstruction, overrides: overrides || undefined }),
     });
     data = await r.json();
-  } catch { return; }
-  if (!data.ok || data.skip) return; // ไม่ใช่กลุ่ม aff / อ่าน noti ไม่ได้ → เงียบ
+  } catch {
+    if (wip?.result?.message_id) await tg("deleteMessage", { chat_id: chatId, message_id: wip.result.message_id }).catch(() => {});
+    return;
+  }
+  if (!data.ok || data.skip) { // ไม่ใช่กลุ่ม aff / อ่าน noti ไม่ได้ → เงียบ (เก็บข้อความที่เพิ่งส่งด้วย)
+    if (wip?.result?.message_id) await tg("deleteMessage", { chat_id: chatId, message_id: wip.result.message_id }).catch(() => {});
+    return;
+  }
 
-  // สถานะ: กำลังจัดทำ (แจ้งสั้น ๆ ในกลุ่ม แล้วลบทีหลัง)
-  const wipText = await line(chatId, {
-    situation:
-      "บอทระบบเพิ่งแจ้งรายการถอนเงิน Affiliate ที่รออนุมัติเข้ามาในห้อง เรากำลังลงมือจัดทำใบสำคัญรับเงินให้เองโดยไม่ต้องมีใครสั่ง — บอกในห้องสั้น ๆ ว่ากำลังทำอยู่",
-    facts: ["ทำเสร็จจะส่งเอกสารกับสรุปให้ในห้องนี้", editInstruction ? `รอบนี้เป็นการแก้ตามที่สั่ง: ${String(editInstruction).slice(0, 200)}` : "ทำให้อัตโนมัติจากข้อมูลในแจ้งเตือน"],
-    fallback: "🧾 กำลังจัดทำใบสำคัญรับเงินให้อัตโนมัติค่ะ...",
-    timeoutMs: 6000,
-  });
-  const wip = await tg("sendMessage", { chat_id: chatId, text: wipText, ...sendOpts(threadId) }).catch(() => null);
   await sendResultSends(chatId, data.sends || [], threadId);
-  if (wip?.result?.message_id) await tg("deleteMessage", { chat_id: chatId, message_id: wip.result.message_id }).catch(() => {});
+  // เคสลูกค้าใหม่: เก็บข้อความ "กำลังทำเอกสารยืนยันตัวตน" ไว้เป็นร่องรอย · เคสปกติลบทิ้งเหมือนเดิม
+  if (!isNewCustomer && wip?.result?.message_id) await tg("deleteMessage", { chat_id: chatId, message_id: wip.result.message_id }).catch(() => {});
 
   await reactMsg(chatId, msgId, data.allOk ? "✅" : "⚠️");
 
@@ -511,7 +543,72 @@ async function doAffMake(chatId, notiText, from, isGroup, msgId, threadId, editI
         notiText, until: Date.now() + 24 * 3600 * 1000,
       };
     }
+    // จำ "ค่าปัจจุบัน" ของเคสล่าสุดไว้ด้วย — ให้พิมพ์คำสั่งแก้ได้เลยโดยไม่ต้องกดปุ่ม แล้วยังเทียบ เดิม→ใหม่ ได้
+    lastAffNoti[chatId] = {
+      notiText, notiMsgId: msgId, threadId: threadId ? String(threadId) : "",
+      summary: data.summaryCaption, until: Date.now() + AFF_NOTI_TTL,
+    };
   }
+}
+
+// ===== แก้เอกสาร AFF: สะสมการแก้ → โชว์ "เดิม → ใหม่" → ยืนยันแล้วค่อยออกเอกสาร =====
+// ปุ่มเลือกช่อง (แก้ทีละช่อง แม่นสุด เพราะพิมพ์แค่ค่า ไม่ต้องเดาว่าเป็นช่องไหน)
+const AFF_FIELD_BUTTONS = [
+  { text: "ชื่อผู้รับเงิน", data: "affedit:f:name" },
+  { text: "ที่อยู่", data: "affedit:f:address" },
+  { text: "เลขผู้เสียภาษี", data: "affedit:f:taxId" },
+  { text: "วันที่ทำการถอน", data: "affedit:f:date" },
+  { text: "จำนวนเงินที่ถอน", data: "affedit:f:gross" },
+  { text: "ธนาคาร/เลขบัญชี", data: "affedit:f:bankAccount" },
+];
+
+// ส่งคำสั่งแก้ (ข้อความอิสระ / เลขข้อ / ค่าล้วนของช่องที่เลือก) ไปให้หลังบ้านตีความ
+async function affEditParse(chatId, payload) {
+  const st = affEdit[chatId];
+  try {
+    const r = await fetch(APP_URL + "/api/telegram/aff-edit", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ summary: st?.summary || "", overrides: st?.overrides || {}, ...payload }),
+    });
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+// การ์ดยืนยัน: โชว์เฉพาะช่องที่จะเปลี่ยน (เดิม → ใหม่) + ช่องที่ถูกปฏิเสธพร้อมเหตุผล
+async function sendAffEditCard(chatId, res, threadId) {
+  const st = affEdit[chatId];
+  if (!st) return;
+  st.overrides = res.overrides || {};
+  const lines = [];
+  if ((res.diff || []).length) {
+    lines.push("✏️ จะแก้ตามนี้นะคะ — ตรวจแล้วกดยืนยันได้เลย");
+    lines.push("");
+    for (const d of res.diff) lines.push(`• ${d.label}\n   เดิม: ${d.from}\n   ใหม่: ${d.to}`);
+  } else {
+    lines.push("ยังไม่มีอะไรจะแก้ค่ะ — พิมพ์บอกได้เลย หรือกดปุ่มเลือกช่องด้านล่าง");
+  }
+  if ((res.rejected || []).length) {
+    lines.push("", "⚠️ ข้ามให้บางอย่าง (ไม่เอาลงเอกสาร):");
+    for (const r of res.rejected) lines.push(`• ${r.key}: "${String(r.value).slice(0, 40)}" — ${r.why}`);
+  }
+  if ((res.unsupported || []).length) {
+    lines.push("", "ℹ️ " + res.unsupported.join(" · "));
+  }
+  lines.push("", 'พิมพ์แก้เพิ่มได้เรื่อย ๆ (พิมพ์ตรง ๆ หรือใช้เลขข้อ เช่น "2 = นายสมชาย ใจดี") แล้วค่อยกดยืนยันทีเดียว');
+  const buttons = [
+    ...(Object.keys(st.overrides).length ? [{ text: "✅ ยืนยัน ออกเอกสารใหม่", data: "affedit:ok" }] : []),
+    { text: "✏️ เลือกช่องที่จะแก้", data: "affedit:fields" },
+    { text: "❌ ยกเลิก", data: "affedit:cancel" },
+  ];
+  const sent = await tg("sendMessage", {
+    chat_id: chatId,
+    text: lines.join("\n"),
+    ...sendOpts(threadId || st.threadId, { reply_markup: keyboardFromButtons(buttons) }),
+  }).catch(() => null);
+  if (sent?.result?.message_id) st.cardMsgId = sent.result.message_id;
+  noteSpoken(chatId, lines[0]);
 }
 
 // ทำสไลด์ "จากไฟล์ที่แนบ" (เช่น reply PDF แล้วสั่งทำสไลด์) — อ่านเนื้อหาไฟล์นั้นมาทำ ไม่ใช่ดึงข้อมูลระบบ
@@ -957,7 +1054,20 @@ async function chatIngest(chatId, text, from, isGroup, replyTo, msgId, replyText
       if (softId) await tg("deleteMessage", { chat_id: chatId, message_id: softId }).catch(() => {});
       // การ์ดระบบ (usage/board) หรือข้อความ HTML ที่จัดฟอร์แมต/แท็กมาเองแล้ว (เช่น คำทักทายตอนเพิ่มทีม)
       // → ส่งตรงด้วย parse_mode ไม่ต้องเติมชื่อนำหน้า/ใช้ entity (กัน HTML โชว์ดิบ + แท็กซ้ำ)
-      if (texts[0].plain || texts[0].parseMode === "HTML") { await tg("sendMessage", { chat_id: chatId, text: texts[0].text, ...sendOpts(threadId, { ...pm, ...kbExtra }) }); return; }
+      if (texts[0].plain || texts[0].parseMode === "HTML") {
+        // ข้อความ HTML (เช่น คำตอบที่มีกล่อง "ข้อความสำหรับตอบลูกค้า") ใช้ entity แท็กคู่กับ parse_mode ไม่ได้
+        // → เติม @username เป็นข้อความนำหน้าแทน (คนที่ถามจะได้รู้ว่าตอบตัวเอง) ถ้าไม่มี username ก็ reply เข้าข้อความเขา
+        const who = (mentions && mentions.length) ? mentions[0] : from;
+        const tagPrefix = !texts[0].plain && who?.username ? `@${who.username}\n` : "";
+        await tg("sendMessage", {
+          chat_id: chatId,
+          text: tagPrefix + texts[0].text,
+          ...sendOpts(threadId, { ...pm, ...kbExtra }),
+          ...(tagPrefix ? {} : { reply_to_message_id: msgId }),
+        });
+        noteSpoken(chatId, texts[0].text);
+        return;
+      }
       const addressee = (mentions && mentions.length) ? mentions[0] : from;
       // ตัดคำนำหน้าที่ AI อาจเผลอใส่ (ทั้ง "@ชื่อ" และชื่อคนที่พูดด้วยล้วนๆ) กันแท็กซ้ำสองรอบ
       let body = String(texts[0].text || "").replace(/^\s*@\S+[\s,:!.\-]*/, "");
@@ -1202,11 +1312,14 @@ async function processBatch(chatId, msgs) {
     const namePrefix = /^\s*วาน(?!นี้|ซืน|ซาน)/i.test(text);
     // คำสั่งตั้งค่า/แอดมิน — พิมพ์ตรงๆ ได้ ไม่ต้องมี "วาน" นำ (สะดวกตอนตั้งห้อง/ผูกกลุ่ม/ดู usage)
     const setupCmd = /^\s*(ตั้งห้องนี้เป็น|ห้องนี้คือ|บทบาท|set\s*role|ผูกกลุ่ม|bind|แนะนำตัว|เชื่อมกลุ่ม|เริ่มงาน|บอร์ด|board|สรุปงาน|เพิ่มงาน|\+task|ลงงาน|อัปเดต\s*T\d|ปิดงาน\s*T\d|ตรวจเสร็จให้แท็ก|usage|monitor|สรุปการใช้งาน|การใช้งาน)/i.test(text);
+    // ยืนยันรันคำสั่งกู้ระบบ — พิมพ์สั้น ๆ ในกลุ่มได้เลย ไม่ต้อง reply/แท็ก (สะดวกตอนรีบ)
+    // ปลอดภัย: ฝั่ง ingest เช็ค isOwner ด้วย Telegram id ตัวเลขอีกชั้น คนอื่นพิมพ์แล้วเงียบสนิท
+    const runCmd = /^\s*(รันเลย|รันได้เลย|รันให้เลย|เอาเลย|จัดเลย|ทำเลย|ยืนยันรัน)/i.test(text);
     // กลุ่ม dedicated (เช่น ขยายวันหมดอายุ Thunder) = ประมวลผลทุกข้อความ ไม่ต้องขึ้นต้น "วาน"
     const isDedicated = dedicatedGroups.has(String(chatId));
     // เรียกวานตรง ๆ (แท็ก/ชื่อ/reply) ≠ กลุ่ม dedicated ที่รับทุกข้อความอยู่แล้ว
     // กลุ่มหน้าที่เดียวบางกลุ่ม (เช่น สถานะใบกำกับ) ต้องแยกให้ออก จะได้เงียบตอนทีมคุยกันเอง
-    addressedNow = repliedToBot || mentioned || calledByName || namePrefix || setupCmd;
+    addressedNow = repliedToBot || mentioned || calledByName || namePrefix || setupCmd || runCmd;
     const triggered = addressedNow || isDedicated;
     const armed = armedUntil[chatId] && now < armedUntil[chatId];
     const memoWaiting = memoPending[chatId] && now < memoPending[chatId];
@@ -1265,17 +1378,33 @@ async function processBatch(chatId, msgs) {
     } catch { /* ไม่ใช่ memo หรือ backend ไม่พร้อม → ปล่อยให้ flow อื่นทำต่อ */ }
   }
 
-  // โหมดแก้ใบสำคัญรับเงิน AFF: กด "แก้ไข" แล้วพิมพ์ หรือ พิมพ์คำสั่งแก้ในกลุ่มที่เพิ่งทำเอกสาร (ไม่ต้องกดปุ่มซ้ำ)
-  // รับเฉพาะข้อความที่ "ดูเป็นคำสั่งแก้" (มีที่อยู่/ชื่อ/ยอด) — ข้อความคุยเล่น ("รอแปปครับ") ไม่กิน คง state ไว้
-  const editingAffNow = editingAff[chatId] && now < editingAff[chatId].until;
-  const lastAffNow = lastAffNoti[chatId] && now < lastAffNoti[chatId].until;
-  if ((editingAffNow || lastAffNow) && text && looksLikeAffEdit(text)) {
-    const ctx = (editingAffNow ? editingAff[chatId] : null) || lastAffNoti[chatId];
-    delete editingAff[chatId];
-    delete armedUntil[chatId];
-    // ไม่ลบ lastAffNoti — แก้ซ้ำได้หลายครั้งใน 3 ชม.
+  // ===== โหมดแก้ใบสำคัญรับเงิน AFF (ไม่ออกเอกสารทันที — สะสมแล้วให้ยืนยัน) =====
+  // 1) กดปุ่มเลือกช่องไว้ → ข้อความถัดไปคือ "ค่าล้วน" ของช่องนั้น (แม่นสุด ไม่ต้องเดา)
+  const affEditNow = affEdit[chatId] && now < affEdit[chatId].until;
+  if (affEditNow && affEdit[chatId].awaitField && text) {
+    const field = affEdit[chatId].awaitField;
+    delete affEdit[chatId].awaitField;
     await reactMsg(chatId, triggerMsgId, "👀");
-    await doAffMake(chatId, ctx.notiText, from, isGroup, ctx.notiMsgId, ctx.threadId, text);
+    const res = await affEditParse(chatId, { mode: "field", field, value: text });
+    if (res?.ok) await sendAffEditCard(chatId, res, threadId);
+    return;
+  }
+  // 2) พิมพ์อิสระ / พิมพ์ตามเลขข้อ ("2 = นายสมชาย ใจดี") ระหว่างอยู่ในโหมดแก้ หรือหลังเพิ่งทำเอกสารในห้องนี้
+  const lastAffNow = lastAffNoti[chatId] && now < lastAffNoti[chatId].until;
+  const numberedEdit = /(?:^|\n)\s*(?:แก้\s*)?(?:ข้อ\s*)?[1-8]\s*[=:：]/.test(text || "");
+  if ((affEditNow || lastAffNow) && text && (looksLikeAffEdit(text) || numberedEdit)) {
+    if (!affEditNow) {
+      const ctx = lastAffNoti[chatId];
+      affEdit[chatId] = {
+        notiText: ctx.notiText, notiMsgId: ctx.notiMsgId, threadId: ctx.threadId,
+        summary: ctx.summary || "", overrides: {}, until: now + EDIT_TTL,
+      };
+    }
+    affEdit[chatId].until = now + EDIT_TTL;
+    delete armedUntil[chatId];
+    await reactMsg(chatId, triggerMsgId, "👀");
+    const res = await affEditParse(chatId, { mode: "parse", text });
+    if (res?.ok) await sendAffEditCard(chatId, res, threadId);
     return;
   }
 
@@ -1529,6 +1658,68 @@ async function handleCallback(cb) {
     await sendResultSends(chatId, out.sends || [], thr);
     return;
   }
+  // ===== ปุ่มในโหมดแก้เอกสาร AFF (affedit:*) =====
+  const aeb = String(cb.data || "").match(/^affedit:(f|ok|cancel|fields)(?::([a-zA-Z]+))?$/);
+  if (aeb) {
+    const thr = cb.message?.message_thread_id ? String(cb.message.message_thread_id) : "";
+    const st = affEdit[chatId];
+    const action = aeb[1];
+    if (!st || Date.now() > st.until) {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "หมดเวลาโหมดแก้แล้ว กดแก้ไขใหม่อีกครั้งค่ะ", show_alert: true }).catch(() => {});
+      return;
+    }
+    st.until = Date.now() + EDIT_TTL;
+    if (action === "cancel") {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "ยกเลิกแล้ว" }).catch(() => {});
+      await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+      delete affEdit[chatId];
+      await say(chatId, {
+        situation: "แอดมินกดยกเลิกการแก้เอกสาร — บอกสั้น ๆ ว่ายกเลิกให้แล้ว เอกสารเดิมยังอยู่เหมือนเดิม",
+        facts: ["ไม่มีอะไรถูกแก้", "อยากแก้ใหม่กดปุ่มแก้ไขที่การ์ดสรุปได้อีก"],
+        fallback: "ยกเลิกให้แล้วค่ะ เอกสารเดิมยังอยู่เหมือนเดิมนะคะ",
+      }, sendOpts(thr));
+      return;
+    }
+    if (action === "fields") {
+      await tg("answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
+      await tg("sendMessage", {
+        chat_id: chatId, text: "จะแก้ช่องไหนคะ กดเลือกได้เลย",
+        ...sendOpts(thr, { reply_markup: keyboardFromButtons([...AFF_FIELD_BUTTONS, { text: "❌ ยกเลิก", data: "affedit:cancel" }]) }),
+      }).catch(() => {});
+      return;
+    }
+    if (action === "f") {
+      const key = aeb[2];
+      const f = AFF_FIELD_BUTTONS.find((b) => b.data === `affedit:f:${key}`);
+      st.awaitField = key;
+      armedUntil[chatId] = Date.now() + EDIT_TTL; // ในกลุ่ม: รับข้อความถัดไปแม้ไม่แท็ก
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: `แก้${f?.text || ""}` }).catch(() => {});
+      const asks = {
+        name: 'พิมพ์ชื่อใหม่มาได้เลยค่ะ ใส่คำนำหน้าด้วยนะคะ เช่น "นายสมชาย ใจดี"',
+        address: 'พิมพ์ที่อยู่ใหม่ทั้งบรรทัดเลยค่ะ เช่น "88/2 หมู่ 5 ต.บางพระ อ.ศรีราชา จ.ชลบุรี"',
+        taxId: "พิมพ์เลขผู้เสียภาษี 13 หลักค่ะ",
+        date: 'พิมพ์วันที่ทำการถอนค่ะ เช่น "13/07/2569" หรือ "13 กรกฎาคม 2569"',
+        gross: 'พิมพ์จำนวนเงินที่ถอน (ก่อนหัก 3%) ค่ะ เช่น "1500"',
+        bankAccount: 'พิมพ์ธนาคารกับเลขบัญชีค่ะ เช่น "กสิกรไทย 1234567890"',
+      };
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: `✏️ ${f?.text || "ช่องที่เลือก"}\n${asks[key] || "พิมพ์ค่าใหม่มาได้เลยค่ะ"}`,
+        ...sendOpts(thr, { reply_markup: { force_reply: true, input_field_placeholder: "พิมพ์เฉพาะค่าใหม่" } }),
+      }).catch(() => {});
+      return;
+    }
+    // ยืนยัน → ออกเอกสารใหม่ด้วย overrides ที่แอดมินตรวจแล้ว (ไม่ตีความซ้ำ)
+    await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "กำลังออกเอกสารใหม่ให้ค่ะ" }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    const ctx = { ...st };
+    delete affEdit[chatId];
+    const person = personOf(cb.from);
+    await doAffMake(chatId, ctx.notiText, person, true, ctx.notiMsgId, ctx.threadId, "", ctx.overrides)
+      .catch((e) => console.error("affMake(confirm) err:", e.message));
+    return;
+  }
+
   // กดปุ่มอนุมัติ/แก้ไข ใบสำคัญรับเงินที่วานจัดทำ (aff:ok | aff:edit)
   const affCb = String(cb.data || "").match(/^aff:(ok|edit)$/);
   if (affCb) {
@@ -1537,20 +1728,41 @@ async function handleCallback(cb) {
     await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
     const d = affDrafts[cb.message.message_id];
     if (affCb[1] === "edit") {
-      // จำว่ากำลังแก้เคสไหน + เปิดหูรอคำสั่งแก้ถัดไป (แม้ไม่แท็ก)
-      if (d) {
-        editingAff[chatId] = { notiText: d.notiText, notiMsgId: d.notiMsgId, threadId: d.threadId, until: Date.now() + EDIT_TTL };
-        armedUntil[chatId] = Date.now() + EDIT_TTL;
+      // เข้าโหมดแก้: จำเคส + ค่าปัจจุบัน (การ์ดสรุป 8 ข้อ) ไว้เทียบ "เดิม → ใหม่"
+      const ctx = d || (lastAffNoti[chatId] && Date.now() < lastAffNoti[chatId].until ? lastAffNoti[chatId] : null);
+      if (!ctx) {
+        await tg("sendMessage", { chat_id: chatId, text: "ขออภัยค่ะ หาเอกสารใบนี้ไม่เจอแล้ว (บอทรีสตาร์ทไป) รบกวนให้ระบบทำใบใหม่แล้วค่อยกดแก้นะคะ", ...sendOpts(thr) }).catch(() => {});
+        return;
       }
-      const askText =
-        (await line(chatId, {
-          situation: "มีคนกดปุ่ม “แก้ไข” ใบสำคัญรับเงินที่เพิ่งทำไป — ถามสั้น ๆ ว่าอยากให้แก้ตรงไหน ให้พิมพ์บอกมาได้เลย",
-          facts: ["แก้ได้ทีละจุด พิมพ์บอกเป็นข้อความธรรมดาได้เลย", "แก้เสร็จจะทำเอกสารใหม่ให้ตรวจอีกรอบ"],
-          speaker: [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || "",
-          fallback: "รับทราบค่ะ อยากให้แก้ตรงไหน พิมพ์บอกได้เลยนะคะ",
-        })) + "\n(เช่น \"วันที่ 7/07/69\" · \"ยอด 1420\" · \"ธนาคาร: กสิกรไทย เลขบัญชี: 1234567890\" · \"ที่อยู่ บ้านเลขที่ 12 หมู่ 3 ต.X อ.Y จ.Z\")";
-      await tg("sendMessage", { chat_id: chatId, text: askText, ...sendOpts(thr), reply_to_message_id: cb.message.message_id }).catch(() => {});
-      noteSpoken(chatId, askText);
+      affEdit[chatId] = {
+        notiText: ctx.notiText, notiMsgId: ctx.notiMsgId, threadId: ctx.threadId || thr,
+        summary: ctx.summary || "", overrides: {}, until: Date.now() + EDIT_TTL,
+      };
+      armedUntil[chatId] = Date.now() + EDIT_TTL;
+      const head = await line(chatId, {
+        situation: "มีคนกดปุ่ม “แก้ไข” ใบสำคัญรับเงินที่เพิ่งทำ — บอกสั้น ๆ ว่าแก้ได้เลย จะยังไม่ออกเอกสารจนกว่าจะกดยืนยัน",
+        facts: ["แก้ได้หลายช่องในทีเดียว", "จะโชว์ให้ดูก่อนว่าจะเปลี่ยนอะไรบ้าง แล้วค่อยกดยืนยัน"],
+        speaker: [cb.from?.first_name, cb.from?.last_name].filter(Boolean).join(" ") || "",
+        fallback: "ได้เลยค่ะ บอกมาได้เลยว่าจะแก้ตรงไหน",
+      });
+      const askText = [
+        head,
+        "",
+        "แก้ได้ 3 ทาง เลือกที่ถนัดเลยค่ะ",
+        "1) พิมพ์บอกตรง ๆ เช่น “ที่อยู่ 88/2 หมู่ 5 ต.บางพระ อ.ศรีราชา จ.ชลบุรี”",
+        "2) อ้างเลขข้อจากสรุป (แก้ทีเดียวหลายข้อได้) เช่น",
+        "     2 = นายสมชาย ใจดี",
+        "     6 = 1500",
+        "3) กดปุ่มเลือกช่องด้านล่าง แล้วพิมพ์เฉพาะค่าใหม่",
+        "",
+        "ยังไม่ออกเอกสารจนกว่าจะกด “ยืนยัน” นะคะ",
+      ].join("\n");
+      await tg("sendMessage", {
+        chat_id: chatId, text: askText,
+        ...sendOpts(thr, { reply_markup: keyboardFromButtons([...AFF_FIELD_BUTTONS, { text: "❌ ยกเลิก", data: "affedit:cancel" }]) }),
+        reply_to_message_id: cb.message.message_id,
+      }).catch(() => {});
+      noteSpoken(chatId, head);
       return;
     }
     // อนุมัติ: Reply เข้าข้อความ noti บอทระบบ + แนบไฟล์ + สรุป (ชุด reply เดียว) แล้ว "อนุมัติแล้วค่ะ✅ + แท็ก"

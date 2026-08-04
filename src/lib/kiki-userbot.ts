@@ -105,6 +105,23 @@ export async function getPendingDm(channel = "telegram"): Promise<PendingRead<Pe
   return r?.data ? r : null;
 }
 
+/**
+ * ลบข้อความล่าสุดของเจ้าของในแชทนั้น (ใช้ตอนสั่ง "Vex ถอน" ภายใน 30 วิ)
+ * ต้องเทียบเนื้อความก่อนลบ — ห้ามลบข้อความอื่นที่เจ้าของพิมพ์เองด้วยมือ
+ */
+export async function deleteLastOwnMessage(peerId: string, expectText: string): Promise<boolean> {
+  const c = await client();
+  const msgs = await c.getMessages(isNaN(Number(peerId)) ? peerId : Number(peerId), { limit: 5 });
+  const norm = (x: string) => x.replace(/\s+/g, " ").trim();
+  for (const m of msgs) {
+    if (!m.out) continue;
+    if (norm(m.message || "") !== norm(expectText)) continue;
+    await c.deleteMessages(isNaN(Number(peerId)) ? peerId : Number(peerId), [m.id], { revoke: true });
+    return true;
+  }
+  return false;
+}
+
 // ===== ลิสต์รายชื่อแชท + ชื่อเรียกส่วนตัว (alias) =====
 
 // รายชื่อแชทล่าสุดในบัญชีเจ้าของ (user = เฉพาะคน ไม่เอากลุ่ม/บอท)

@@ -91,21 +91,40 @@ function runHermes(task: string, timeoutMs: number, jobId?: string): Promise<str
   });
 }
 
-// รับงานเข้าคิว + ปล่อยรันเบื้องหลังทันที (fire-and-forget) — ผลไปโผล่ทาง cron
-export async function queueHermesJob(chatId: string, task: string): Promise<string> {
+/**
+ * รับงานเข้าคิว — ปล่อยรันทันทีถ้ายังมีช่องว่าง ไม่งั้นค้างสถานะ pending ให้ cron ปล่อยทีหลัง
+ *
+ * เดิมยิงทันทีทุกงานไม่มีเพดาน สั่งรัว 10 เรื่อง = แยก 10 โปรเซสพร้อมกัน กิน CPU จนเครื่องสะดุด
+ * (สเปกข้อ 15ฉ — และต้องบอกเจ้าของด้วยว่ามีงานรอคิวอยู่ ไม่ใช่เงียบไป)
+ */
+export async function queueHermesJob(chatId: string, task: string): Promise<{ id: string; queued: boolean; ahead: number }> {
   const job = await db.kikiHermesJob.create({ data: { chatId, task: task.slice(0, 4000) } });
+  const { MAX_CONCURRENT, runningCount, queuedCount } = await import("./kiki-jobs");
+  const running = await runningCount();
+  if (running >= MAX_CONCURRENT) {
+    const ahead = (await queuedCount()) - 1;
+    return { id: job.id, queued: true, ahead: Math.max(0, ahead) };
+  }
+  await startQueuedJob(job.id);
+  return { id: job.id, queued: false, ahead: 0 };
+}
+
+/** ปล่อยงานที่อยู่ในคิวให้เริ่มรันจริง — คืน false ถ้างานไม่อยู่ในสถานะที่ปล่อยได้แล้ว */
+export async function startQueuedJob(jobId: string): Promise<boolean> {
+  const job = await db.kikiHermesJob.findUnique({ where: { id: jobId } });
+  if (!job || job.status !== "pending") return false;
+  await db.kikiHermesJob.update({ where: { id: jobId }, data: { status: "running", startedAt: new Date() } });
   void (async () => {
     try {
-      await db.kikiHermesJob.update({ where: { id: job.id }, data: { status: "running", startedAt: new Date() } });
-      const result = await runHermes(task, 15 * 60_000, job.id);
-      await db.kikiHermesJob.update({ where: { id: job.id }, data: { status: "done", result: result.slice(0, 60_000), doneAt: new Date() } });
+      const result = await runHermes(job.task, 15 * 60_000, jobId);
+      await db.kikiHermesJob.update({ where: { id: jobId }, data: { status: "done", result: result.slice(0, 60_000), doneAt: new Date() } });
     } catch (e) {
       await db.kikiHermesJob
-        .update({ where: { id: job.id }, data: { status: "failed", error: e instanceof Error ? e.message.slice(0, 500) : "error", doneAt: new Date() } })
+        .update({ where: { id: jobId }, data: { status: "failed", error: e instanceof Error ? e.message.slice(0, 500) : "error", doneAt: new Date() } })
         .catch(() => {});
     }
   })();
-  return job.id;
+  return true;
 }
 
 // ===== รายงานความคืบหน้าระหว่างทำ (เจ้าของสั่ง 4 ส.ค.: ทุก 3 นาทีบอกว่าถึงขั้นไหน) =====

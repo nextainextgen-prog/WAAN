@@ -9,14 +9,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, pipeline } from "node:stream";
+import { spawn } from "node:child_process";
+import prism from "prism-media";
 import {
   Client, GatewayIntentBits, Partials, Events,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
 } from "discord.js";
 import {
   joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
-  entersState, VoiceConnectionStatus, AudioPlayerStatus, NoSubscriberBehavior,
+  entersState, VoiceConnectionStatus, AudioPlayerStatus, NoSubscriberBehavior, EndBehaviorType,
 } from "@discordjs/voice";
 
 function loadEnv() {
@@ -38,6 +40,7 @@ const OWNER = process.env.DISCORD_OWNER_ID;
 if (!TOKEN) { console.error("ไม่พบ DISCORD_BOT_TOKEN ใน .env"); process.exit(1); }
 
 const DISCORD_LIMIT = 2000; // Discord รับข้อความละ 2,000 ตัวอักษร (Telegram 4,096 — ตัวจัดการตัดที่ 3,900)
+const FFMPEG = fs.existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg";
 
 // ===== HTML ของ Telegram → มาร์กดาวน์ของ Discord =====
 // สมองส่งข้อความมาในรูปแบบของ Telegram (sanitizeVexText แปลง **x** เป็น <b>x</b> ให้ Telegram)
@@ -233,7 +236,7 @@ async function connectVoice() {
       channelId: VOICE_CH,
       guildId: ch.guildId,
       adapterCreator: ch.guild.voiceAdapterCreator,
-      selfDeaf: true,   // เฟส 2 ยังไม่รับเสียงเข้า (เฟส 3 ค่อยเปิด) · หูปิด = ไม่ได้ยินเสียงตัวเองย้อน
+      selfDeaf: false, // เฟส 3: ต้องได้ยินเจ้าของพูด (Discord ไม่ส่งเสียงตัวเองกลับมาอยู่แล้ว)
       selfMute: false,
     });
     connection.subscribe(player);
@@ -258,6 +261,7 @@ async function connectVoice() {
 
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     console.log(`เข้าห้องเสียงแล้ว: ${ch.name}`);
+    attachReceiver();
     await refreshPresence();
   } catch (e) {
     console.error("เข้าห้องเสียงไม่ได้:", e?.message, "— ลองใหม่ใน 15 วิ");
@@ -289,6 +293,181 @@ async function speak(oggBuffer) {
 }
 
 player.on("error", (e) => console.error("player error:", e?.message));
+
+// ===== เสียงขาเข้า (เฟส 3) =====
+//
+// ด่านกรองซ้อนกัน 4 ชั้น กันทั้งค่าใช้จ่ายและการแทรกผิดจังหวะ:
+//   1. Discord VAD  — เงียบ = ไม่มีเสียงส่งมาเลย ฟรี ไม่กิน CPU ไม่กินเงิน
+//   2. ตัดประโยคเมื่อเงียบ 900ms — ได้ประโยคเป็นก้อน ๆ ไม่ใช่สายยาวไม่รู้จบ
+//   3. ตัวกรองความยาว — สั้นกว่า 0.6 วิ = เสียงกระแทก/ไอ/เสียงรบกวน ทิ้ง
+//   4. เพดานจำนวนต่อนาที — กันเสียงทีวี/คลิปเปิดค้างแล้วยิง STT รัว ๆ
+//
+// ที่เหลือ (คำปลุก โหมด กรองว่าพูดกับใคร) ตัดสินที่ฝั่งสมอง ไม่ใช่ที่นี่
+
+const MIN_UTTER_MS = 600;
+const SILENCE_MS = 900;
+const MAX_STT_PER_MIN = 25;
+let sttWindow = [];
+const listening = new Set();
+let lastCueAt = 0;
+
+function sttBudgetOk() {
+  const now = Date.now();
+  sttWindow = sttWindow.filter((t) => now - t < 60_000);
+  if (sttWindow.length >= MAX_STT_PER_MIN) return false;
+  sttWindow.push(now);
+  return true;
+}
+
+/** เสียงสัญญาณสั้น ๆ — สร้างครั้งเดียวแล้วใช้ซ้ำ (ตอบรับต้องทันที ไม่ทันรอ TTS) */
+const cues = {};
+function makeCue(name, spec) {
+  return new Promise((resolve) => {
+    const args = ["-y", "-f", "lavfi", "-i", spec, "-c:a", "libopus", "-b:a", "48k", "-f", "ogg", "pipe:1"];
+    const ff = spawn(FFMPEG, args, { stdio: ["ignore", "pipe", "ignore"] });
+    const chunks = [];
+    ff.stdout.on("data", (d) => chunks.push(d));
+    ff.on("close", () => { cues[name] = Buffer.concat(chunks); resolve(); });
+    ff.on("error", () => resolve());
+  });
+}
+async function buildCues() {
+  // ตุ๊บเบา ๆ ตอนถูกเรียก · สองโทนขึ้น = เปิดโหมด · สองโทนลง = ปิดโหมด (สเปกข้อ 6)
+  await makeCue("wake", "sine=frequency=880:duration=0.09,volume=0.25");
+  await makeCue("mode-on", "sine=frequency=660:duration=0.1,volume=0.3[a];sine=frequency=990:duration=0.1,volume=0.3[b];[a][b]concat=n=2:v=0:a=1");
+  await makeCue("mode-off", "sine=frequency=990:duration=0.1,volume=0.3[a];sine=frequency=560:duration=0.1,volume=0.3[b];[a][b]concat=n=2:v=0:a=1");
+  console.log(`เสียงสัญญาณพร้อม: ${Object.keys(cues).filter((k) => cues[k]?.length).join(", ")}`);
+}
+
+/** เล่นเสียงสัญญาณแทรกได้ทันที ไม่ต้องเข้าคิว (ต้องตอบรับภายในเสี้ยววินาที) */
+async function playCue(name) {
+  const buf = cues[name];
+  if (!buf?.length || !connection || !ownerInVoice) return;
+  if (Date.now() - lastCueAt < 400) return;
+  lastCueAt = Date.now();
+  try {
+    player.play(createAudioResource(Readable.from(buf), { inputType: StreamType.OggOpus }));
+  } catch { /* เสียงสัญญาณพลาดไม่เป็นไร */ }
+}
+
+/** Opus จาก Discord → PCM → OGG ที่ Gemini อ่านได้ (ไม่มีตัวมัด Ogg ใน prism 1.x เลยถอดแล้วเข้ารหัสใหม่) */
+function opusToOgg(opusStream, outPath) {
+  return new Promise((resolve, reject) => {
+    const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+    const ff = spawn(FFMPEG, [
+      "-y", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
+      "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "24k", outPath,
+    ], { stdio: ["pipe", "ignore", "ignore"] });
+    ff.on("close", (code) => (code === 0 ? resolve() : reject(new Error("ffmpeg exit " + code))));
+    ff.on("error", reject);
+    pipeline(opusStream, decoder, ff.stdin, (err) => { if (err) ff.kill("SIGKILL"); });
+  });
+}
+
+/** ส่งประโยคที่ได้ยินไปให้สมองตัดสิน แล้วทำตามที่มันสั่ง */
+async function handleUtterance(oggPath) {
+  try {
+    const res = await fetch(APP_URL + "/api/kiki/voice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ path: oggPath, speaking }),
+      signal: AbortSignal.timeout(240_000),
+    });
+    if (!res.ok) return;
+    const { action, heard } = await res.json();
+    if (heard) console.log(`  ได้ยิน: "${heard}"${action.do === "ignore" ? ` → ข้าม (${action.why})` : ""}`);
+    switch (action.do) {
+      case "stop":
+        player.stop(true);
+        console.log("  → สั่งหยุด หยุดพูดทันที");
+        break;
+      case "undo":
+        console.log("  → สั่งถอน");
+        await fetch(APP_URL + "/api/kiki/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+          body: JSON.stringify({ chatId: TEXT_CH, text: "ถอนข้อความที่เพิ่งส่ง", fromId: OWNER, platform: "discord", channel: "discord-voice", msgId: String(Date.now()) }),
+        }).catch(() => {});
+        break;
+      case "cue":
+        await playCue(action.cue);
+        if (action.mode) {
+          console.log(`  → เปลี่ยนโหมดเป็น "${action.label}"`);
+          renameVoiceChannel(action.label);
+        }
+        break;
+      case "say": {
+        const ogg = await tts(action.text);
+        if (ogg) await speak(ogg);
+        break;
+      }
+    }
+  } catch (e) {
+    console.error("  ประมวลผลเสียงพลาด:", e?.message);
+  }
+}
+
+/**
+ * ชื่อห้องบอกโหมดปัจจุบัน — เห็นจากมือถือทันทีโดยไม่ต้องถาม (สเปกข้อ 6)
+ * Discord จำกัดการเปลี่ยนชื่อห้องไว้ 2 ครั้ง/10 นาที เกินแล้วคำขอจะค้าง
+ * เลยหน่วงไว้ และถือว่าเสียงสัญญาณเป็นตัวบอกหลัก ชื่อห้องเป็นตัวเสริม
+ */
+let lastRename = 0;
+let pendingRename = null;
+async function renameVoiceChannel(label) {
+  pendingRename = label;
+  const wait = Math.max(0, 5 * 60_000 - (Date.now() - lastRename));
+  setTimeout(async () => {
+    if (!pendingRename) return;
+    const name = `สาย · ${pendingRename}`;
+    pendingRename = null;
+    lastRename = Date.now();
+    try {
+      const ch = await client.channels.fetch(VOICE_CH);
+      if (ch && ch.name !== name) await ch.setName(name);
+    } catch (e) {
+      console.warn("เปลี่ยนชื่อห้องไม่ได้ (Discord จำกัด 2 ครั้ง/10 นาที):", e?.message);
+    }
+  }, wait);
+}
+
+/** เริ่มฟังเจ้าของ — เรียกใหม่ทุกครั้งที่เขาเริ่มพูด */
+function listenTo(userId, receiver) {
+  if (listening.has(userId)) return;
+  listening.add(userId);
+  const started = Date.now();
+  const outPath = path.join(os.tmpdir(), `vex-hear-${started}-${Math.floor(Math.random() * 1e6)}.ogg`);
+  // ตอน Vex กำลังพูด ให้ตัดประโยคไวขึ้น — คำสั่ง "Vex พอ" ต้องถึงเร็วที่สุด
+  const silence = speaking ? 500 : SILENCE_MS;
+  const opus = receiver.subscribe(userId, { end: { behavior: EndBehaviorType.AfterSilence, duration: silence } });
+  opusToOgg(opus, outPath)
+    .then(async () => {
+      listening.delete(userId);
+      const ms = Date.now() - started;
+      if (ms < MIN_UTTER_MS) { await fs.promises.rm(outPath, { force: true }).catch(() => {}); return; }
+      if (!sttBudgetOk()) {
+        console.warn("  เกินเพดานถอดเสียงต่อนาที — ข้ามประโยคนี้");
+        await fs.promises.rm(outPath, { force: true }).catch(() => {});
+        return;
+      }
+      await handleUtterance(outPath);
+    })
+    .catch(async () => {
+      listening.delete(userId);
+      await fs.promises.rm(outPath, { force: true }).catch(() => {});
+    });
+}
+
+function attachReceiver() {
+  if (!connection?.receiver) return;
+  const receiver = connection.receiver;
+  receiver.speaking.removeAllListeners("start");
+  receiver.speaking.on("start", (userId) => {
+    if (OWNER && userId !== OWNER) return; // ในเซิร์ฟเวอร์มีแค่เจ้าของกับบอท แต่กันไว้
+    listenTo(userId, receiver);
+  });
+  console.log("เริ่มฟังเสียงในห้องแล้ว");
+}
 
 // ===== วนหยิบงานจากกล่องขาออกของเว็บ =====
 // เว็บไม่รู้ว่าเจ้าของอยู่ในสายไหม (คนละโปรเซส) — ท่อนี้เป็นคนบอก แล้วรับงานกลับมาส่ง
@@ -364,6 +543,7 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Vex พร้อมทำงานบน Discord: ${c.user.tag} · app ${APP_URL}`);
   console.log(`ห้องข้อความ ${TEXT_CH} · ห้องบันทึก ${LOG_CH} · ห้องเสียง ${VOICE_CH} · เจ้าของ ${OWNER}`);
   if (!OWNER) console.warn("⚠️ ยังไม่ได้ตั้ง DISCORD_OWNER_ID — API จะไม่รู้ว่าใครเป็นเจ้าของ");
+  await buildCues();
   // ตั้งตัววนหยิบงานก่อนเข้าห้องเสียง — ถ้าห้องเสียงต่อไม่ได้ ฝั่งข้อความต้องยังทำงานได้ปกติ
   // (เคยพลาด: connectVoice ค้างรอสถานะ Ready 20 วิ แล้วบล็อกไม่ให้ตัววนหยิบงานเริ่มเลย)
   setInterval(pollOutbox, 5000);

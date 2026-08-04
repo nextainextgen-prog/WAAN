@@ -290,6 +290,13 @@ export async function POST(req: Request) {
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
+  // ===== G1.9) ปล่อยงานที่รอคิว (เพดาน 2 งานพร้อมกัน — สเปกข้อ 15ฉ) =====
+  try {
+    const { drainQueue } = await import("@/lib/kiki-jobs");
+    const started = await drainQueue();
+    if (started) console.log(`[vex] ปล่อยงานจากคิว ${started} งาน`);
+  } catch { /* รอบหน้าลองใหม่ */ }
+
   // ===== G2) งานที่ฝาก Hermes เสร็จแล้ว → ส่งผลเข้าแชท =====
   try {
     for (const d of await collectHermesDeliveries()) {
