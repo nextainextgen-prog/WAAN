@@ -35,7 +35,8 @@
     "usage": "node scripts/usage-cli.mjs",
     "thunder:ingest": "tsx --tsconfig tsconfig.json scripts/thunder-ingest.ts",
     "thunder:daily": "tsx --tsconfig tsconfig.json scripts/thunder-daily.ts",
-    "thunder:read": "node scripts/thunder-chat-read.mjs"
+    "thunder:read": "node scripts/thunder-chat-read.mjs",
+    "kiki:chrome": "node scripts/kiki-chrome-start.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",

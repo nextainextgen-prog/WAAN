@@ -46,6 +46,16 @@ async function downloadFile(file_id, destDir, filename) {
   return p;
 }
 
+// วิดีโอ/GIF ที่เจ้าของส่งมา (เก็บเข้าคลังได้เมื่อสั่ง)
+function videoOf(msg) {
+  if (msg.video) return { file_id: msg.video.file_id, file_name: msg.video.file_name || `video_${msg.video.file_id}.mp4` };
+  if (msg.animation) return { file_id: msg.animation.file_id, file_name: msg.animation.file_name || `gif_${msg.animation.file_id}.mp4` };
+  if (msg.document && /video\//.test(msg.document.mime_type || "")) {
+    return { file_id: msg.document.file_id, file_name: msg.document.file_name || `video_${msg.document.file_id}.mp4` };
+  }
+  return null;
+}
+
 function fileOf(msg) {
   if (msg.photo && msg.photo.length) {
     const p = msg.photo[msg.photo.length - 1];
@@ -103,6 +113,13 @@ async function deliver(chatId, sends) {
       if (s.caption) form.append("caption", s.caption);
       form.append("voice", new Blob([new Uint8Array(Buffer.from(s.dataBase64, "base64"))]), s.filename || "voice.ogg");
       await fetch(API("sendVoice"), { method: "POST", body: form }).catch((e) => console.error("send voice err:", e?.message));
+    } else if (s.kind === "video" && s.dataBase64) {
+      await tg("sendChatAction", { chat_id: target, action: "upload_video" }).catch(() => {});
+      const form = new FormData();
+      form.append("chat_id", String(target));
+      if (s.caption) form.append("caption", s.caption);
+      form.append("video", new Blob([new Uint8Array(Buffer.from(s.dataBase64, "base64"))]), s.filename || "video.mp4");
+      await fetch(API("sendVideo"), { method: "POST", body: form }).catch((e) => console.error("send video err:", e?.message));
     } else if (s.kind === "document" && s.dataBase64) {
       await tg("sendChatAction", { chat_id: target, action: "upload_document" }).catch(() => {});
       const form = new FormData();
@@ -141,12 +158,20 @@ async function processMessage(msgs) {
   // โหลดรูปทั้งหมด (รูปตรง ๆ + เอกสารที่เป็นรูป) ให้สมองเปิดอ่าน
   const files = msgs.map(fileOf).filter(Boolean);
   const audios = msgs.map(audioOf).filter(Boolean);
+  const videos = msgs.map(videoOf).filter(Boolean);
   const imageFiles = [];
+  const videoFiles = [];
   // เอกสาร pdf/docx/txt/md → ส่งให้สมองสรุปเก็บเข้าคลังความรู้
   const docFiles = [];
   const audioFiles = [];
-  if (files.length || audios.length) {
+  if (files.length || audios.length || videos.length) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kiki-img-"));
+    for (const v of videos.slice(0, 2)) {
+      try {
+        const p = await downloadFile(v.file_id, dir, v.file_name);
+        if (p) videoFiles.push({ path: p, name: v.file_name });
+      } catch { /* ข้ามวิดีโอที่โหลดไม่ได้ */ }
+    }
     for (const f of files.filter((x) => x.isImage).slice(0, 6)) {
       try {
         const p = await downloadFile(f.file_id, dir, f.file_name);
@@ -166,7 +191,7 @@ async function processMessage(msgs) {
       } catch { /* ข้ามไฟล์ที่โหลดไม่ได้ */ }
     }
   }
-  if (!text && !imageFiles.length && !audioFiles.length && !docFiles.length) return;
+  if (!text && !imageFiles.length && !audioFiles.length && !docFiles.length && !videoFiles.length) return;
 
   await reactMsg(chatId, msg.message_id, audioFiles.length || imageFiles.length ? "👀" : null);
   await tg("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
@@ -184,6 +209,7 @@ async function processMessage(msgs) {
     imageFiles,
     audioFiles,
     docFiles,
+    videoFiles,
     msgId: msg.message_id,
   });
   const waits = [0, 5000, 12000];

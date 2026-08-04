@@ -510,6 +510,19 @@ model KikiTask {
   @@index([status])
 }
 
+// คลังรูป/วิดีโอที่เจ้าของ "สั่งให้เก็บ" (ไม่สั่ง = ไม่เก็บ ตามกติกา 4 ส.ค. 2026)
+model KikiMedia {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  kind        String                        // image | video
+  path        String                        // ที่เก็บ (relative จาก AI-Personal)
+  label       String?                       // คำที่เจ้าของบอกตอนสั่งเก็บ
+  description String?                       // คำบรรยายจากวิชัน (ไว้ค้นด้วยความหมาย)
+  msgId       String?
+
+  @@index([kind])
+}
+
 // ความจำระยะยาวของ Vex ที่ไม่ใช่ไฟล์ในคลัง (สรุปบทสนทนารายวัน ฯลฯ) — เก็บใน DB ไม่เขียนลง Obsidian
 model KikiMemory {
   id        String   @id @default(cuid())

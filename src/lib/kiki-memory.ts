@@ -16,6 +16,7 @@ import { db } from "./db";
 
 const KEY_CHAT = "chat:";
 const KEY_DAY = "day:";
+const KEY_MEDIA = "media:";
 
 let _db: import("better-sqlite3").Database | null = null;
 
@@ -94,6 +95,29 @@ export async function reindexChats(limit = 4000): Promise<{ indexed: number; ski
   return { indexed, skipped: rows.length - indexed };
 }
 
+/** index รูป/วิดีโอที่เก็บเข้าคลัง (ค้นด้วยคำพูดธรรมดาทีหลัง) */
+export async function indexMedia(id: string, text: string): Promise<boolean> {
+  return putVec(`${KEY_MEDIA}${id}`, text);
+}
+
+/** ค้นสื่อในคลังด้วยความหมาย → คืน id เรียงตามความใกล้ */
+export async function searchMedia(query: string, k = 6): Promise<string[]> {
+  try {
+    const { embedText } = await import("./embeddings");
+    const vec = await embedText(query);
+    if (!vec) return [];
+    const d = await vecConn();
+    if (!d) return [];
+    const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+    const rows = d
+      .prepare("SELECT key, distance FROM kiki_recall WHERE embedding MATCH ? ORDER BY distance LIMIT ?")
+      .all(buf, k * 4) as { key: string; distance: number }[];
+    return rows.filter((r) => r.key.startsWith(KEY_MEDIA) && r.distance < 0.8).slice(0, k).map((r) => r.key.slice(KEY_MEDIA.length));
+  } catch {
+    return [];
+  }
+}
+
 // ===== ค้นความจำ =====
 
 export interface RecallHit {
@@ -141,6 +165,7 @@ export async function recall(query: string, opts: { k?: number; skipRecentMs?: n
         if (mem) out.push({ when: new Date(`${day}T12:00:00`), lines: [`สรุปวันที่ ${day}: ${mem.content}`], distance: r.distance });
         continue;
       }
+      if (!r.key.startsWith(KEY_CHAT)) continue;
       const id = r.key.slice(KEY_CHAT.length);
       const hit = await db.kikiChat.findUnique({ where: { id } });
       if (!hit) continue;

@@ -384,14 +384,18 @@ export async function saveLinkToPersonal(url: string, userNote?: string): Promis
     await appendKnowledgeHub(rel0, yt.title);
     return { title: yt.title, rel: rel0 };
   }
-  const content: LinkContent = await fetchUrlContent(url);
+  // 4 ส.ค. 2026: ใช้ท่ออ่านกลาง (fetch → เบราว์เซอร์จริงเมื่อเว็บบังคับล็อกอิน) + สรุปยาวไม่ตัดทิ้ง
+  const { readAnyUrl, summarizeLong } = await import("./kiki-read");
+  const read = await readAnyUrl(url, { shot: false, note: userNote });
+  if (!read.ok && !read.text.trim()) throw new Error(read.problem || "เปิดลิงก์ไม่ได้");
+  const content = { url: read.url, title: read.title, text: read.text } as LinkContent;
   const today = new Date().toISOString().slice(0, 10);
   // ให้สมองสรุป/จัดโครงสร้างก่อนเก็บ — ไม่ดัมป์ดิบ
   let organized = "";
   try {
-    organized = await askExtractor(
-      `จัดเนื้อหาต่อไปนี้เป็นโน้ตความรู้ภาษาไทย (markdown): สรุปประเด็นสำคัญเป็นหัวข้อ อ่านง่าย เก็บรายละเอียดที่มีประโยชน์ครบ ไม่ต้องเกริ่นนำ/ปิดท้าย\n\nชื่อเรื่อง: ${content.title}\nลิงก์: ${content.url}\n${userNote ? `หมายเหตุจากเจ้าของ: ${userNote}\n` : ""}\nเนื้อหา:\n${content.text.slice(0, 20_000)}`,
-      { timeoutMs: 90_000 },
+    organized = await summarizeLong(
+      content.text,
+      `จัดเนื้อหาต่อไปนี้เป็นโน้ตความรู้ภาษาไทย (markdown): สรุปประเด็นสำคัญเป็นหัวข้อ อ่านง่าย เก็บรายละเอียดที่มีประโยชน์ครบ ไม่ต้องเกริ่นนำ/ปิดท้าย\nชื่อเรื่อง: ${content.title}\nลิงก์: ${content.url}${userNote ? `\nหมายเหตุจากเจ้าของ: ${userNote}` : ""}`,
     );
   } catch {
     organized = content.text.slice(0, 8_000);
@@ -744,14 +748,9 @@ export async function searchRealYoutube(topic: string, want = 4): Promise<YtHit[
 // ===== ไฟล์เอกสาร (pdf/docx/txt/md) → คลังความรู้ =====
 
 export async function saveDocToPersonal(filePath: string, fileName: string, userNote?: string): Promise<{ title: string; rel: string; summary: string }> {
-  const { extractText } = await import("./extract");
-  const { text: rawText } = await extractText(filePath);
-  if (!rawText.trim()) throw new Error("อ่านเนื้อหาในไฟล์ไม่ได้ (ไฟล์ว่างหรือเป็นสแกนภาพ)");
+  const { readDocDeep } = await import("./kiki-read");
   const baseTitle = fileName.replace(/\.[a-z0-9]+$/i, "");
-  const organized = await askExtractor(
-    `จัดเนื้อหาไฟล์ "${fileName}" เป็นโน้ตความรู้ภาษาไทย (markdown): บรรทัดแรกสุด = ชื่อเรื่องสั้น ๆ (ไม่ต้องมีคำนำหน้า) เว้นบรรทัด แล้วสรุปประเด็นสำคัญเป็นหัวข้อ เก็บรายละเอียด/ตัวเลขที่มีประโยชน์ครบ ไม่ต้องเกริ่น\n${userNote ? `เจ้าของสั่งเก็บโดยบอกว่า: ${userNote}\n` : ""}\nเนื้อหา:\n${rawText.slice(0, 24_000)}`,
-    { timeoutMs: 150_000 },
-  ).catch(() => rawText.slice(0, 6000));
+  const { summary: organized } = await readDocDeep(filePath, fileName, userNote);
   const nl = organized.indexOf("\n");
   const title = (nl > 0 ? organized.slice(0, nl) : baseTitle).replace(/^#+\s*/, "").trim().slice(0, 90) || baseTitle;
   const summary = (nl > 0 ? organized.slice(nl + 1) : organized).trim();

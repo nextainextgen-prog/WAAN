@@ -10,7 +10,7 @@ import { handleWish, handleDebt, RECUR_RE, handleRecurring, handleFitnessLog, fi
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
 import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm, listDialogs, setAlias, getAliases, type PeerHit } from "@/lib/kiki-userbot";
-import { extractUrls, fetchUrlContent } from "@/lib/weblink";
+import { extractUrls } from "@/lib/weblink";
 import { routeIntent } from "@/lib/kiki-router";
 import { addTask, tasksBlock, findTasks, completeTasks, matchTriggers, markNagged } from "@/lib/kiki-tasks";
 import { recallContext, recentDaysContext } from "@/lib/kiki-memory";
@@ -34,7 +34,6 @@ import {
   ownerFactsContext,
   kikiConversation,
   transcribeAudio,
-  saveImageToPersonal,
   findPersonalImages,
   VEX_RULE_CATEGORY,
   getSetting,
@@ -65,7 +64,7 @@ export const maxDuration = 240;
 
 // รูปแบบเดียวกับ ingest ของวาน — บอทฝั่ง kiki-bot.mjs เอาไปส่ง Telegram ต่อ
 interface Send {
-  kind: "text" | "document" | "photo" | "voice";
+  kind: "text" | "document" | "photo" | "voice" | "video";
   text?: string;
   filename?: string;
   caption?: string;
@@ -154,6 +153,7 @@ export async function POST(req: Request) {
   const imageFiles = (body.imageFiles as string[] | undefined) || [];
   const audioFiles = (body.audioFiles as { path: string; mime?: string }[] | undefined) || [];
   const docFiles = (body.docFiles as { path: string; name: string }[] | undefined) || [];
+  const videoFiles = (body.videoFiles as { path: string; name: string }[] | undefined) || [];
   const msgId = body.msgId ? Number(body.msgId) : undefined;
   const callbackData = String(body.callbackData || "");
   // ปุ่มกด = คำสั่งยืนยันแบบพิมพ์ (แปลงเป็นข้อความเดิม logic ยืนยันทุกตัวใช้ต่อได้เลย)
@@ -163,13 +163,31 @@ export async function POST(req: Request) {
   else if (callbackData === "kiki:grp:no") text = "[ปุ่ม:ยกเลิกกลุ่ม]";
   else if (callbackData === "kiki:dev:yes") text = "[ปุ่ม:พัฒนาเลย]";
   else if (callbackData === "kiki:dev:no") text = "[ปุ่ม:ยกเลิกพัฒนา]";
+  // ปุ่มโซเชียล: กดส่งจริง / ทิ้งร่าง
+  if (callbackData === "kiki:social:send" || callbackData === "kiki:social:no") {
+    const raw = await getSetting("kiki_pending_social");
+    const pend = raw ? (JSON.parse(raw) as { url: string; text: string; what: string }) : null;
+    await setSetting("kiki_pending_social", "");
+    if (!pend) return ok([{ kind: "text", text: "ไม่มีร่างที่ค้างอยู่แล้วครับ" }]);
+    const { sendDraft, discardDraft } = await import("@/lib/kiki-chrome");
+    if (callbackData === "kiki:social:no") {
+      await discardDraft(pend.url).catch(() => {});
+      return ok([{ kind: "text", text: "ทิ้งร่างแล้วครับ ไม่ได้ส่ง ✅ (ปิดแท็บให้แล้ว)" }]);
+    }
+    const r = await sendDraft(pend.url).catch((e) => ({ ok: false, msg: e instanceof Error ? e.message.slice(0, 150) : "ส่งไม่สำเร็จ", shotBase64: undefined }));
+    const outs: Send[] = [];
+    if (r.shotBase64) outs.push({ kind: "photo", dataBase64: r.shotBase64, filename: "sent.png", caption: "หลังกดส่ง" });
+    outs.push({ kind: "text", text: r.ok ? `ส่งแล้วครับ ✅ (${r.msg})\n\nดูภาพหลังส่งด้านบนได้เลย ถ้าไม่ขึ้นตามที่ควรบอกผมได้` : `ส่งไม่สำเร็จครับ ⚠️ ${r.msg}` });
+    return ok(outs);
+  }
+
   // ปุ่ม "หยุดงานนี้" ในรายงานความคืบหน้าทุก 3 นาที
   if (callbackData.startsWith("kiki:job:cancel:")) {
     const { cancelJob } = await import("@/lib/kiki-hermes");
     const r = await cancelJob(callbackData.slice("kiki:job:cancel:".length));
     return ok([{ kind: "text", text: r.ok ? `${r.msg} ✅` : `${r.msg} ⚠️` }]);
   }
-  if (!chatId || (!text && !imageFiles.length && !audioFiles.length && !docFiles.length)) return ok([]);
+  if (!chatId || (!text && !imageFiles.length && !audioFiles.length && !docFiles.length && !videoFiles.length)) return ok([]);
 
   // ===== เสียง → ข้อความ (เจ้าของอัดเสียงสั่งแทนการพิมพ์ได้ทุกอย่าง) =====
   let voiceNote = "";
@@ -317,23 +335,40 @@ export async function POST(req: Request) {
 
     // ===== ไฟล์เอกสาร (pdf/docx/txt/md) → สรุปเก็บเข้าคลังความรู้ (เจ้าของสั่ง 3 ส.ค.) =====
     if (docFiles.length) {
-      const { saveDocToPersonal } = await import("@/lib/kiki");
-      const results: string[] = [];
+      // เจ้าของสั่ง 4 ส.ค.: "เก็บเฉพาะที่ผมบอกให้เก็บ" → ไม่สั่ง = อ่านให้ ตอบให้ แต่ไม่เขียนลงคลัง
+      const wantSave = /เก็บ|บันทึก|เซฟ|save|เข้าคลัง|ลงคลัง|จำไว้/i.test(text);
+      const { readDocDeep } = await import("@/lib/kiki-read");
+      const reads: { name: string; summary: string }[] = [];
+      const saved: string[] = [];
       const fails: string[] = [];
       for (const d of docFiles) {
         try {
-          const r = await saveDocToPersonal(d.path, d.name, text || undefined);
-          results.push(`"${r.title}" → คลังความรู้ (${d.name})`);
+          if (wantSave) {
+            const { saveDocToPersonal } = await import("@/lib/kiki");
+            const r = await saveDocToPersonal(d.path, d.name, text || undefined);
+            saved.push(r.title);
+            reads.push({ name: d.name, summary: r.summary });
+          } else {
+            const r = await readDocDeep(d.path, d.name, text || undefined);
+            reads.push({ name: d.name, summary: r.summary });
+          }
         } catch (e) {
           fails.push(`${d.name}: ${e instanceof Error ? e.message.slice(0, 100) : "อ่านไม่ได้"}`);
         }
       }
-      const lines = [
-        results.length ? `เก็บเข้าคลังแล้วครับ ✅\n${results.map((r) => `• ${r}`).join("\n")}` : "",
-        fails.length ? `⚠️ อ่านไม่ได้: ${fails.join(" · ")}` : "",
-        results.length ? `ถามย้อนหลังได้เลย ค้นแบบความหมายเจอแน่นอน` : "",
-      ].filter(Boolean).join("\n\n");
-      return reply([{ kind: "text", text: lines, replyTo: msgId }]);
+      if (!reads.length) {
+        return reply([{ kind: "text", text: `อ่านไฟล์ไม่ได้ครับ ⚠️ ${fails.join(" · ")}`, replyTo: msgId }]);
+      }
+      const answer = await askKiki(
+        text || "(เจ้าของส่งไฟล์มาโดยไม่ได้พิมพ์อะไร)",
+        [
+          `=== เนื้อหาไฟล์ที่เพิ่งอ่านให้ (อ่านครบทั้งไฟล์แล้ว ใช้ตอบได้เลย) ===\n${reads.map((r) => `### ${r.name}\n${r.summary.slice(0, 12_000)}`).join("\n\n")}`,
+          saved.length ? `[ระบบเก็บเข้าคลังความรู้ให้แล้ว: ${saved.join(" · ")} — ยืนยันสั้น ๆ ได้]` : "[ยังไม่ได้เก็บเข้าคลัง เพราะเจ้าของไม่ได้สั่ง — ถ้าเนื้อหาน่าเก็บ ให้เสนอสั้น ๆ ว่าสั่งเก็บได้]",
+          fails.length ? `[ไฟล์ที่อ่านไม่ได้: ${fails.join(" · ")}]` : "",
+          "[ตอบตามที่เจ้าของถาม ถ้าไม่ได้ถามอะไร ให้สรุปสาระสำคัญของไฟล์แบบใช้งานได้จริง]",
+        ].filter(Boolean).join("\n\n"),
+      );
+      return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
     }
 
     // ===== อ่านเจตนาด้วยสมอง (4 ส.ค. 2026) — regex เหลือเฉพาะที่ชัด 100% =====
@@ -417,6 +452,69 @@ export async function POST(req: Request) {
         ].filter(Boolean).join("\n\n"),
       );
       return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    }
+
+    // ===== โซเชียล: ตอบโพสต์ / โพสต์ใหม่ / เช็คสถานะ (เจ้าของเลือกทาง A — Chrome ตัวจริง) =====
+    if (is("social_status")) {
+      const { ensureChrome, socialLoginStatus, chromeCdpUrl } = await import("@/lib/kiki-chrome");
+      const st = await ensureChrome();
+      if (!st.ok) {
+        return reply([{ kind: "text", text: `เปิด Chrome ของผมไม่ได้ครับ ⚠️ ${st.msg}\n\nสั่งเปิดเองได้ที่เครื่อง: npm run kiki:chrome`, replyTo: msgId }]);
+      }
+      const rows = await socialLoginStatus().catch(() => []);
+      const block = vexList({
+        title: "สถานะเบราว์เซอร์ของผม",
+        items: [
+          { main: `Chrome พร้อมใช้งาน${st.started ? " (เพิ่งเปิดให้)" : ""}`, sub: chromeCdpUrl() },
+          ...rows.map((r) => ({ main: `${r.site} — ${r.loggedIn ? "ล็อกอินอยู่" : "ยังไม่ได้ล็อกอิน"}` })),
+        ],
+        note: rows.some((r) => !r.loggedIn)
+          ? "อันที่ยังไม่ล็อกอิน: ล็อกอินในหน้าต่าง Chrome ที่ผมเปิดไว้ครั้งเดียวพอ แล้วผมใช้ได้ตลอด"
+          : "ครบแล้วครับ ส่งลิงก์โพสต์มาได้เลย",
+      });
+      return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+    }
+
+    if (is("social_reply") || is("social_post")) {
+      const { draftReply, platformOf } = await import("@/lib/kiki-chrome");
+      const linkFromText = [...extractUrls(text), ...extractUrls(replyText)][0] || "";
+      let target = linkFromText;
+      if (!target && is("social_post")) target = "https://x.com/compose/post";
+      if (!target) {
+        return reply([{ kind: "text", text: "ส่งลิงก์โพสต์ที่จะให้ตอบมาด้วยครับ (หรือ reply ข้อความที่มีลิงก์นั้น) แล้วบอกว่าจะให้ตอบว่าอะไร", replyTo: msgId }]);
+      }
+      // ให้ Vex ร่างข้อความเอง (โทนเหมือนเจ้าของพิมพ์) — อ่านโพสต์ก่อนถ้าเป็นการตอบ
+      let postCtx = "";
+      if (is("social_reply")) {
+        const { readAnyUrl } = await import("@/lib/kiki-read");
+        const r = await readAnyUrl(target, { shot: false }).catch(() => null);
+        if (r?.ok) postCtx = `เนื้อหาโพสต์ที่จะตอบ:\n${r.text.slice(0, 4000)}`;
+        else if (r?.problem) postCtx = `(อ่านโพสต์ไม่ได้: ${r.problem})`;
+      }
+      const drafted = await askKiki(
+        `[ร่างข้อความโซเชียล] เจ้าของสั่ง: """${text}"""\n${postCtx}\n\nเขียน "ข้อความที่จะโพสต์/ตอบจริง" ในนามเจ้าของ (โทนเหมือนเขาพิมพ์เอง ไม่ต้องแนะนำตัว ไม่ต้องมีคำนำ) ตอบเฉพาะตัวข้อความเท่านั้น`,
+      ).catch(() => "");
+      const message = sanitizeVexText(drafted).text.replace(/<[^>]+>/g, "").trim().slice(0, 900);
+      if (!message) return reply([{ kind: "text", text: "ร่างข้อความไม่สำเร็จครับ ลองบอกใหม่ว่าจะให้ตอบแนวไหน", replyTo: msgId }]);
+
+      const d = await draftReply(target, message).catch((e) => ({
+        ok: false, url: target, platform: platformOf(target), typed: "", shotBase64: undefined,
+        msg: e instanceof Error ? e.message.slice(0, 160) : "เปิดเบราว์เซอร์ไม่ได้",
+      }));
+      const sends: Send[] = [];
+      if (d.shotBase64) sends.push({ kind: "photo", dataBase64: d.shotBase64, filename: "draft.png", caption: "หน้าจอจริงตอนนี้ (พิมพ์ค้างไว้ ยังไม่ส่ง)" });
+      if (!d.ok) {
+        sends.push({ kind: "text", text: `ยังส่งไม่ได้ครับ ⚠️ ${d.msg}\n\nข้อความที่ร่างไว้:\n${message}`, replyTo: msgId });
+        return reply(sends);
+      }
+      await setSetting("kiki_pending_social", JSON.stringify({ url: d.url, text: message, what: is("social_post") ? "โพสต์ใหม่" : "ตอบโพสต์" }));
+      sends.push({
+        kind: "text",
+        text: `พิมพ์ค้างไว้ในหน้าจริงแล้วครับ (${d.platform.toUpperCase()}) ยังไม่กดส่ง\n\nข้อความ:\n${message}\n\nกดยืนยันแล้วผมกดส่งให้เลย`,
+        replyTo: msgId,
+        buttons: [[{ text: "ส่งเลย", data: "kiki:social:send" }, { text: "ยกเลิก", data: "kiki:social:no" }]],
+      });
+      return reply(sends);
     }
 
     // ===== ฝาก Hermes — งานยาก/หลายขั้น/ใช้เวลานาน (agent GPT-5.5 + เว็บ/เบราว์เซอร์/terminal) =====
@@ -852,7 +950,15 @@ export async function POST(req: Request) {
         for (const ip of r.imagePaths || []) {
           try { sends.push({ kind: "photo", dataBase64: fs.readFileSync(ip).toString("base64"), filename: path.basename(ip) }); } catch { /* ข้าม */ }
         }
-        sends.push({ kind: "text", text: r.text.slice(0, 3900), replyTo: msgId });
+        // เจ้าของเจอบ่อย: agent อ้างว่า "ส่งภาพแคปมาแล้ว" ทั้งที่ไม่มีไฟล์จริง
+        // → ระบบเป็นคนตรวจ ไม่เชื่อคำพูด AI
+        const claimsShot = /แคป|ภาพ|screenshot|หน้าจอ/i.test(r.text);
+        const gotShot = sends.some((x) => x.kind === "photo");
+        let body = r.text.slice(0, 3900);
+        if (claimsShot && !gotShot) {
+          body += `\n\n⚠️ หมายเหตุจากระบบ: ไม่มีไฟล์ภาพจริงแนบมาด้วยรอบนี้ (ที่บอกว่าแคปแล้วยังไม่เกิดขึ้นจริง) — สั่ง "แคปหน้าจอ" ตรง ๆ ผมทำให้ได้ทันที`;
+        }
+        sends.push({ kind: "text", text: body, replyTo: msgId });
         return reply(sends);
       } catch (e) {
         return reply([{ kind: "text", text: `ทำที่เครื่องไม่สำเร็จครับ ⚠️ ${e instanceof Error ? e.message.slice(0, 150) : "error"}`, replyTo: msgId }]);
@@ -882,32 +988,55 @@ export async function POST(req: Request) {
     }
 
     // ===== เก็บรูปเข้าคลัง (เจ้าของสั่ง "เก็บรูปนี้") — เช็คก่อนเรื่องเงิน =====
-    if (imageFiles.length && is("image_save")) {
-      const label = text.replace(/เก็บ|เซฟ|บันทึก|save|รูป(นี้|พวกนี้)?|ภาพ(นี้|พวกนี้)?|ไว้|ให้(หน่อย|ที)?|ด้วย|นะ|ครับ|หน่อย/gi, " ").trim();
-      const saved: string[] = [];
+    if ((imageFiles.length || videoFiles.length) && is("image_save")) {
+      const { saveMedia } = await import("@/lib/kiki-media");
+      const label = text.replace(/เก็บ|เซฟ|บันทึก|save|รูป(นี้|พวกนี้)?|ภาพ(นี้|พวกนี้)?|วิดีโอ|คลิป(นี้)?|ไว้|ให้(หน่อย|ที)?|ด้วย|นะ|ครับ|หน่อย/gi, " ").replace(/\s+/g, " ").trim();
+      const saved: { what: string; desc: string }[] = [];
       for (const p of imageFiles) {
-        const r = await saveImageToPersonal(p, label || undefined);
-        if (r) saved.push(r.rel);
+        const r = await saveMedia(p, "image", label || undefined);
+        if (r) saved.push({ what: "รูป", desc: r.description });
       }
-      const t = saved.length
-        ? `เก็บให้แล้วครับ ✅ ${saved.length} รูป${label ? ` — "${label}"` : ""}\nอยากได้คืนเมื่อไหร่ พิมพ์ "ขอรูป${label ? label : "ที่เก็บไว้"}" ได้เลย`
-        : `เก็บรูปไม่สำเร็จครับ ⚠️ ลองส่งใหม่อีกทีนะครับ`;
-      return reply([{ kind: "text", text: t, replyTo: msgId }]);
+      for (const v of videoFiles) {
+        const r = await saveMedia(v.path, "video", label || v.name);
+        if (r) saved.push({ what: "วิดีโอ", desc: r.description || v.name });
+      }
+      if (!saved.length) return reply([{ kind: "text", text: "เก็บไม่สำเร็จครับ ⚠️ ลองส่งใหม่อีกทีนะครับ", replyTo: msgId }]);
+      const block = vexList({
+        title: `เก็บเข้าคลังแล้ว ${saved.length} ไฟล์`,
+        items: saved.map((x) => ({ main: `${x.what}${label ? ` — ${label}` : ""}`, sub: x.desc.slice(0, 160) || undefined })),
+        note: 'ขอคืนได้ทุกเมื่อ พูดธรรมดาเลย เช่น "ขอรูปที่เก็บเรื่อง..." ผมค้นจากสิ่งที่อยู่ในรูปได้ด้วย',
+      });
+      return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
     }
 
     // ===== ขอรูปที่เคยเก็บกลับ =====
     if (!imageFiles.length && is("image_find")) {
+      const { findMedia } = await import("@/lib/kiki-media");
+      const hits = await findMedia(text).catch(() => []);
+      const sends: Send[] = [];
+      for (const h of hits) {
+        try {
+          const b64 = fs.readFileSync(h.abs).toString("base64");
+          const cap = `${h.label || h.description.slice(0, 120)} · ${h.createdAt.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}`;
+          sends.push({ kind: h.kind === "video" ? "video" : "photo", dataBase64: b64, filename: path.basename(h.abs), caption: cap.slice(0, 200) });
+        } catch { /* ไฟล์เสีย ข้าม */ }
+      }
+      if (sends.length) {
+        sends.unshift({ kind: "text", text: `เจอ ${sends.length} ไฟล์ครับ`, replyTo: msgId });
+        return reply(sends);
+      }
+      // ระบบเก่า (รูปที่เก็บก่อนมีตาราง KikiMedia)
       const found = await findPersonalImages(text);
       if (found.length) {
-        const sends: Send[] = [{ kind: "text", text: `เจอครับ 🎯 ${found.length} รูป`, replyTo: msgId }];
+        const old: Send[] = [{ kind: "text", text: `เจอในคลังเก่าครับ ${found.length} รูป`, replyTo: msgId }];
         for (const f of found) {
           try {
-            sends.push({ kind: "photo", dataBase64: fs.readFileSync(f.path).toString("base64"), filename: path.basename(f.path), caption: f.label || undefined });
-          } catch { /* อ่านไฟล์ไม่ได้ก็ข้าม */ }
+            old.push({ kind: "photo", dataBase64: fs.readFileSync(f.path).toString("base64"), filename: path.basename(f.path), caption: f.label || undefined });
+          } catch { /* ข้าม */ }
         }
-        if (sends.length > 1) return reply(sends);
+        if (old.length > 1) return reply(old);
       }
-      // ไม่เจอ → ไหลไปคุยปกติ (อาจหมายถึงเรื่องอื่น)
+      return reply([{ kind: "text", text: "หาไม่เจอครับ — ผมเก็บเฉพาะไฟล์ที่พี่สั่งให้เก็บเท่านั้น (ส่งมาเฉย ๆ ผมดูให้แต่ไม่ได้เก็บ)", replyTo: msgId }]);
     }
 
     // ===== เจ้าของสอน/ปรับนิสัย Vex (พัฒนาตัวเองผ่านแชท) =====
@@ -937,6 +1066,21 @@ export async function POST(req: Request) {
     }
 
     // ===== ลิสต์รายการเงินที่ยังไม่รู้ว่าค่าอะไร (เจ้าของขอ: "รวมมาให้หมด เดี๋ยวผมบอกทีเดียว") =====
+    // ตอบทีเดียวหลายรายการ: "1 ค่าข้าว 2 ค่าน้ำมัน 3 ค่าหมอ"
+    const batchPairs = [...text.matchAll(/(\d{1,6})[\s.):]+([ก-๙a-zA-Z][^\d\n]{1,40})/g)];
+    if (is("finance_pending") && batchPairs.length >= 2) {
+      const { classifyPendingBatch } = await import("@/lib/kiki-gmail");
+      const r = await classifyPendingBatch([replyText, text].filter(Boolean).join("\n"));
+      if (r.done.length) {
+        const block = vexList({ title: `จัดหมวดให้แล้ว ${r.done.length} รายการ`, items: r.done, note: r.missed.join(" · ") || undefined });
+        const { png } = await financeCardPng();
+        const sends: Send[] = [];
+        if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
+        sends.push({ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId });
+        return reply(sends);
+      }
+      return reply([{ kind: "text", text: "จับคู่รายการไม่ได้เลยครับ ⚠️ ขอลิสต์ใหม่แล้วอ้างเลขข้อได้เลย", replyTo: msgId }]);
+    }
     if (is("finance_pending") && !/^\s*[\d,]/.test(text) && !replyText) {
       const { PENDING_CATEGORY } = await import("@/lib/kiki-gmail");
       const dbp = (await import("@/lib/db")).db;
@@ -1269,15 +1413,29 @@ export async function POST(req: Request) {
     const ctxParts: string[] = [];
     if (voiceNote) ctxParts.push(`เจ้าของ "อัดเสียงพูดมา" (ระบบถอดเสียงให้แล้ว ข้อความคือคำพูดจริงของเขา) — ตอบเหมือนคุยกันปกติ`);
     if (replyText) ctxParts.push(`เจ้าของกำลัง reply ข้อความนี้ ให้ตอบอ้างอิงเนื้อหานี้เป็นหลัก:\n"""${replyText.slice(0, 2000)}"""`);
+    if (videoFiles.length) {
+      ctxParts.push(
+        `เจ้าของส่งวิดีโอมา ${videoFiles.length} ไฟล์ (${videoFiles.map((v) => v.name).join(", ")}) — ระบบยังไม่ได้เก็บเข้าคลัง (เก็บเฉพาะที่สั่ง) ถ้าอยากให้เก็บบอกได้`,
+      );
+    }
     if (imageFiles.length) {
       ctxParts.push(`เจ้าของส่งรูปมา ${imageFiles.length} รูป — เปิดอ่านด้วยเครื่องมือ Read ตาม path แล้วตอบจากเนื้อหาจริงในรูป (ห้ามบอกว่าไม่เห็นรูป):\n${imageFiles.map((p, i) => `${i + 1}. ${p}`).join("\n")}`);
     }
+    // ลิงก์ที่ส่งมา: อ่านให้ลึกจริง (fetch → เบราว์เซอร์ของเจ้าของถ้าเว็บบังคับล็อกอิน) + แคปหน้าจอเป็นหลักฐาน
+    const linkShots: { b64: string; caption: string }[] = [];
     if (urls.length) {
+      const { readAnyUrl } = await import("@/lib/kiki-read");
       for (const u of urls.slice(0, 2)) {
-        try {
-          const c = await fetchUrlContent(u);
-          ctxParts.push(`เนื้อหาจากลิงก์ที่ส่งมา (อ่านให้แล้ว ใช้ตอบได้เลย):\n### ${c.title}\n${c.text.slice(0, 6000)}`);
-        } catch { /* เปิดไม่ได้ก็ตอบเท่าที่รู้ */ }
+        const r = await readAnyUrl(u, { shot: true, note: text.slice(0, 200) }).catch(() => null);
+        if (!r) { ctxParts.push(`[อ่านลิงก์ ${u} ไม่สำเร็จ — บอกเจ้าของตรง ๆ ว่าเปิดไม่ได้ ห้ามเดาเนื้อหา]`); continue; }
+        if (r.shotBase64 && r.via === "browser") linkShots.push({ b64: r.shotBase64, caption: `${r.title || u}`.slice(0, 200) });
+        if (r.ok) {
+          ctxParts.push(
+            `เนื้อหาจากลิงก์ที่ส่งมา (ระบบเปิดอ่านให้จริงแล้ว${r.via === "browser" ? " ผ่านเบราว์เซอร์ที่ล็อกอินอยู่" : r.via === "youtube" ? " โดยดูคลิปจริง" : ""} — ใช้ตอบได้เลย):\n### ${r.title}\n${r.text.slice(0, 12_000)}`,
+          );
+        } else {
+          ctxParts.push(`[เปิดลิงก์ ${u} ไม่สำเร็จ: ${r.problem || "ไม่ทราบสาเหตุ"} — บอกเจ้าของตรง ๆ ตามนี้ ห้ามเดาว่าในลิงก์เขียนอะไร]`);
+        }
       }
     }
     if (is("think")) {
@@ -1308,7 +1466,10 @@ export async function POST(req: Request) {
     }
 
     const answer = await askKiki(text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)", ctxParts.join("\n\n") || undefined);
-    const outSends: Send[] = [{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }];
+    const outSends: Send[] = [
+      ...linkShots.map((s0) => ({ kind: "photo" as const, dataBase64: s0.b64, filename: "page.png", caption: s0.caption })),
+      { kind: "text" as const, text: answer.slice(0, 3900), replyTo: msgId },
+    ];
     // สั่งด้วยข้อความว่า "อ่านให้ฟัง/ตอบเสียง" → อ่านข้อความที่ reply ถึง (หรือคำตอบ) เป็นเสียง
     // (กรณีเจ้าของพูดมาเป็นเสียง reply() แนบเสียงให้อยู่แล้ว ไม่ต้องซ้ำ)
     if (!voiceNote && /อ่านให้ฟัง|ตอบเสียง|พูดให้ฟัง/.test(text)) {

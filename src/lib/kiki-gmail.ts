@@ -214,6 +214,52 @@ export async function classifyPendingTxn(answer: string, replyText?: string): Pr
   }
 }
 
+/**
+ * ตอบทีเดียวหลายรายการ (เจ้าของสั่ง 4 ส.ค.: "รวมรายการมาให้หมด เดี๋ยวผมบอกทีเดียวว่าอะไรเป็นอะไร")
+ * รับได้ทั้งอ้างเลขข้อ ("1 ค่าข้าว 2 ค่าน้ำมัน") และอ้างยอด ("319 ค่าตั๋วหนัง 1200 ค่าเน็ต")
+ */
+export async function classifyPendingBatch(answer: string): Promise<{ done: string[]; missed: string[] }> {
+  const { db } = await import("./db");
+  const all = await db.financeTxn.findMany({ where: { category: PENDING_CATEGORY }, orderBy: { occurredAt: "asc" }, take: 40 });
+  if (!all.length) return { done: [], missed: [] };
+  const listing = all
+    .map((r, i) => `${i + 1}. ${r.type === "expense" ? "จ่าย" : "รับ"} ${r.amount} บาท · ${(r.note || "").replace(/ \(จากเมล K PLUS\)$/, "") || "ไม่มีรายละเอียด"} · ${r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}`)
+    .join("\n");
+  const raw = await askExtractor(
+    `รายการที่ยังไม่รู้ว่าค่าอะไร:\n${listing}\n\nเจ้าของตอบมาว่า:\n"""${answer}"""`,
+    {
+      system: `จับคู่คำตอบของเจ้าของกับรายการ แล้วจัดหมวดให้ ตอบ JSON เท่านั้น: {"items":[{"index":1,"category":"...","note":"ค่าอะไร"}]}
+- index = เลขข้อในรายการด้านบน (เจ้าของอาจอ้างเลขข้อ หรืออ้างยอดเงิน — ถ้าอ้างยอด ให้หาข้อที่ยอดตรงกัน)
+- หมวดรายจ่าย: อาหาร | เดินทาง | ของใช้ | บันเทิง | บิล/สมาชิก | สุขภาพ | ให้คนอื่น | อื่นๆ · หมวดรายรับ: เงินเดือน | เงินเสริม | อื่นๆ
+- ใส่เฉพาะข้อที่เจ้าของบอกจริง ข้อที่ไม่ได้พูดถึงห้ามเดา
+- note ห้ามใส่ตัวเลข/ยอดเงิน`,
+      timeoutMs: 90_000,
+    },
+  );
+  const jm = raw.match(/\{[\s\S]*\}/);
+  if (!jm) return { done: [], missed: [] };
+  const done: string[] = [];
+  const months = new Set<string>();
+  try {
+    const parsed = JSON.parse(jm[0]) as { items?: { index?: number; category?: string; note?: string }[] };
+    for (const it of parsed.items || []) {
+      const row = all[Number(it.index) - 1];
+      if (!row || !it.category) continue;
+      await db.financeTxn.update({
+        where: { id: row.id },
+        data: { category: String(it.category).slice(0, 30), note: it.note ? String(it.note).slice(0, 200) : row.note },
+      });
+      if (row.merchant && row.type === "expense") await learnMerchant(row.merchant, String(it.category), it.note).catch(() => {});
+      months.add(row.occurredAt.toISOString().slice(0, 7));
+      done.push(`${fmtBaht(row.amount)} ฿ → ${it.category}${it.note ? ` · ${it.note}` : ""}`);
+    }
+  } catch { /* parse พัง = ไม่แตะอะไรเลย */ }
+  const { rebuildLedgerMonth } = await import("./kiki-finance");
+  for (const m of months) await rebuildLedgerMonth(m).catch(() => {});
+  const left = await db.financeTxn.count({ where: { category: PENDING_CATEGORY } });
+  return { done, missed: left ? [`ยังเหลืออีก ${left} รายการที่ยังไม่ได้ระบุ`] : [] };
+}
+
 // มีรายการรอระบุค้างไหม (ไว้เช็คใน ingest ก่อนเข้า intent อื่น)
 export async function hasPendingTxn(): Promise<boolean> {
   const { db } = await import("./db");
