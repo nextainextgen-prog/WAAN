@@ -13,9 +13,18 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// ไล่ทุกไฟล์ในโฟลเดอร์ ingest (route + types + shared + handlers/*) — อย่าลิสต์ทีละไฟล์
+// เคยพลาด 4 ส.ค. 2026: ผ่า route.ts ออกเป็น handlers/ แล้วตัวตรวจไม่รู้จัก
+// กฎเลยหยุดบังคับใช้เงียบ ๆ (จาก 16 จุดที่เฝ้าอยู่ เหลือ 2)
+function walkTs(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = path.join(dir, e.name);
+    return e.isDirectory() ? walkTs(p) : e.name.endsWith(".ts") ? [p] : [];
+  });
+}
+
 const FILES = [
-  "src/app/api/kiki/ingest/route.ts",
-  "src/app/api/kiki/cron/route.ts",
+  ...walkTs("src/app/api/kiki"),
   ...fs.readdirSync("src/lib").filter((f) => /^kiki.*\.ts$/.test(f)).map((f) => path.join("src/lib", f)),
 ];
 

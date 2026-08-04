@@ -91,7 +91,11 @@ export const INTENT_CATALOG: IntentSpec[] = [
   { id: "self_dev", when: "สั่งให้ Vex พัฒนา/อัปเกรดความสามารถตัวเอง หรือแก้บั๊กของตัวเอง", cap: "พัฒนาโค้ดตัวเองได้จริง" },
   { id: "fitness", when: "เรื่องออกกำลังกาย ยิม น้ำหนัก โปรแกรมเล่น", cap: "โค้ชฟิตเนส + จดบันทึก" },
   { id: "journal", when: "เล่าเรื่องวันนี้/สั่งจดไดอารี่", cap: "ไดอารี่ + อารมณ์ประจำวัน" },
-  { id: "voice_mode", when: "สั่งเปิด/ปิดโหมดตอบเสียง หรือเปลี่ยนเสียงพูด", cap: "ตอบเป็นเสียง/เปลี่ยนเสียง" },
+  {
+    id: "voice_mode",
+    when: "สั่งเรื่อง 'เสียงพูดของ Vex' โดยตรง: ให้ตอบเป็นเสียง/เลิกตอบเป็นเสียง/เปลี่ยนเสียงพูด — เลือกอันนี้ก่อน rule_teach เสมอถ้าเรื่องที่สั่งคือการพูดออกเสียง แม้จะขึ้นต้นด้วย 'ต่อไปนี้...' หรือ 'อย่า...อีก'",
+    cap: "ตอบเป็นเสียง/เปลี่ยนเสียง",
+  },
 ];
 
 export interface RouteResult {
@@ -127,7 +131,10 @@ args ใส่เฉพาะที่เกี่ยวข้อง:
 - task_add: {"title":"งานที่ต้องทำ สั้น ชัด","detail":"รายละเอียดถ้ามี","kind":"todo|idea|waiting","priority":"low|normal|high","trigger":"เงื่อนไขที่ต้องเตือน ถ้าเป็นงานแบบ ถ้า...แล้ว","due":"YYYY-MM-DD ถ้าระบุกำหนดชัด"}
 - task_done: {"ref":"งานไหน (เลขข้อ หรือคำในชื่องาน)"}
 - memory_remember: {"fact":"ข้อเท็จจริงที่ต้องจำ เขียนให้สมบูรณ์ในตัว"}
-- memory_recall: {"query":"เรื่องที่เขาอยากให้นึกออก"}`;
+- memory_recall: {"query":"เรื่องที่เขาอยากให้นึกออก"}
+- voice_mode: {"mode":"on|off|change"} — on = ให้พูดออกเสียง · off = ให้เลิกพูด ตอบเป็นตัวหนังสือพอ · change = เปลี่ยนเสียงเป็นตัวอื่น
+- tg_chat_summary: {"peer":"ชื่อคน/กลุ่มที่จะให้สรุป"}
+- finance_budget: {"amount":"ตัวเลขงบถ้าระบุ","category":"หมวดถ้าระบุ"}`;
 
 async function routeWithGemini(prompt: string): Promise<RouteResult | null> {
   const key = process.env.GEMINI_API_KEY?.trim();
