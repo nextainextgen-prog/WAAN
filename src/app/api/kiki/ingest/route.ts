@@ -1047,7 +1047,8 @@ export async function POST(req: Request) {
     }
     if (/มีเสียง(อะไร|ไหน)บ้าง|เสียงทั้งหมด|รายชื่อเสียง/.test(text)) {
       const { TTS_VOICES } = await import("@/lib/kiki");
-      const cur = (await getSetting("kiki_tts_voice")) || "Charon";
+      const { DEFAULT_VOICE } = await import("@/lib/tts");
+      const cur = (await getSetting("kiki_tts_voice")) || DEFAULT_VOICE;
       return reply([{ kind: "text", text: `เสียงที่เลือกได้ (ตอนนี้ใช้ ${cur}):\n\n${TTS_VOICES.join(" · ")}\n\nเปลี่ยนโดยพิมพ์ "เปลี่ยนเสียงเป็น <ชื่อ>" ครับ`, replyTo: msgId }]); // canned-ok: ลิสต์เสียงทั้งหมด
     }
 

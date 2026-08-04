@@ -987,57 +987,15 @@ export async function summarizeYoutube(url: string, userNote?: string): Promise<
   return { title, summary: nl > 0 ? text.slice(nl + 1).trim() : text };
 }
 
-// ===== Vex ตอบเป็นเสียง (Gemini TTS → ffmpeg → OGG/Opus ให้ Telegram sendVoice) =====
+// ===== Vex ตอบเป็นเสียง =====
+// ตัวจริงย้ายไป tts.ts แล้ว (ชั้นผู้ให้บริการที่ถอดเปลี่ยนได้ — เจ้าของสั่งไว้ว่าจะมีการเปลี่ยนเจ้าอีกแน่นอน)
+// ตรงนี้เหลือเป็นทางผ่านให้จุดเรียกเดิมทั้งหมดใช้ต่อได้โดยไม่ต้องแก้
 
-export const TTS_VOICES = ["Charon", "Puck", "Fenrir", "Orus", "Iapetus", "Algenib", "Gacrux", "Achird", "Zubenelgenubi", "Alnilam", "Enceladus", "Sadaltager", "Kore", "Zephyr", "Leda", "Aoede", "Autonoe", "Callirrhoe", "Umbriel", "Algieba", "Despina", "Erinome", "Rasalgethi", "Laomedeia", "Achernar", "Schedar", "Pulcherrima", "Vindemiatrix", "Sadachbia", "Sulafat"] as const;
+export { GEMINI_VOICES as TTS_VOICES } from "./tts";
 
 export async function ttsOgg(text: string, voiceOverride?: string, maxChars = 900): Promise<Buffer | null> {
-  try {
-    const key = process.env.GEMINI_API_KEY?.trim();
-    if (!key) return null;
-    const voice = voiceOverride || (await getSetting("kiki_tts_voice")) || "Charon";
-    // ตัดอิโมจิ/มาร์กอัปก่อนอ่านออกเสียง (ไม่งั้น TTS อ่าน "เครื่องหมายเตือน" ออกมาด้วย)
-    text = text.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, " ").replace(/[*_`#>|]/g, " ").replace(/\s+/g, " ").trim();
-    if (!text) return null;
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: text.slice(0, maxChars) }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-          },
-        }),
-      },
-    );
-    const j = (await res.json()) as {
-      candidates?: { content?: { parts?: { inlineData?: { data?: string; mimeType?: string } }[] } }[];
-      error?: { message?: string };
-    };
-    const b64 = j.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData?.data;
-    if (!b64) return null;
-    const os = await import("node:os");
-    const { execFile } = await import("node:child_process");
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kiki-tts-"));
-    const pcm = path.join(dir, "v.pcm");
-    const ogg = path.join(dir, "v.ogg");
-    await fs.writeFile(pcm, Buffer.from(b64, "base64"));
-    await new Promise<void>((resolve, reject) => {
-      const ffmpegBin = existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg";
-      execFile(
-        ffmpegBin,
-        ["-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", pcm, "-c:a", "libopus", "-b:a", "48k", ogg],
-        { timeout: 30_000 },
-        (err) => (err ? reject(err) : resolve()),
-      );
-    });
-    return await fs.readFile(ogg);
-  } catch {
-    return null;
-  }
+  const { speak } = await import("./tts");
+  return speak(text, { voice: voiceOverride, maxChars });
 }
 
 // ===== Semantic search คลังส่วนตัว (sqlite-vec + bge-m3 — โต๊ะแยกใน thunder-vec.db) =====
