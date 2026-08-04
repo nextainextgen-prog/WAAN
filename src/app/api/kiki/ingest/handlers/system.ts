@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
-import { askExtractor, setSetting, kikiConversation, getSetting, ttsOgg, vexLine } from "@/lib/kiki";
+import { askExtractor, setSetting, kikiConversation, getSetting, ttsOgg, vexLine, pendingElsewhereNote } from "@/lib/kiki";
 import type { Ctx, Handler } from "../types";
 import { ok, type Send } from "../types";
 
@@ -65,17 +65,23 @@ export const voiceModeHandler: Handler = async (ctx) => {
 };
 
 export const devConfirmHandler: Handler = async (ctx) => {
-  const { chatId, text, msgId, reply } = ctx;
+  const { chatId, text, msgId, channel, reply } = ctx;
   // ===== พัฒนาตัวเอง: ยืนยัน/ยกเลิก =====
   {
     const { getPendingDev, setPendingDev, queueDevJob, devJobRunning } = await import("@/lib/kiki-dev");
-    const pendingDev = await getPendingDev();
+    const box = await getPendingDev(channel);
+    // สั่งแก้โค้ดตัวเองจากช่องทางหนึ่งแล้วกดยืนยันอีกช่องทาง = ไม่ให้ผ่าน (ถอนยากที่สุดในบรรดาร่างทั้งหมด)
+    if (box && !box.sameChannel && /^\[ปุ่ม:(พัฒนาเลย|ยกเลิกพัฒนา)\]$/.test(text)) {
+      // canned-ok: เหตุผลเดียวกัน — ห้ามให้ถ้อยคำกลายเป็นการเคลมว่าสั่งงานพัฒนาไปแล้ว
+      return reply([{ kind: "text", text: pendingElsewhereNote("งานพัฒนา", box.channel), replyTo: msgId }]);
+    }
+    const pendingDev = box?.sameChannel ? box.spec : null;
     if (pendingDev && text === "[ปุ่ม:ยกเลิกพัฒนา]") {
-      await setPendingDev(null);
+      await setPendingDev(null, channel);
       return reply([{ kind: "text", text: await vexLine("ยกเลิกแล้วครับ ✅ ไม่พัฒนา"), replyTo: msgId }]);
     }
     if (pendingDev && text === "[ปุ่ม:พัฒนาเลย]") {
-      await setPendingDev(null);
+      await setPendingDev(null, channel);
       if (await devJobRunning()) return reply([{ kind: "text", text: await vexLine(`มีงานพัฒนารันอยู่แล้วครับ ⚠️ รอตัวเดิมจบก่อน (สูงสุด 45 นาที) ค่อยสั่งตัวใหม่`), replyTo: msgId }]);
       await queueDevJob(chatId, pendingDev);
       return reply([{ kind: "text", text: await vexLine(`รับงานแล้วครับ 🎯 ส่งสเปกให้วิศวกร (Claude ตัวเดียวกับที่พี่ใช้) ลงมือแก้โค้ดผมแล้ว\n\nใช้เวลาได้ถึง 45 นาที เสร็จแล้วรายงานพร้อม commit — ช่วงท้ายผมจะรีสตาร์ทตัวเองแป๊บนึง ถ้าเงียบช่วงสั้น ๆ คือกำลังเกิดใหม่ครับ`), replyTo: msgId }]);
@@ -86,7 +92,7 @@ export const devConfirmHandler: Handler = async (ctx) => {
 };
 
 export const selfDevHandler: Handler = async (ctx) => {
-  const { text, replyText, msgId, is, reply } = ctx;
+  const { text, replyText, msgId, is, channel, reply } = ctx;
   // ===== พัฒนาตัวเอง: รับสเปก + ปุ่มยืนยัน =====
   // แบบชัด: "พัฒนา: <สเปก>" · แบบหลวม: "มึงพัฒนาเองได้ ทำเลย" (สเปกอยู่ในเรื่องที่เพิ่งคุย — เคสจริง 3 ส.ค.)
   const devM = text.match(/^\s*(?:พัฒนา(?:ตัวเอง|ระบบ)?|อัปเกรด(?:ตัวเอง|ระบบ)?|เพิ่ม(?:ความสามารถ|ฟีเจอร์)|สร้างระบบ|ทำระบบ|แก้บั๊ก)\s*[:：]?\s*([\s\S]{10,})/);
@@ -111,7 +117,7 @@ export const selfDevHandler: Handler = async (ctx) => {
         return reply([{ kind: "text", text: await vexLine(`ได้ครับ ผมพัฒนาตัวเองได้จริง — แต่ขอสเปกชัด ๆ หน่อยว่าให้เพิ่มอะไร\n\nพิมพ์: พัฒนา: <สิ่งที่อยากได้>`), replyTo: msgId }]);
       }
     }
-    await setPendingDev(spec);
+    await setPendingDev(spec, channel);
     return reply([{
       kind: "text",
       text: `จะส่งสเปกนี้ให้วิศวกรแก้โค้ดผมจริง ๆ นะครับ:\n\n"${spec.slice(0, 500)}"\n\nกติกา: แตะได้เฉพาะโค้ดฝั่งผม (Vex) · tsc ต้องผ่าน · commit+push · เสร็จแล้วรีสตาร์ทตัวเอง+รายงาน\nถ้าของที่ได้ไม่ตรงใจ บอกพี่โด้ให้ย้อน commit ได้เสมอ`, // canned-ok: สเปกที่จะส่งให้วิศวกร + กติกา ต้องตรงตัว

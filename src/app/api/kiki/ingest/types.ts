@@ -13,7 +13,9 @@ export interface Send {
   dataBase64?: string;
   parseMode?: "HTML" | "Markdown";
   noPreview?: boolean; // ไม่ให้ Telegram เด้ง link preview (ลิงก์ Google Calendar ฯลฯ)
-  replyTo?: number; // reply ไปที่ข้อความไหน
+  // reply ไปที่ข้อความไหน — Telegram เป็นตัวเลข · Discord เป็น snowflake 19 หลักที่ต้องคงเป็นสตริง
+  // (Number() จะทำให้ค่าเพี้ยนเพราะเกิน MAX_SAFE_INTEGER แล้ว reply ไปผิดข้อความ)
+  replyTo?: number | string;
   buttons?: { text: string; data: string }[][]; // ปุ่มกดยืนยัน (แทนการพิมพ์ "ยืนยัน")
   chatId?: string; // ส่งไปแชทอื่น (เช่น ทักในกลุ่มที่เพิ่งสร้าง) — ไม่ใส่ = แชทเดิม
 }
@@ -40,7 +42,7 @@ export interface Ctx {
   audioFiles: { path: string; mime?: string }[];
   docFiles: { path: string; name: string }[];
   videoFiles: { path: string; name: string }[];
-  msgId?: number;
+  msgId?: number | string;
   callbackData: string;
   voiceNote: string; // ข้อความที่ถอดมาจากเสียงที่เจ้าของอัดส่งมา (ว่าง = พิมพ์มา)
   justBound: boolean; // เพิ่งผูกเจ้าของในข้อความนี้เอง

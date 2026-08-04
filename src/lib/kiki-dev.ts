@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { db } from "./db";
-import { getSetting, setSetting } from "./kiki";
+import { setPendingFor, getPendingFor } from "./kiki";
 
 /**
  * โหมดพัฒนาตัวเอง (เจ้าของสั่ง 3 ส.ค.): "พัฒนา/เพิ่มความสามารถ ..." ในแชท
@@ -11,13 +11,14 @@ import { getSetting, setSetting } from "./kiki";
 
 const PENDING_KEY = "kiki_pending_dev";
 
-export async function setPendingDev(spec: string | null): Promise<void> {
-  await setSetting(PENDING_KEY, spec || "");
+/** สเปกงานพัฒนารอยืนยัน — ผูกช่องทาง (สั่งแก้โค้ดตัวเองจากคนละที่แล้วกดยืนยันข้ามช่อง = อันตราย) */
+export async function setPendingDev(spec: string | null, channel = "telegram"): Promise<void> {
+  await setPendingFor(PENDING_KEY, channel, spec);
 }
 
-export async function getPendingDev(): Promise<string | null> {
-  const v = await getSetting(PENDING_KEY);
-  return v || null;
+export async function getPendingDev(channel = "telegram"): Promise<{ spec: string; channel: string; sameChannel: boolean } | null> {
+  const r = await getPendingFor<string>(PENDING_KEY, channel);
+  return r?.data ? { spec: r.data, channel: r.channel, sameChannel: r.sameChannel } : null;
 }
 
 // มีงานพัฒนารันอยู่ไหม (กันรันซ้อน — แก้โค้ดพร้อมกันสองงาน = ชนกันแน่)

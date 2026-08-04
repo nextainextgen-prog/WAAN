@@ -17,6 +17,9 @@ import {
   transcribeAudio,
   kikiConversation,
   getSetting,
+  setPendingFor,
+  getPendingFor,
+  pendingElsewhereNote,
   ttsOgg,
   sanitizeVexText,
   vexLine,
@@ -49,11 +52,13 @@ export async function POST(req: Request) {
   const channel = String(body.channel || platform).toLowerCase();
   const fromName = String(body.fromName || "").trim();
   const replyText = String(body.replyText || "").trim();
+  const replyIsScreenshot = Boolean(body.replyIsScreenshot);
   const imageFiles = (body.imageFiles as string[] | undefined) || [];
   const audioFiles = (body.audioFiles as { path: string; mime?: string }[] | undefined) || [];
   const docFiles = (body.docFiles as { path: string; name: string }[] | undefined) || [];
   const videoFiles = (body.videoFiles as { path: string; name: string }[] | undefined) || [];
-  const msgId = body.msgId ? Number(body.msgId) : undefined;
+  // ส่งผ่านตามที่ได้มา ห้ามแปลงชนิด (Telegram ส่งตัวเลข · Discord ส่ง snowflake ที่ต้องคงเป็นสตริง)
+  const msgId = (body.msgId ?? undefined) as number | string | undefined;
   const callbackData = String(body.callbackData || "");
   // ปุ่มกด = คำสั่งยืนยันแบบพิมพ์ (แปลงเป็นข้อความเดิม logic ยืนยันทุกตัวใช้ต่อได้เลย)
   if (callbackData === "kiki:dm:yes") text = "ยืนยัน";
@@ -64,9 +69,14 @@ export async function POST(req: Request) {
   else if (callbackData === "kiki:dev:no") text = "[ปุ่ม:ยกเลิกพัฒนา]";
   // ปุ่มโซเชียล: กดส่งจริง / ทิ้งร่าง
   if (callbackData === "kiki:social:send" || callbackData === "kiki:social:no") {
-    const raw = await getSetting("kiki_pending_social");
-    const pend = raw ? (JSON.parse(raw) as { url: string; text: string; what: string }) : null;
-    await setSetting("kiki_pending_social", "");
+    const box = await getPendingFor<{ url: string; text: string; what: string }>("kiki_pending_social", channel);
+    // ร่างโพสต์ค้างคนละช่องทาง = ไม่กดส่งให้ (โพสต์ในนามเจ้าของ ลบทีหลังก็มีคนเห็นไปแล้ว)
+    if (box && !box.sameChannel) {
+      // canned-ok: เหตุผลเดียวกัน — ห้ามให้ถ้อยคำกลายเป็นการเคลมว่าโพสต์ไปแล้ว
+      return ok([{ kind: "text", text: pendingElsewhereNote(`ร่าง${box.data.what}`, box.channel) }]);
+    }
+    const pend = box?.data ?? null;
+    await setPendingFor("kiki_pending_social", channel, null);
     if (!pend) return ok([{ kind: "text", text: await vexLine("ไม่มีร่างที่ค้างอยู่แล้วครับ") }]);
     const { sendDraft, discardDraft } = await import("@/lib/kiki-chrome");
     if (callbackData === "kiki:social:no") {
@@ -160,7 +170,9 @@ export async function POST(req: Request) {
     if (pending && pending.platform === platform && /^\s*\d{4}\s*$/.test(text)) {
       const r = await redeemLinkCode(platform, fromId, text);
       if (r.ok) {
-        await addKikiChatId(chatId);
+        // เก็บเฉพาะแชท Telegram — cron ใช้ตัวแรกในรายการนี้เป็นปลายทางแจ้งเตือน
+  // ถ้าเอา channel id ของ Discord ไปปน งานเชิงรุกจะยิงผิดที่ (ชั้นเลือกปลายทางจริงอยู่ในเฟส 2)
+  if (platform === "telegram") await addKikiChatId(chatId);
         await saveKikiChat("assistant", `[ผูกบัญชี ${platform} สำเร็จ]`, "owner", channel);
         return ok([{ kind: "text", text: await vexLine("ผูกบัญชีเรียบร้อยแล้วครับโด้ ต่อจากนี้คุยกับผมทางนี้ได้เหมือนเดิมทุกอย่าง") }]);
       }
@@ -183,7 +195,9 @@ export async function POST(req: Request) {
     ]);
   }
 
-  await addKikiChatId(chatId);
+  // เก็บเฉพาะแชท Telegram — cron ใช้ตัวแรกในรายการนี้เป็นปลายทางแจ้งเตือน
+  // ถ้าเอา channel id ของ Discord ไปปน งานเชิงรุกจะยิงผิดที่ (ชั้นเลือกปลายทางจริงอยู่ในเฟส 2)
+  if (platform === "telegram") await addKikiChatId(chatId);
   // จำชื่อกลุ่ม (ไว้ resolve "ไปแจ้งในกลุ่ม X" ว่าหมายถึงแชทไหน)
   const chatTitleIn = String(body.chatTitle || "").trim();
   if (chatTitleIn) {
@@ -268,6 +282,7 @@ export async function POST(req: Request) {
       convo: await kikiConversation(10).catch(() => ""),
       hasImages: imageFiles.length > 0,
       hasDocs: docFiles.length > 0,
+      replyIsScreenshot,
     }).catch(() => ({ intent: "chat", confidence: 0, args: {} as Record<string, string | boolean | undefined> }));
 
     // งานที่ผูกเงื่อนไขไว้ — เจ้าของพูดถึงเมื่อไหร่ = ถึงเวลาเตือน

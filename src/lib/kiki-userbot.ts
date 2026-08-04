@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
-import { getSetting, setSetting } from "./kiki";
+import { getSetting, setSetting, setPendingFor, getPendingFor, type PendingRead } from "./kiki";
 
 /**
  * Userbot — บัญชี Telegram "จริง" ของเจ้าของ (MTProto/GramJS)
@@ -93,17 +93,16 @@ export interface PendingDm {
   message: string;
 }
 
-export async function setPendingDm(p: PendingDm | null): Promise<void> {
-  await setSetting("kiki_pending_dm", p ? JSON.stringify(p) : "");
+export const PENDING_DM_KEY = "kiki_pending_dm";
+
+/** ร่างข้อความรอยืนยัน — ผูกกับช่องทางที่สั่ง ยืนยันข้ามช่องทางไม่ได้ (กันส่งผิดตัวในนามเจ้าของ) */
+export async function setPendingDm(p: PendingDm | null, channel = "telegram"): Promise<void> {
+  await setPendingFor(PENDING_DM_KEY, channel, p);
 }
 
-export async function getPendingDm(): Promise<PendingDm | null> {
-  try {
-    const v = await getSetting("kiki_pending_dm");
-    return v ? (JSON.parse(v) as PendingDm) : null;
-  } catch {
-    return null;
-  }
+export async function getPendingDm(channel = "telegram"): Promise<PendingRead<PendingDm> | null> {
+  const r = await getPendingFor<PendingDm>(PENDING_DM_KEY, channel);
+  return r?.data ? r : null;
 }
 
 // ===== ลิสต์รายชื่อแชท + ชื่อเรียกส่วนตัว (alias) =====

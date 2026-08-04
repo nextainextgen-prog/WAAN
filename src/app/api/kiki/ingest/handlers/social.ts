@@ -1,6 +1,6 @@
 import { extractUrls } from "@/lib/weblink";
 import { vexList } from "@/lib/kiki-format";
-import { askKiki, setSetting, sanitizeVexText, vexLine } from "@/lib/kiki";
+import { askKiki, sanitizeVexText, vexLine, setPendingFor } from "@/lib/kiki";
 import type { Ctx, Handler } from "../types";
 import { ok, type Send } from "../types";
 
@@ -31,7 +31,7 @@ export const socialStatusHandler: Handler = async (ctx) => {
 };
 
 export const socialDraftHandler: Handler = async (ctx) => {
-  const { text, platform, replyText, msgId, is, reply } = ctx;
+  const { text, platform, replyText, msgId, is, channel, reply } = ctx;
   if (is("social_reply") || is("social_post")) {
     const { draftReply, platformOf } = await import("@/lib/kiki-chrome");
     const linkFromText = [...extractUrls(text), ...extractUrls(replyText)][0] || "";
@@ -64,7 +64,7 @@ export const socialDraftHandler: Handler = async (ctx) => {
       sends.push({ kind: "text", text: `ยังส่งไม่ได้ครับ ⚠️ ${d.msg}\n\nข้อความที่ร่างไว้:\n${message}`, replyTo: msgId }); // canned-ok: โชว์ข้อความที่ร่างไว้ตรงตัว ห้ามให้ AI แต่งใหม่
       return reply(sends);
     }
-    await setSetting("kiki_pending_social", JSON.stringify({ url: d.url, text: message, what: is("social_post") ? "โพสต์ใหม่" : "ตอบโพสต์" }));
+    await setPendingFor("kiki_pending_social", channel, { url: d.url, text: message, what: is("social_post") ? "โพสต์ใหม่" : "ตอบโพสต์" });
     sends.push({
       kind: "text",
       text: `พิมพ์ค้างไว้ในหน้าจริงแล้วครับ (${d.platform.toUpperCase()}) ยังไม่กดส่ง\n\nข้อความ:\n${message}\n\nกดยืนยันแล้วผมกดส่งให้เลย`, // canned-ok: โชว์ข้อความที่พิมพ์ค้างไว้ตรงตัว + ปุ่มยืนยัน

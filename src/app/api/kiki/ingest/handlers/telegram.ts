@@ -1,25 +1,32 @@
 import { userbotReady, findPeer, sendAsOwner, readChat, setPendingDm, getPendingDm, listDialogs, setAlias, getAliases, type PeerHit } from "@/lib/kiki-userbot";
-import { askKiki, askExtractor, setSetting, addKikiChatId, rememberOwnerFact, kikiConversation, getSetting, sanitizeVexText, vexLine } from "@/lib/kiki";
+import { askKiki, askExtractor, setSetting, addKikiChatId, rememberOwnerFact, kikiConversation, getSetting, sanitizeVexText, vexLine, setPendingFor, getPendingFor, pendingElsewhereNote } from "@/lib/kiki";
 import { escHtml } from "../shared";
 import type { Ctx, Handler } from "../types";
 import { ok, type Send } from "../types";
 
 export const dmConfirmHandler: Handler = async (ctx) => {
-  const { text, msgId, reply } = ctx;
+  const { text, msgId, channel, reply } = ctx;
   // ===== Telegram userbot: ยืนยัน/ยกเลิกการส่งที่ค้างอยู่ =====
   {
-    const pending = await getPendingDm();
-    if (pending && /^\s*(ยืนยัน|ส่งเลย|ส่งได้|โอเค\s*ส่ง|เอาเลย)/.test(text)) {
-      await setPendingDm(null);
+    const pending = await getPendingDm(channel);
+    const confirming = /^\s*(ยืนยัน|ส่งเลย|ส่งได้|โอเค\s*ส่ง|เอาเลย)/.test(text);
+    const canceling = /^\s*(ยกเลิก|ไม่ส่ง|ไม่เอา)/.test(text);
+    // ร่างค้างอยู่คนละช่องทาง = ไม่ยืนยันให้เด็ดขาด (ส่งผิดตัวในนามเจ้าของคือความเสียหายที่ถอนไม่ได้)
+    if (pending && !pending.sameChannel && (confirming || canceling)) {
+      // canned-ok: ข้อความบอกว่า "ยังไม่ได้ทำ" ห้ามให้ AI เรียบเรียง — เคยแต่งกลับมาเป็น "ผมส่งให้ทาง Telegram แล้ว" ซึ่งไม่จริง
+      return reply([{ kind: "text", text: pendingElsewhereNote(`ข้อความถึง ${pending.data.peerName}`, pending.channel), replyTo: msgId }]);
+    }
+    if (pending?.sameChannel && confirming) {
+      await setPendingDm(null, channel);
       try {
-        await sendAsOwner(pending.peerId, pending.message);
-        return reply([{ kind: "text", text: await vexLine(`ส่งหา ${pending.peerName} แล้วครับ 📤 (ในนามบัญชีพี่เอง)`), replyTo: msgId }]);
+        await sendAsOwner(pending.data.peerId, pending.data.message);
+        return reply([{ kind: "text", text: await vexLine(`ส่งหา ${pending.data.peerName} แล้วครับ 📤 (ในนามบัญชีพี่เอง)`), replyTo: msgId }]);
       } catch (e) {
         return reply([{ kind: "text", text: await vexLine(`ส่งไม่สำเร็จครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 120) : "error"})`), replyTo: msgId }]);
       }
     }
-    if (pending && /^\s*(ยกเลิก|ไม่ส่ง|ไม่เอา)/.test(text)) {
-      await setPendingDm(null);
+    if (pending?.sameChannel && canceling) {
+      await setPendingDm(null, channel);
       return reply([{ kind: "text", text: await vexLine("ยกเลิกแล้วครับ ✅ ไม่ส่ง"), replyTo: msgId }]);
     }
   }
@@ -28,17 +35,22 @@ export const dmConfirmHandler: Handler = async (ctx) => {
 };
 
 export const groupConfirmHandler: Handler = async (ctx) => {
-  const { chatId, text, fromId, msgId, reply } = ctx;
+  const { chatId, text, fromId, msgId, channel, reply } = ctx;
   // ===== สร้างกลุ่มใหม่: ยืนยัน/ยกเลิก (ปุ่มหรือพิมพ์) =====
   {
-    const rawGrp = await getSetting("kiki_pending_group");
-    const pendingGrp = rawGrp ? (JSON.parse(rawGrp) as { title: string }) : null;
+    const grpBox = await getPendingFor<{ title: string }>("kiki_pending_group", channel);
+    const pendingGrp = grpBox?.sameChannel ? grpBox.data : null;
+    // ร่างค้างคนละช่องทาง = บอกว่าอยู่ไหน ไม่สร้างให้ (สร้างกลุ่มจริงในนามเจ้าของ ถอนคืนไม่ได้)
+    if (grpBox && !grpBox.sameChannel && /^\[ปุ่ม:(สร้างกลุ่ม|ยกเลิกกลุ่ม)\]$|^\s*(สร้างเลย|ลุยเลย|เอาเลย)\s*$/.test(text)) {
+      // canned-ok: เหตุผลเดียวกัน — ห้ามให้ถ้อยคำกลายเป็นการเคลมว่าสร้างกลุ่มไปแล้ว
+      return reply([{ kind: "text", text: pendingElsewhereNote(`กลุ่ม "${grpBox.data.title}"`, grpBox.channel), replyTo: msgId }]);
+    }
     if (pendingGrp && text === "[ปุ่ม:ยกเลิกกลุ่ม]") {
-      await setSetting("kiki_pending_group", "");
+      await setPendingFor("kiki_pending_group", channel, null);
       return reply([{ kind: "text", text: await vexLine("ยกเลิกแล้วครับ ✅ ไม่สร้างกลุ่ม"), replyTo: msgId }]);
     }
     if (pendingGrp && (text === "[ปุ่ม:สร้างกลุ่ม]" || /^\s*(สร้างเลย|ลุยเลย|เอาเลย)\s*$/.test(text))) {
-      await setSetting("kiki_pending_group", "");
+      await setPendingFor("kiki_pending_group", channel, null);
       const { userbotReady: ubReady, createOwnerGroup } = await import("@/lib/kiki-userbot");
       if (!ubReady()) return reply([{ kind: "text", text: await vexLine(`บัญชี Telegram ยังไม่เชื่อมครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน`), replyTo: msgId }]);
       try {
@@ -70,7 +82,7 @@ export const groupConfirmHandler: Handler = async (ctx) => {
 };
 
 export const createGroupHandler: Handler = async (ctx) => {
-  const { text, msgId, is, reply } = ctx;
+  const { text, msgId, is, channel, reply } = ctx;
   // ===== สร้างกลุ่มใหม่: รับคำสั่ง + ตั้งชื่อ + ปุ่มยืนยัน =====
   if (is("tg_create_group") && !text.startsWith("[ปุ่ม")) {
     const { userbotReady: ubReady } = await import("@/lib/kiki-userbot");
@@ -90,7 +102,7 @@ export const createGroupHandler: Handler = async (ctx) => {
       } catch { /* ตกไปใช้ชื่อกลาง */ }
     }
     if (!title) title = `โปรเจกต์ใหม่ — โด้ x Vex`;
-    await setSetting("kiki_pending_group", JSON.stringify({ title }));
+    await setPendingFor("kiki_pending_group", channel, { title });
     return reply([{
       kind: "text",
       text: await vexLine(`จะสร้างกลุ่ม "${title}" ผ่านบัญชีพี่ (พี่เป็นเจ้าของกลุ่มอัตโนมัติ) แล้วดึงผมเข้าไปประจำการครับ\n\nถ้าอยากได้ชื่ออื่น พิมพ์ "สร้างกลุ่มชื่อ ..." มาใหม่ได้เลย`),
@@ -197,7 +209,7 @@ export const groupPostHandler: Handler = async (ctx) => {
 };
 
 export const dmHandler: Handler = async (ctx) => {
-  const { text, msgId, is, reply } = ctx;
+  const { text, msgId, is, channel, reply } = ctx;
   // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====
   if (is("tg_dm")) {
     if (!userbotReady()) {
@@ -218,7 +230,7 @@ export const dmHandler: Handler = async (ctx) => {
     if (hits.length > 1) {
       return reply([{ kind: "text", text: `เจอหลายแชทครับ หมายถึงอันไหน:\n${hits.map((h, i) => `${i + 1}. ${h.name}${h.username ? ` (@${h.username})` : ""}${h.isGroup ? " · กลุ่ม" : ""}`).join("\n")}\n\nสั่งใหม่โดยระบุชื่อเต็ม/username ครับ`, replyTo: msgId }]); // canned-ok: ลิสต์แชทให้เลือก
     }
-    await setPendingDm({ peerId: hits[0].id, peerName: hits[0].name, message: dm.message });
+    await setPendingDm({ peerId: hits[0].id, peerName: hits[0].name, message: dm.message }, channel);
     return reply([{
       kind: "text",
       text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"`, // canned-ok: ข้อความที่จะส่งในนามเจ้าของ ต้องตรงตัว

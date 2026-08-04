@@ -37,7 +37,8 @@
     "thunder:daily": "tsx --tsconfig tsconfig.json scripts/thunder-daily.ts",
     "thunder:read": "node scripts/thunder-chat-read.mjs",
     "kiki:chrome": "node scripts/kiki-chrome-start.mjs",
-    "kiki:check": "node scripts/kiki-check-canned.mjs"
+    "kiki:check": "node scripts/kiki-check-canned.mjs",
+    "kiki:discord": "node scripts/kiki-discord.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.2",
@@ -46,6 +47,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.11.1",
     "clsx": "^2.1.1",
+    "discord.js": "^14.27.0",
     "googleapis": "^173.0.0",
     "imapflow": "^1.6.5",
     "jose": "^6.2.3",

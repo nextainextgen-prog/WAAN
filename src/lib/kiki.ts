@@ -116,12 +116,17 @@ export async function ownerAccounts(): Promise<string[]> {
   } catch {
     list = []; // พังก็ถือว่าว่าง แล้วให้ seed ข้างล่างซ่อมให้
   }
-  if (list.length) return list;
-  const legacy = await getKikiOwnerId();
-  if (legacy) {
-    list = [accountKey("telegram", legacy)];
-    await setSetting(KIKI_OWNER_ACCOUNTS_KEY, JSON.stringify(list));
+  if (!list.length) {
+    const legacy = await getKikiOwnerId();
+    if (legacy) list = [accountKey("telegram", legacy)];
   }
+  // บัญชี Discord ตั้งไว้ใน .env = เจ้าของกรอกเอง ถือเป็นการยืนยันตัวตนโดยตรง (ไม่ใช่ auto-bind ใครก็ได้)
+  // ผูกให้เลย ไม่ต้องเดินขั้นตอนรหัส · แก้ env เมื่อไหร่ก็มีผลรอบถัดไป
+  const dc = process.env.DISCORD_OWNER_ID?.trim();
+  if (dc && !list.includes(accountKey("discord", dc))) list = [...list, accountKey("discord", dc)];
+
+  const raw = await getSetting(KIKI_OWNER_ACCOUNTS_KEY);
+  if (list.length && raw !== JSON.stringify(list)) await setSetting(KIKI_OWNER_ACCOUNTS_KEY, JSON.stringify(list));
   return list;
 }
 
@@ -217,6 +222,43 @@ export async function addKikiChatId(chatId: string): Promise<void> {
     ids.push(chatId);
     await setSetting(KIKI_CHATS_KEY, JSON.stringify(ids));
   }
+}
+
+// ===== ร่างที่ค้างรอยืนยัน — ต้องผูกกับช่องทางที่สร้างมัน (เฟส 1 — 4 ส.ค. 2026) =====
+//
+// ของพวกนี้ (ส่ง DM ในนามเจ้าของ · โพสต์โซเชียล · สร้างกลุ่ม · แก้โค้ดตัวเอง) เป็นช่องเดียวใน Setting
+// พอมีช่องทางที่สอง ค้างร่างไว้ที่ Telegram แล้วพูด "ส่งเลย" ใน Discord = ส่งของผิดตัวออกไปในนามเจ้าของจริง ๆ
+// อันตรายที่สุดในรายการทั้งหมด เพราะปลายทางคือคนอื่นเห็น
+//
+// กติกา: ยืนยันได้เฉพาะจากช่องทางเดียวกับที่สร้างร่าง · คนละช่องทาง = บอกว่าร่างอยู่ที่ไหน ไม่ทำอะไรทั้งสิ้น
+
+export interface PendingRead<T> {
+  data: T;
+  channel: string; // ช่องทางที่สร้างร่างนี้
+  sameChannel: boolean; // ยืนยันจากที่นี่ได้ไหม
+}
+
+export async function setPendingFor(key: string, channel: string, payload: unknown): Promise<void> {
+  await setSetting(key, payload === null ? "" : JSON.stringify({ __channel: channel, data: payload }));
+}
+
+export async function getPendingFor<T>(key: string, channel: string): Promise<PendingRead<T> | null> {
+  const raw = await getSetting(key);
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw) as { __channel?: string; data?: T };
+    // ร่างเก่าที่เขียนไว้ก่อนมีระบบช่องทาง = ถือว่าเป็นของ telegram (ช่องทางเดียวที่มีตอนนั้น)
+    if (p.__channel === undefined) return { data: raw as unknown as T, channel: "telegram", sameChannel: channel === "telegram" };
+    return { data: p.data as T, channel: p.__channel, sameChannel: p.__channel === channel };
+  } catch {
+    return null;
+  }
+}
+
+/** ข้อความบอกว่าร่างค้างอยู่คนละช่องทาง — ใช้ให้เหมือนกันทุกจุด */
+export function pendingElsewhereNote(what: string, channel: string): string {
+  const where = channel === "telegram" ? "Telegram" : channel.startsWith("discord") ? "Discord" : channel;
+  return `${what} ที่ค้างอยู่ถูกสั่งไว้ทาง ${where} ครับ — ผมยังไม่ได้ทำอะไรทั้งนั้น\nไปยืนยันที่นั่นได้เลย (ยืนยันข้ามช่องทางผมไม่ทำให้ กันสั่งผิดตัว)`;
 }
 
 // ===== ประวัติแชทของ kiki (แยกจากวาน) =====

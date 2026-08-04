@@ -54,4 +54,30 @@ console.log(
     ? `\nเจอข้อความสำเร็จรูปที่ยังไม่ได้ครอบ ${bad} จุด — ครอบด้วย vexLine() หรือใส่คอมเมนต์ canned-ok: <เหตุผล>`
     : `ผ่าน — ไม่มีข้อความสำเร็จรูปตกค้าง (ยกเว้นที่อนุญาตไว้ ${okSkipped} จุด)`,
 );
-process.exit(bad ? 1 : 0);
+
+// ===== ทุกเจตนาในแคตตาล็อกต้องมีตัวรับ =====
+// เพิ่ม intent เข้า INTENT_CATALOG แล้วลืมเขียนตัวจัดการ = คำสั่งตกไปคุยเล่นแบบเงียบ ๆ
+// ไม่มี error ไม่มี log เจ้าของสั่งแล้วไม่เกิดอะไรขึ้น ซึ่งแย่กว่าพังดัง ๆ
+// เคยเกิดจริง 2 รอบใน 1 วัน (4 ส.ค. 2026): voice_mode/finance_budget/journal/tg_chat_summary
+// แล้วรอบที่สอง gui_type/gui_switch/warp_cmd — เลยยกมาให้เครื่องตรวจแทนสายตาคน
+const catalog = [
+  ...fs.readFileSync("src/lib/kiki-router.ts", "utf8").matchAll(/^\s*(?:\{\s*)?id: "([a-z_]+)"/gm),
+].map((m) => m[1]);
+
+const handlerSrc = walkTs("src/app/api/kiki/ingest").map((f) => fs.readFileSync(f, "utf8")).join("\n");
+const handled = new Set([...handlerSrc.matchAll(/is\("([a-z_]+)"\)/g)].map((m) => m[1]));
+handled.add("chat"); // ทางสำรอง ไม่ต้องมี is() ของตัวเอง
+
+const orphans = catalog.filter((id) => !handled.has(id));
+if (orphans.length) {
+  console.log(
+    `\nเจตนาที่ไม่มีตัวรับ ${orphans.length} ตัว: ${orphans.join(", ")}\n` +
+    `  → อยู่ใน INTENT_CATALOG (kiki-router.ts) แต่ไม่มี is("<id>") ในตัวจัดการไหนเลย\n` +
+    `  → เจ้าของสั่งเรื่องนี้แล้วจะตกไปคุยเล่นเงียบ ๆ ไม่มีอะไรเกิดขึ้น\n` +
+    `  → เขียนตัวจัดการใน handlers/ แล้วใส่ลง registry.ts ตามลำดับที่ถูก หรือถ้ายังไม่ทำ ให้เอา intent ออกก่อน`,
+  );
+} else {
+  console.log(`ผ่าน — เจตนาทั้ง ${catalog.length} ตัวมีตัวรับครบ`);
+}
+
+process.exit(bad || orphans.length ? 1 : 0);
