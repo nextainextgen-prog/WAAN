@@ -317,7 +317,8 @@ export async function POST(req: Request) {
     triggerNote = "";
     let sends = withTrigger.flatMap(explodeTextSend);
     // เจ้าของพูดมา = ตอบเสียง "อย่างเดียว" (ตัดข้อความออก คงการ์ด/ไฟล์/ข้อความข้ามกลุ่มไว้)
-    if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text" || s.chatId);
+    // เจ้าของพูดมา = ตอบเสียงล้วน — แต่คงลิสต์/การ์ดที่จัดรูปแบบไว้ (parseMode) ไม่งั้นข้อมูลหาย
+    if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text" || s.chatId || s.parseMode);
     if (voiceSend) sends.push(voiceSend);
     return ok(sends);
   };
@@ -452,6 +453,25 @@ export async function POST(req: Request) {
         ].filter(Boolean).join("\n\n"),
       );
       return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    }
+
+    // ===== ที่ปรึกษาการเงิน (เจ้าของเล่ารายละเอียดเงินมา → วิเคราะห์โหด + ลงงานให้) =====
+    if (is("finance_advice")) {
+      const { financeAdvice } = await import("@/lib/kiki-advice");
+      const r = await financeAdvice([replyText, text].filter(Boolean).join("\n"), await kikiConversation(12).catch(() => ""));
+      const sends: Send[] = [];
+      const { png } = await financeCardPng();
+      if (png) sends.push({ kind: "photo", dataBase64: png, filename: "finance.png" });
+      sends.push({ kind: "text", text: r.plan.slice(0, 3500) || "วิเคราะห์ไม่ออกครับ ขอตัวเลขเพิ่มอีกนิด", replyTo: msgId });
+      if (r.actions.length) {
+        const block = vexList({
+          title: `ลงกระดานงานให้แล้ว ${r.actions.length} อย่าง`,
+          items: r.actions.map((a) => ({ main: a.title, sub: [a.priority === "high" ? "สำคัญ" : "", a.due || ""].filter(Boolean).join(" · ") || undefined })),
+          note: r.facts.length ? `จำข้อมูลการเงินเพิ่ม ${r.facts.length} เรื่องแล้ว` : undefined,
+        });
+        sends.push({ kind: "text", text: block.text, parseMode: block.parseMode });
+      }
+      return reply(sends);
     }
 
     // ===== โซเชียล: ตอบโพสต์ / โพสต์ใหม่ / เช็คสถานะ (เจ้าของเลือกทาง A — Chrome ตัวจริง) =====

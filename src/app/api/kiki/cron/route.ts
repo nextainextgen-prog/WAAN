@@ -449,6 +449,23 @@ ${facts}
         if (m) {
           sends.push({ chatId: mainChat, kind: "document", dataBase64: Buffer.from(m[0], "utf8").toString("base64"), filename: `รายงานสัปดาห์-${today}.html`, caption: "รายงานประจำสัปดาห์ครับ เปิดอ่านได้เลย" } as CronSend & { filename: string });
         }
+        // 1.5) เทียบกับ "แผนการเงิน" ที่วางไว้ล่าสุด (โหมดที่ปรึกษา — เจ้าของสั่ง 4 ส.ค.)
+        try {
+          const { latestFinancePlan } = await import("@/lib/kiki-advice");
+          const plan = await latestFinancePlan();
+          if (plan) {
+            const openTasksNow = await db.kikiTask.findMany({ where: { status: "open", detail: "จากการวางแผนการเงิน" }, take: 15 });
+            const doneTasks = await db.kikiTask.count({ where: { status: "done", detail: "จากการวางแผนการเงิน", doneAt: { gte: new Date(now.getTime() - 7 * 86400_000) } } });
+            const t = await askKiki(
+              `[รีวิวแผนการเงินรายสัปดาห์] แผนที่วางไว้เมื่อ ${plan.day}:\n${plan.content.slice(0, 3000)}\n\nสัปดาห์นี้: ปิดงานตามแผมไปแล้ว ${doneTasks} อย่าง · ยังค้าง ${openTasksNow.length} อย่าง (${openTasksNow.map((t2) => t2.title).join(" / ") || "-"})\n\nตัวเลขจริงสัปดาห์นี้:\n${facts.slice(0, 2500)}\n\nเขียนรีวิวสั้น (ไม่เกิน 8 บรรทัด): ทำตามแผนได้แค่ไหน ตรงไหนหลุด ต้องแก้อะไรสัปดาห์หน้า — ตรงไปตรงมา ด่าได้ตามจริง`,
+            ).catch(() => "");
+            if (t.trim()) {
+              sends.push({ chatId: mainChat, kind: "text", text: t.trim() });
+              await saveKikiChat("assistant", t.trim());
+            }
+          }
+        } catch { /* ไม่มีแผนก็ข้าม */ }
+
         // 2) ทวงหนี้
         const nags = await debtNagFacts();
         if (nags.length) {
