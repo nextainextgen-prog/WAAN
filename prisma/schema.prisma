@@ -508,6 +508,27 @@ model FitnessLog {
   @@index([kind, createdAt])
 }
 
+// มื้ออาหาร/น้ำของอั๋น — Vex อ่านจากรูปหรือข้อความแล้วประเมินแคล+มาโคร (แยกขาดจากข้อมูลเจ้าของ)
+model AunMeal {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  day        String                        // "2026-08-04" ตามเวลาไทย — คีย์รวมยอดต่อวัน
+  at         DateTime @default(now())      // เวลาที่กินจริง
+  mealType   String                        // เช้า | กลางวัน | เย็น | ว่าง | น้ำ
+  title      String                        // สรุปสั้น ๆ ของมื้อ ("ข้าวกะเพราไก่ไข่ดาว")
+  items      String   @default("[]")       // JSON: [{name,qty,kcal,protein,carb,fat}]
+  kcal       Float    @default(0)
+  protein    Float    @default(0)
+  carb       Float    @default(0)
+  fat        Float    @default(0)
+  water      Int      @default(0)          // จำนวนแก้ว (ใช้เมื่อ mealType = น้ำ)
+  photo      String?                       // path รูปที่เก็บถาวรใน vault
+  confidence String?                       // ความมั่นใจของการประเมิน (สูง/กลาง/ต่ำ)
+  note       String?                       // คอมเมนต์โภชนาการของมื้อนี้
+
+  @@index([day])
+}
+
 // ===== Thunder — รายงานแชทรายวัน (เก็บไว้ถามย้อนหลัง) =====
 model DailyReport {
   id        String   @id @default(cuid())

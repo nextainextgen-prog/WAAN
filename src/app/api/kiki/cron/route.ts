@@ -314,6 +314,31 @@ export async function POST(req: Request) {
     }
   } catch { /* พรุ่งนี้ค่อยทัก */ }
 
+  // ===== G3.6) ปิดวันของอั๋น — การ์ดสรุปแคล + ครบไม่ครบ (21:00) =====
+  try {
+    const { getAunChatId, askTrainer } = await import("@/lib/kiki-aun");
+    const aunChat = await getAunChatId();
+    if (aunChat && now.getHours() >= 21 && (await getSetting("kiki_last_aun_food")) !== today) {
+      await setSetting("kiki_last_aun_food", today);
+      const { getAunDay, aunDayCardPng, aunDayFacts, dayCaption } = await import("@/lib/kiki-aun-food");
+      const day = await getAunDay(now);
+      const facts = aunDayFacts(day);
+      if (day.meals.length || day.water) {
+        const png = await aunDayCardPng(day);
+        if (png) sends.push({ chatId: aunChat, kind: "photo", dataBase64: png, filename: `แคลวันนี้-${day.day}.png`, caption: dayCaption(day) } as CronSend & { filename: string });
+        const t = await askTrainer(
+          `[ปิดวัน] สรุปการกินของอั๋นวันนี้ ระบบส่งการ์ดสรุปให้แล้ว\n[ตัวเลขจริง ห้ามคิดเลขใหม่]\n${facts.map((f) => `- ${f}`).join("\n")}\n\nสรุปให้อั๋นสั้น ๆ ว่าวันนี้ครบไหม ทำอะไรได้ดี พรุ่งนี้ปรับอะไร (ไม่เกิน 5 บรรทัด)${png ? "" : "\n(การ์ดเรนเดอร์ไม่ผ่าน ให้ใส่ตัวเลขสำคัญในข้อความแทน)"}`,
+        ).catch(() => "");
+        if (t) sends.push({ chatId: aunChat, kind: "text", text: t });
+      } else {
+        const t = await askTrainer(
+          `[ปิดวัน] วันนี้อั๋นยังไม่ได้บันทึกมื้ออาหารเลยสักมื้อ (ระบบเช็คแล้ว 0 มื้อ 0 แก้วน้ำ)\nทักสั้น ๆ ชวนให้พรุ่งนี้ถ่ายรูปอาหารส่งมาทุกมื้อ เดี๋ยวผมคำนวณแคลให้เอง — ไม่ตำหนิ`,
+        ).catch(() => "");
+        if (t) sends.push({ chatId: aunChat, kind: "text", text: t });
+      }
+    }
+  } catch { /* พรุ่งนี้ค่อยสรุป */ }
+
   // ===== G4) จำเองไม่ต้องสั่ง — สกัดข้อเท็จจริงใหม่จากบทสนทนาของวัน (21:00) =====
   try {
     if (mainChat && now.getHours() >= 21 && (await getSetting("kiki_last_autofact")) !== today) {

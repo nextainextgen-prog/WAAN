@@ -190,7 +190,7 @@ export async function POST(req: Request) {
   {
     const { getAunChatId, handleTrainerChat, AUN_USER_KEY } = await import("@/lib/kiki-aun");
     const aunChat = await getAunChatId();
-    if (aunChat && chatId === aunChat && (text || audioFiles.length)) {
+    if (aunChat && chatId === aunChat && (text || audioFiles.length || imageFiles.length)) {
       const ownId = await getKikiOwnerId();
       const isOwner = fromId === ownId;
       // จำ Telegram id ของอั๋นจากคนแรกที่ไม่ใช่เจ้าของ (ไว้กันคนนอกถ้าโดนดึงเข้ากลุ่ม)
@@ -198,15 +198,17 @@ export async function POST(req: Request) {
       if (!isOwner && !aunId && fromId) await setSetting(AUN_USER_KEY, fromId);
       else if (!isOwner && aunId && fromId !== aunId) return ok([]); // คนที่สามในกลุ่ม = เงียบ
       // เตือนประจำของอั๋น (ใช้ระบบ Recurring เดิม ผูกกับ chatId กลุ่มนี้ — cron ส่งเข้ากลุ่มนี้เอง)
-      if (RECUR_RE.test(text)) {
+      if (RECUR_RE.test(text) && !imageFiles.length) {
         const t = await handleRecurring(text, chatId);
         const { saveKikiChat: saveAun } = await import("@/lib/kiki");
         await saveAun("assistant", t, "aun");
         return ok([{ kind: "text", text: t, replyTo: msgId }]);
       }
-      const r = await handleTrainerChat(text, fromName, isOwner);
-      // ซอยบับเบิล + sanitize เหมือนโหมดหลัก
-      const sends: Send[] = [{ kind: "text", text: r.text, replyTo: msgId }];
+      const r = await handleTrainerChat(text, fromName, isOwner, imageFiles);
+      // ซอยบับเบิล + sanitize เหมือนโหมดหลัก · การ์ดแคลส่งก่อนคำพูดเสมอ (อั๋นเห็นตัวเลขก่อน)
+      const sends: Send[] = [];
+      if (r.photo) sends.push({ kind: "photo", dataBase64: r.photo.dataBase64, filename: r.photo.filename, caption: r.photo.caption, replyTo: msgId });
+      sends.push({ kind: "text", text: r.text, ...(r.photo ? {} : { replyTo: msgId }) });
       if (r.doc) sends.push({ kind: "document", dataBase64: r.doc.dataBase64, filename: r.doc.filename });
       return ok(sends.flatMap((s) => {
         if (s.kind !== "text" || !s.text) return [s];

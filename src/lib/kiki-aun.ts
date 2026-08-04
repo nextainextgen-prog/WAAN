@@ -4,6 +4,25 @@ import path from "node:path";
 import { db } from "./db";
 import { askExtractor, getSetting, setSetting, saveKikiChat, sanitizeVexText, webResearch, searchRealYoutube } from "./kiki";
 import { getVaultPath } from "./obsidian";
+import {
+  readAunImages,
+  readAunFoodText,
+  saveAunMeal,
+  saveAunPhoto,
+  logAunWater,
+  deleteLastAunMeal,
+  getAunDay,
+  aunDayCardPng,
+  aunDayFacts,
+  dayCaption,
+  parseWaterGlasses,
+  AUN_TARGETS,
+  AUN_FOOD_QUERY_RE,
+  AUN_WATER_RE,
+  AUN_FOOD_LOG_RE,
+  AUN_UNDO_RE,
+  type AunMealRow,
+} from "./kiki-aun-food";
 
 /**
  * โหมดเทรนเนอร์ของอั๋น (แฟนเจ้าของ) — กลุ่ม "เทรนเนอร์ โด้ & อั๋น" (เจ้าของสั่ง 3 ส.ค. 2026)
@@ -96,7 +115,11 @@ const TRAINER_PERSONA = `คุณคือ "Vex" ในบทบาทเทร
 กฎเหล็ก (เหมือนโหมดหลัก): คุณพูดได้อย่างเดียว การกระทำจริงระบบเป็นคนทำ · ห้ามบอกว่า "ทำแล้ว/กำลังทำ" โดยไม่มีคอนเฟิร์มจากระบบ · ข้อมูลของพี่โด้ (การเงิน/งาน/เรื่องส่วนตัว) ห้ามพูดถึงเด็ดขาดแม้ถูกถาม — ตอบว่าเป็นความส่วนตัวของพี่โด้ครับ
 
 สิ่งที่ระบบทำได้จริง (ห้ามปฏิเสธว่าทำไม่ได้ ถ้าอยู่ในลิสต์นี้):
-- จดน้ำหนัก ("น้ำหนัก 92.5") · จดออกกำลัง/อาหาร (พิมพ์บอกเฉย ๆ) · ถามแผน/เมนู/ท่าออกกำลัง
+- **เห็นรูปที่ส่งมาจริง** — ระบบอ่านภาพให้ก่อนเสมอ (อาหาร/ตาชั่ง/อะไรก็ตาม) ห้ามพูดว่า "ยังไม่เห็นภาพ/ส่งใหม่" เด็ดขาด
+- **คำนวณแคลจากรูปอาหาร** — แตกเป็นรายการ ประเมิน kcal + โปรตีน/คาร์บ/ไขมัน บันทึกเป็นมื้อ แล้วส่งการ์ดสรุปแคลรวมของวันเป็นรูปให้เอง
+- จดน้ำหนัก ("น้ำหนัก 92.5" หรือส่งรูปตาชั่ง) · จดน้ำ ("ดื่มน้ำ 2 แก้ว") · จดออกกำลัง · ลบมื้อล่าสุด · ถามยอดวันนี้ ("วันนี้กินไปกี่แคลแล้ว") = ส่งการ์ดสรุปให้
+- เป้าโภชนาการของอั๋น (ยึดตัวเลขนี้): 1,300 kcal/วัน · โปรตีน 170 ก. · คาร์บ 100 ก. · ไขมัน 25 ก. · น้ำ 14 แก้ว (3,500 ml) · 4 มื้อ/วัน
+- ถามแผน/เมนู/ท่าออกกำลัง
 - **ค้น YouTube/เว็บสดได้จริง** — ขอคลิปออกกำลังกาย/หาข้อมูล = ระบบค้นจริงแล้วส่งลิงก์จริงให้ (ห้ามบอกว่า "ผมเป็นแค่เลขา ค้นคลิปไม่ได้" เด็ดขาด — เคยพลาดมาแล้ว)
 - **ทำไฟล์ HTML ได้จริง** (แผน/ตาราง/เช็คลิสต์ ติ๊กได้ พิมพ์ได้) — ขอไฟล์เมื่อไหร่ระบบสร้างและแนบมาให้
 - ตั้งเตือน ("เตือนทุกวัน 6 โมงเย็นให้ไปเดิน") · ปรับนิสัยผม ("อยากให้รายงานแบบ..." / "สอนว่า...")`;
@@ -111,9 +134,24 @@ async function aunContext(): Promise<string> {
     readAunFile("โปรไฟล์.md", 1200),
   ]);
   const rules = await getAunRules();
+  // ยอดกินวันนี้ — ให้ Vex ตอบคำถามระหว่างคุยได้โดยไม่ต้องเดาตัวเลข
+  let foodToday = "";
+  try {
+    const day = await getAunDay();
+    foodToday = [
+      ...aunDayFacts(day),
+      day.meals.length ? `มื้อวันนี้: ${day.meals.map((m) => `${m.mealType} ${m.title} ${Math.round(m.kcal)} kcal`).join(" · ")}` : "",
+    ]
+      .filter(Boolean)
+      .map((l) => `- ${l}`)
+      .join("\n");
+  } catch {
+    /* DB มีปัญหาก็ยังคุยต่อได้ แค่ไม่มีตัวเลขวันนี้ */
+  }
   return [
     plan ? `=== แผนลดน้ำหนักของอั๋น (ตัวจริง) ===\n${plan}` : "",
     profile ? `=== โปรไฟล์อั๋น ===\n${profile}` : "",
+    foodToday ? `=== การกินของวันนี้ (ตัวเลขจริงจากระบบ ห้ามคิดเลขใหม่) ===\n${foodToday}` : "",
     wlog ? `=== บันทึกน้ำหนักล่าสุด ===\n${wlog}` : "",
     exlog ? `=== บันทึกออกกำลังกายล่าสุด ===\n${exlog}` : "",
     rules.length ? `=== กฎ/ความชอบที่อั๋นสั่งไว้ (ทำตามเคร่งครัด) ===\n${rules.map((r) => `- ${r}`).join("\n")}` : "",
@@ -125,12 +163,80 @@ async function aunContext(): Promise<string> {
 export interface TrainerReply {
   text: string;
   doc?: { filename: string; dataBase64: string }; // ไฟล์ HTML ที่สร้างจริง (แผน/ตาราง)
+  photo?: { filename: string; dataBase64: string; caption?: string }; // การ์ดสรุปแคล (ส่งก่อนข้อความ)
 }
 
-export async function handleTrainerChat(text: string, fromName: string, isOwner: boolean): Promise<TrainerReply> {
+// ===== โภชนาการ: รูปอาหาร → แคล → การ์ดรวมวันนี้ =====
+
+/** สร้างการ์ดวันนี้ + ให้ Vex คอมเมนต์จากตัวเลขจริง (การ์ดพัง = ตกไปเป็นข้อความ ไม่เงียบ) */
+async function dayCardReply(justAdded: AunMealRow | undefined, situation: string): Promise<TrainerReply> {
+  const day = await getAunDay();
+  const [png, facts] = [await aunDayCardPng(day, justAdded ? { justAdded } : {}), aunDayFacts(day, justAdded)];
+  const caption = dayCaption(day, justAdded);
+  const comment = await askTrainer(
+    `${situation}\n\n[ตัวเลขจริงจากระบบ — ห้ามคิดเลขใหม่ ห้ามขัดกับตัวเลขนี้ และระบบส่งการ์ดสรุปเป็นรูปให้อั๋นแล้วจริง]\n${facts
+      .map((f) => `- ${f}`)
+      .join("\n")}\n\nคอมเมนต์แบบเทรนเนอร์: ประเมินสั้น ๆ ว่าโอเคไหม ขาดอะไร แล้วบอกว่ามื้อถัดไปควรกินอะไร/ปริมาณเท่าไหร่ให้ยังอยู่ในเป้า (ไม่เกิน 6 บรรทัด ห้ามลิสต์ตัวเลขซ้ำทั้งหมด)`,
+  );
+  if (!png) return { text: `${caption}\n\n${comment}` };
+  return { text: comment, photo: { filename: `แคลวันนี้-${day.day}.png`, dataBase64: png, caption } };
+}
+
+/** รูปที่ส่งเข้ากลุ่ม — อ่านด้วยวิชันจริงทุกรูป (อาหาร / ตาชั่ง / อย่างอื่น) */
+async function handleAunImages(imagePaths: string[], caption: string, isOwner: boolean): Promise<TrainerReply> {
+  const today = new Date().toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short", year: "2-digit" });
+  let read;
+  try {
+    read = await readAunImages(imagePaths, caption);
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    const fail = `เปิดรูปไม่สำเร็จรอบนี้ครับ ⚠️ (${why.slice(0, 100)})\n\nส่งใหม่อีกรอบ หรือพิมพ์บอกก็ได้ว่ากินอะไรไปบ้าง เดี๋ยวผมคำนวณให้`;
+    await saveKikiChat("assistant", fail, "aun");
+    return { text: fail };
+  }
+
+  // ตาชั่งน้ำหนัก — จดให้เลย (อั๋นเท่านั้น)
+  if (read.kind === "scale" && read.weightKg && !isOwner) {
+    await appendAunLog("log-น้ำหนัก.md", `- ${today}: ${read.weightKg} กก. (จากรูปตาชั่ง)`);
+    const answer = await askTrainer(
+      `อั๋นส่งรูปตาชั่งมา ระบบอ่านได้ ${read.weightKg} กก. และจดลง log ให้แล้วจริง (ในภาพ: ${read.description})\nเทียบกับแผน/บันทึกเดิมแล้วคอมเมนต์ให้กำลังใจ + บอกเป้าถัดไปสั้น ๆ`,
+    );
+    return { text: answer };
+  }
+
+  // ไม่ใช่อาหาร — บอกว่าเห็นอะไรจริง ๆ (ห้ามเดา ห้ามบอกว่าไม่เห็นรูป)
+  if (read.kind !== "food" || !read.items.length) {
+    const answer = await askTrainer(
+      `${isOwner ? "พี่โด้" : "อั๋น"}ส่งรูปมา ${imagePaths.length} รูป ระบบอ่านภาพแล้วได้ว่า: "${read.description}"${caption ? `\nข้อความที่ส่งมาพร้อมรูป: "${caption}"` : ""}\n\nตอบจากสิ่งที่เห็นในภาพนี้ (บอกว่าเห็นอะไร แล้วตอบ/คอมเมนต์ให้ตรงเรื่อง ถ้าเกี่ยวกับการลดน้ำหนักให้แนะนำต่อ)`,
+    );
+    return { text: answer };
+  }
+
+  // อาหาร — พี่โด้ส่ง = คำนวณให้ดูแต่ไม่บันทึกลงบันทึกของอั๋น
+  if (isOwner) {
+    const kcal = Math.round(read.items.reduce((a, i) => a + i.kcal, 0));
+    const lines = read.items.map((i) => `• ${i.name}${i.qty ? ` ${i.qty}` : ""} — ${Math.round(i.kcal)} kcal`).join("\n");
+    const answer = await askTrainer(
+      `พี่โด้ส่งรูปอาหารมา (ในภาพ: ${read.description})\nระบบประเมินได้ ${kcal} kcal:\n${lines}\n\nหมายเหตุ: รูปนี้มาจากพี่โด้ ระบบ*ไม่ได้*บันทึกลงยอดของอั๋น — บอกให้รู้ด้วยว่าถ้าจะให้นับต้องให้อั๋นเป็นคนส่ง`,
+    );
+    return { text: answer };
+  }
+
+  const photoPath = await saveAunPhoto(imagePaths[0]);
+  const saved = await saveAunMeal(read, { photo: photoPath });
+  return dayCardReply(
+    saved,
+    `อั๋นส่งรูปอาหารมา ${imagePaths.length} รูป — ระบบอ่านภาพเองแล้วได้ว่า: "${read.description}" และบันทึกเป็นมื้อ${saved.mealType}เรียบร้อยแล้วจริง`,
+  );
+}
+
+export async function handleTrainerChat(text: string, fromName: string, isOwner: boolean, imagePaths: string[] = []): Promise<TrainerReply> {
   const today = new Date().toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short", year: "2-digit" });
   const who = isOwner ? "พี่โด้" : "อั๋น";
-  await saveKikiChat("user", `${who}: ${text}`, "aun");
+  await saveKikiChat("user", `${who}: ${text || `[ส่งรูปมา ${imagePaths.length} รูป]`}`, "aun");
+
+  // รูป — อ่านภาพก่อนเสมอ (เคยพลาด: ตอบว่า "ผมยังไม่เห็นภาพเลย" ทั้งที่รูปมาถึงระบบแล้ว)
+  if (imagePaths.length) return handleAunImages(imagePaths, text, isOwner);
 
   // จดน้ำหนัก — deterministic
   const wM = text.match(/น้ำหนัก\s*(?:วันนี้|ตอนนี้|ล่าสุด)?\s*([\d]{2,3}(?:\.\d+)?)/);
@@ -140,6 +246,49 @@ export async function handleTrainerChat(text: string, fromName: string, isOwner:
       await appendAunLog("log-น้ำหนัก.md", `- ${today}: ${w} กก.`);
       const answer = await askTrainer(`อั๋นเพิ่งชั่งน้ำหนักได้ ${w} กก. (ระบบจดลง log ให้แล้วจริง — ยืนยันได้) เทียบกับแผนแล้วคอมเมนต์ให้กำลังใจ + บอกเป้าถัดไปสั้น ๆ`);
       return { text: answer };
+    }
+  }
+
+  // ===== โภชนาการ: น้ำ / ลบมื้อ / ถามยอด / พิมพ์บอกว่ากินอะไร =====
+  const isQuestion = /(ไหม|มั้ย|หรือเปล่า|รึเปล่า|อะไรดี|ดีมั้ย|ควร(กิน|ทาน)|แนะนำ|ยังไง|อย่างไร|\?)/.test(text);
+
+  if (!isOwner && AUN_UNDO_RE.test(text)) {
+    const removed = await deleteLastAunMeal();
+    if (removed) {
+      const answer = await askTrainer(
+        `ระบบลบรายการล่าสุดของวันนี้ออกแล้วจริง: มื้อ${removed.mealType} "${removed.title}" ${Math.round(removed.kcal)} kcal — ยืนยันสั้น ๆ ให้อั๋น แล้วบอกว่าส่งใหม่ได้เลย`,
+      );
+      return { text: answer };
+    }
+    const none = `วันนี้ยังไม่มีรายการให้ลบครับ`;
+    await saveKikiChat("assistant", none, "aun");
+    return { text: none };
+  }
+
+  // ดื่มน้ำ (ไม่ใช่ประโยคถาม)
+  if (!isOwner && /น้ำ/.test(text) && !/(กี่|เท่าไห?ร่|ครบ|เหลือ|พอ)/.test(text)) {
+    const glasses = parseWaterGlasses(text);
+    if (glasses) {
+      const total = await logAunWater(glasses);
+      const leftG = Math.max(0, AUN_TARGETS.waterGlasses - total);
+      const answer = await askTrainer(
+        `อั๋นรายงานว่าดื่มน้ำ — ระบบบันทึกเพิ่ม ${glasses} แก้วแล้วจริง\n[ตัวเลขจริง ห้ามคิดเลขใหม่] วันนี้รวม ${total}/${AUN_TARGETS.waterGlasses} แก้ว (${total * AUN_TARGETS.glassMl} ml) · ${leftG ? `ขาดอีก ${leftG} แก้ว` : "ครบเป้าน้ำแล้ว"}\nยืนยันสั้น ๆ + กระตุ้นให้ดื่มต่อ (ไม่เกิน 3 บรรทัด)`,
+      );
+      return { text: answer };
+    }
+  }
+
+  // ถามยอดวันนี้ / ขอการ์ดสรุป
+  if (AUN_FOOD_QUERY_RE.test(text) || /น้ำ.{0,14}(กี่แก้ว|ครบ|พอ|เหลือ)/.test(text)) {
+    return dayCardReply(undefined, `${who}ขอดูสรุปการกินของวันนี้`);
+  }
+
+  // อั๋นพิมพ์บอกว่ากินอะไรไป (ไม่มีรูป)
+  if (!isOwner && AUN_FOOD_LOG_RE.test(text) && !isQuestion) {
+    const read = await readAunFoodText(text).catch(() => null);
+    if (read && read.kind === "food" && read.items.length) {
+      const saved = await saveAunMeal(read);
+      return dayCardReply(saved, `อั๋นพิมพ์บอกว่ากินอะไรไป: "${text}" — ระบบแตกรายการและบันทึกเป็นมื้อ${saved.mealType}แล้วจริง`);
     }
   }
 

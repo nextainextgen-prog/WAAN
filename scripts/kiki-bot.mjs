@@ -90,6 +90,10 @@ async function deliver(chatId, sends) {
       const form = new FormData();
       form.append("chat_id", String(target));
       if (s.caption) form.append("caption", s.caption);
+      if (s.replyTo) {
+        form.append("reply_to_message_id", String(s.replyTo));
+        form.append("allow_sending_without_reply", "true");
+      }
       form.append("photo", new Blob([new Uint8Array(Buffer.from(s.dataBase64, "base64"))]), s.filename || "image.png");
       await fetch(API("sendPhoto"), { method: "POST", body: form }).catch((e) => console.error("send photo err:", e?.message));
     } else if (s.kind === "voice" && s.dataBase64) {
