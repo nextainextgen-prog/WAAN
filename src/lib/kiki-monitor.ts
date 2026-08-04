@@ -70,8 +70,52 @@ export async function buildCard(input: {
     `🧠 ตอนนี้      ${act ? `${act.icon} ${act.text}` : `ว่าง${lastHeard ? ` (ได้ยินล่าสุด ${lastHeard})` : ""}`}`,
     `⚙️ งาน         ${jobs}`,
     `🌐 โควตา       ${quota}`,
+    "",
+    ...(await tokenBlock()),
   ];
   return { text: lines.join("\n"), healthy };
+}
+
+/**
+ * โทเค็นที่ใช้ไป (เจ้าของขอ 5 ส.ค.: "มอนิเตอร์ข้อมูลโทเค็นอย่างละเอียด")
+ * ใช้ของเดิมที่น้องวานมีอยู่แล้ว (src/lib/usage.ts อ่านจากไฟล์ log ในเครื่อง) ไม่สร้างตัวใหม่
+ * งบต่อหน้าต่างอ่านจาก .env — ไม่ตั้ง = โชว์แค่จำนวน token ไม่โชว์ %
+ */
+async function tokenBlock(): Promise<string[]> {
+  try {
+    const u = await import("./usage");
+    const now = Date.now();
+    const usages = u.readUsage(now);
+    const out: string[] = ["📊 โทเค็นที่ใช้"];
+    let todayTok = 0;
+    let todayCost = 0;
+    for (const p of usages) {
+      const icon = p.provider === "claude" ? "🔷" : "🟢";
+      const rows: string[] = [];
+      for (const [name, w, key] of [
+        ["5 ชม.", p.report.session, "SESSION"],
+        ["7 วัน", p.report.week, "WEEK"],
+      ] as const) {
+        const b = u.budget(p.provider, key);
+        const reset = u.resetSuffix(w.firstTs, u.WINDOW_MS[key], now);
+        if (b > 0) {
+          const frac = u.billable(w) / b;
+          const pct = Math.round(frac * 100);
+          const warn = frac >= 0.9 ? " ⚠️" : frac >= 0.75 ? " 🟡" : "";
+          rows.push(`   ${name}  ${u.bar(frac, 10)} ${String(pct).padStart(3)}%  ${u.fmtTokens(w.totalTokens)} · ${reset}${warn}`);
+        } else {
+          rows.push(`   ${name}  ${u.fmtTokens(w.totalTokens)} tokens · ${reset}`);
+        }
+      }
+      out.push(`${icon} ${p.label}`, ...rows);
+      todayTok += p.report.today.totalTokens;
+      todayCost += p.report.today.costUsd;
+    }
+    out.push(`💰 วันนี้รวม ${u.fmtTokens(todayTok)} tokens · ~$${todayCost.toFixed(2)} (~${Math.round(todayCost * 36)} บาท)`);
+    return out;
+  } catch {
+    return ["📊 โทเค็น    อ่านไม่ได้"];
+  }
 }
 
 async function voiceState() {

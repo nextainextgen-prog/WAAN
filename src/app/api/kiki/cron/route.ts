@@ -290,6 +290,22 @@ export async function POST(req: Request) {
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
+  // ===== G1.85) อัปเกรดคลังเสียงเป็นเสียงจริงทันทีที่โควตา Gemini กลับมา =====
+  // เจ้าของไม่ชอบเสียง Kanya — อัดไว้ชั่วคราวตอนโควตาหมดเท่านั้น ต้องเปลี่ยนกลับเองอัตโนมัติ
+  try {
+    if (now.getMinutes() < 2) {
+      const { bankNeedsUpgrade, buildBank } = await import("@/lib/kiki-voicebank");
+      if ((await bankNeedsUpgrade()) > 0) {
+        const r = await buildBank(false);
+        if (r.upgraded > 0) {
+          console.log(`[vex] อัปเกรดคลังเสียงเป็น Iapetus ${r.upgraded} ประโยค`);
+          const { raiseAlert } = await import("@/lib/kiki-monitor");
+          await raiseAlert("bank-upgraded", "ok", `โควตาเสียงกลับมาแล้ว — อัดคลังเสียงใหม่ด้วยเสียง Iapetus ${r.upgraded} ประโยค`);
+        }
+      }
+    }
+  } catch { /* ชั่วโมงหน้าลองใหม่ */ }
+
   // ===== G1.9) ปล่อยงานที่รอคิว (เพดาน 2 งานพร้อมกัน — สเปกข้อ 15ฉ) =====
   try {
     const { drainQueue } = await import("@/lib/kiki-jobs");

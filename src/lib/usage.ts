@@ -166,7 +166,7 @@ export function bar(frac: number, width = 12): string {
   return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
-function fmtTokens(n: number): string {
+export function fmtTokens(n: number): string {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
   if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
   if (n >= 1e3) return (n / 1e3).toFixed(0) + "k";
@@ -174,13 +174,13 @@ function fmtTokens(n: number): string {
 }
 
 // budget ต่อ session/week (token) จาก .env — ไว้คำนวณ % ใกล้เต็ม (ไม่ตั้ง = ไม่โชว์ %)
-function budget(provider: string, win: "SESSION" | "WEEK"): number {
+export function budget(provider: string, win: "SESSION" | "WEEK"): number {
   return Number(process.env[`USAGE_${provider.toUpperCase()}_${win}_BUDGET`] || 0);
 }
 
 // ฐานคิด % = input+output จริง (ตัด cache read/creation ที่พุ่งเป็นพันล้านออก — ไม่งั้น % เพี้ยน)
 // budget ใน .env จึงตั้งเป็น "จำนวน input+output token" ต่อ window
-function billable(w: UsageWindow): number {
+export function billable(w: UsageWindow): number {
   return w.inputTokens + w.outputTokens;
 }
 
@@ -215,10 +215,10 @@ export function formatMonitorCard(usages: ProviderUsage[], nowLabel: string): { 
 }
 
 // ===== การ์ดภาพ (เรนเดอร์ HTML→PNG) สไตล์หลอด progress =====
-const WINDOW_MS = { SESSION: 5 * 3600_000, WEEK: 7 * 86400_000 } as const;
+export const WINDOW_MS = { SESSION: 5 * 3600_000, WEEK: 7 * 86400_000 } as const;
 
 // "รีเซ็ตใน …" จากหน้าต่าง rolling: event เก่าสุดจะหลุดหน้าต่างเมื่อ firstTs + ช่วงเวลา
-function resetSuffix(firstTs: number, windowMs: number, nowMs: number): string {
+export function resetSuffix(firstTs: number, windowMs: number, nowMs: number): string {
   if (!firstTs) return "—"; // ไม่มีการใช้งานในหน้าต่างนี้
   const ms = firstTs + windowMs - nowMs;
   if (ms <= 0) return "รีเซ็ตแล้ว";

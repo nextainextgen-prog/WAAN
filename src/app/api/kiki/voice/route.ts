@@ -54,20 +54,20 @@ export async function POST(req: Request) {
     await fs.rm(path, { force: true }).catch(() => {});
   }
   mark("ถอดเสียง", tStt);
-  if (heard.length < 2) return NextResponse.json({ action: { do: "ignore", why: "สั้นเกินไป" }, heard, timing });
+  if (heard.length < 2) return NextResponse.json({ action: { do: "ignore", why: "สั้นเกินไป" }, heard, timing, sessionOpen: await sessionOpen() });
 
   // เสียงตัวเองย้อนเข้าไมค์
   if (looksLikeEcho(heard, (await getSetting(LAST_SPOKEN_KEY)) || "")) {
-    return NextResponse.json({ action: { do: "ignore", why: "เสียงตัวเองสะท้อน" }, heard, timing });
+    return NextResponse.json({ action: { do: "ignore", why: "เสียงตัวเองสะท้อน" }, heard, timing, sessionOpen: await sessionOpen() });
   }
   await setSetting(LAST_HEARD_KEY, String(Date.now()));
 
   // ===== คำสั่งด่วน — ตอบก่อนทุกอย่าง =====
   if (isStopCommand(heard)) {
     await touchSession();
-    return NextResponse.json({ action: { do: "stop" }, heard, timing });
+    return NextResponse.json({ action: { do: "stop" }, heard, timing, sessionOpen: await sessionOpen() });
   }
-  if (isUndoCommand(heard)) return NextResponse.json({ action: { do: "undo" }, heard, timing });
+  if (isUndoCommand(heard)) return NextResponse.json({ action: { do: "undo" }, heard, timing, sessionOpen: await sessionOpen() });
 
   const wantMode = matchModeCommand(heard);
   if (wantMode) {
@@ -80,10 +80,10 @@ export async function POST(req: Request) {
   }
 
   const mode = await getMode();
-  if (mode === "muted") return NextResponse.json({ action: { do: "ignore", why: "โหมดปิดปาก" }, heard, timing });
+  if (mode === "muted") return NextResponse.json({ action: { do: "ignore", why: "โหมดปิดปาก" }, heard, timing, sessionOpen: await sessionOpen() });
   if (mode === "silent") {
     void harvestSilently(heard);
-    return NextResponse.json({ action: { do: "ignore", why: "โหมดฟังเงียบ" }, heard, timing });
+    return NextResponse.json({ action: { do: "ignore", why: "โหมดฟังเงียบ" }, heard, timing, sessionOpen: await sessionOpen() });
   }
 
   const inSession = await sessionOpen();
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
   // เจ้าของบอกเอง: "โอเค ขอบคุณครับ / เยี่ยม / ลุย / จัดไป / เดี๋ยวมาต่อ"
   if (inSession && isCloseCommand(heard)) {
     await closeSession();
-    return NextResponse.json({ action: { do: "cue", bank: "bye" }, heard, timing });
+    return NextResponse.json({ action: { do: "cue", bank: "bye" }, heard, timing, sessionOpen: await sessionOpen() });
   }
 
   // ===== เปิดสาย =====
@@ -102,28 +102,28 @@ export async function POST(req: Request) {
   const shortCall = !woke && !inSession && maybeWakeShort(heard, audioBytes);
   if (shortCall) {
     await openSession("");
-    return NextResponse.json({ action: { do: "cue", bank: "here" }, heard, timing, opened: true, guessed: true });
+    return NextResponse.json({ action: { do: "cue", bank: "here" }, heard, timing, sessionOpen: await sessionOpen(), opened: true, guessed: true });
   }
   if (woke && !inSession) {
     await openSession(rest);
     // เรียกเฉย ๆ ไม่มีคำสั่งตาม = ตอบรับสั้น ๆ แล้วรอ (ห้ามถามว่า "มีอะไรครับ")
-    if (!rest) return NextResponse.json({ action: { do: "cue", bank: "here" }, heard, timing, opened: true });
+    if (!rest) return NextResponse.json({ action: { do: "cue", bank: "here" }, heard, timing, sessionOpen: await sessionOpen(), opened: true });
   }
 
   // ===== ประโยคนี้พูดกับเราไหม =====
   const command = woke && rest ? rest : heard;
   const nowInSession = inSession || woke;
   if (!nowInSession) {
-    return NextResponse.json({ action: { do: "ignore", why: "ยังไม่ได้เรียก" }, heard, timing });
+    return NextResponse.json({ action: { do: "ignore", why: "ยังไม่ได้เรียก" }, heard, timing, sessionOpen: await sessionOpen() });
   }
   const quick = quickAddressed(command, { inSession: nowInSession });
-  if (quick === "no") return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard, timing });
+  if (quick === "no") return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard, timing, sessionOpen: await sessionOpen() });
   if (quick === "unsure") {
     const tAddr = Date.now();
     const convo = await kikiConversation(6).catch(() => "");
     const ok = await addressedToVex(command, convo);
     mark("กรองว่าพูดกับใคร", tAddr);
-    if (!ok) return NextResponse.json({ action: { do: "ignore", why: "ไม่แน่ใจว่าพูดกับผม จึงเงียบไว้" }, heard, timing });
+    if (!ok) return NextResponse.json({ action: { do: "ignore", why: "ไม่แน่ใจว่าพูดกับผม จึงเงียบไว้" }, heard, timing, sessionOpen: await sessionOpen() });
   }
 
   await touchSession();
@@ -134,7 +134,7 @@ export async function POST(req: Request) {
   if (NEEDS_LOOKUP.test(command) && command.length > 8) {
     void setActivity("🔍", `กำลังหา: ${command.slice(0, 50)}`);
     void runInBackground(command);
-    return NextResponse.json({ action: { do: "cue", bank: "onit" }, heard, timing, background: true });
+    return NextResponse.json({ action: { do: "cue", bank: "onit" }, heard, timing, sessionOpen: await sessionOpen(), background: true });
   }
 
   // ===== สายด่วน: ตอบเลย =====
@@ -147,13 +147,13 @@ export async function POST(req: Request) {
     spoken = "";
   }
   mark("คิดคำตอบ", tBrain);
-  if (!spoken) return NextResponse.json({ action: { do: "cue", bank: "broke" }, heard, timing });
+  if (!spoken) return NextResponse.json({ action: { do: "cue", bank: "broke" }, heard, timing, sessionOpen: await sessionOpen() });
 
   await setSetting(LAST_SPOKEN_KEY, spoken);
   await saveKikiChat("assistant", spoken, "owner", "discord-voice");
   timing.รวม = Date.now() - t0;
   void setActivity("🗣️", "กำลังพูดตอบ");
-  return NextResponse.json({ action: { do: "say", text: spoken }, heard, timing });
+  return NextResponse.json({ action: { do: "say", text: spoken }, heard, timing, sessionOpen: await sessionOpen() });
 }
 
 /**

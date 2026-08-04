@@ -367,9 +367,36 @@ function opusToOgg(opusStream, outPath) {
   });
 }
 
+// สายเปิดอยู่ไหม (ท่อจำจากคำตอบล่าสุดของ API) — ใช้ตัดสินว่าควรตอบรับล่วงหน้าไหม
+let sessionKnownOpen = false;
+let lastSpeculativeAck = 0;
+
+/**
+ * ตอบรับ "ทันทีที่พูดจบ" โดยไม่รอถอดเสียง (เจ้าของสั่ง 5 ส.ค.: "ตอบผมรับทราบแบบเรียลไทม์")
+ *
+ * ปัญหา: กว่าจะรู้ว่าเขาเรียกจริงไหมต้องถอดเสียงก่อน = 3 วินาที ซึ่งช้าเกินกว่าจะรู้สึกว่า "ทันที"
+ * ทางออก: เสียงสั้น + ยังไม่ได้อยู่ในสาย = น่าจะเป็นการเรียก → ตอบ "ครับ" เลยจากคลังเสียง
+ *         พร้อมกับที่ถอดเสียงกำลังวิ่งอยู่ ถ้าไม่ใช่การเรียกก็แค่พูด "ครับ" ไปครั้งเดียว ไม่เสียหาย
+ * เว้นระยะ 20 วิ กันเสียงรบกวนทำให้พูด "ครับ" รัว
+ */
+async function speculativeAck(bytes) {
+  if (sessionKnownOpen) return false;               // อยู่ในสายแล้ว ไม่ต้องตอบรับซ้ำ
+  if (bytes > 16_000) return false;                 // ยาวเกิน = เป็นประโยค ไม่ใช่คำเรียก
+  if (Date.now() - lastSpeculativeAck < 20_000) return false;
+  if (!connection || !ownerInVoice || speaking) return false;
+  lastSpeculativeAck = Date.now();
+  const s2 = await tts({ bankKey: "here" }).catch(() => null);
+  if (!s2) return false;
+  await speak(s2.ogg);
+  console.log(`  → ตอบรับทันที "${s2.text}" (${s2.ms}ms)`);
+  return true;
+}
+
 /** ส่งประโยคที่ได้ยินไปให้สมองตัดสิน แล้วทำตามที่มันสั่ง */
-async function handleUtterance(oggPath) {
+async function handleUtterance(oggPath, bytes = 0) {
   const t0 = Date.now();
+  // ยิงคู่ขนาน: ตอบรับทันทีจากคลังเสียง + ถอดเสียงคิดคำตอบ
+  const ackPromise = speculativeAck(bytes).catch(() => false);
   try {
     const res = await fetch(APP_URL + "/api/kiki/voice", {
       method: "POST",
@@ -378,7 +405,8 @@ async function handleUtterance(oggPath) {
       signal: AbortSignal.timeout(240_000),
     });
     if (!res.ok) return;
-    const { action, heard, timing } = await res.json();
+    const { action, heard, timing, sessionOpen } = await res.json();
+    if (typeof sessionOpen === "boolean") sessionKnownOpen = sessionOpen;
     if (heard) console.log(`  ได้ยิน: "${heard}" → ${action.do === "ignore" ? `ข้าม (${action.why})` : action.do}`);
 
     switch (action.do) {
@@ -396,6 +424,8 @@ async function handleUtterance(oggPath) {
         break;
 
       case "cue": {
+        // ตอบรับล่วงหน้าไปแล้ว ไม่ต้องพูดซ้ำ
+        if (action.bank === "here" && (await ackPromise)) break;
         // เสียงตอบรับต้องมาถึงหูภายในเสี้ยววินาที — หยิบจากคลังที่อัดไว้แล้ว ไม่เรียกโมเดลอะไรเลย
         if (action.bank) {
           const s2 = await tts({ bankKey: action.bank });
@@ -482,7 +512,8 @@ function queueUtterance(oggPath) {
     pendingUtter = null;
     try {
       const merged = paths.length === 1 ? paths[0] : await concatOgg(paths);
-      await handleUtterance(merged);
+      const bytes = fs.statSync(merged).size;
+      await handleUtterance(merged, bytes);
       if (paths.length > 1) console.log(`  (ต่อเศษประโยค ${paths.length} ก้อนเป็นประโยคเดียว)`);
     } catch (e) {
       console.error("  ต่อประโยคพลาด:", e?.message);

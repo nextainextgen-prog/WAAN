@@ -20,6 +20,7 @@ import { speak } from "./tts";
  */
 
 const BANK_DIR = path.join(process.cwd(), ".run-logs", "voice-bank");
+const ENGINE_FILE = path.join(BANK_DIR, "_engine.json"); // ไฟล์ไหนอัดด้วยอะไร
 const SAY_BIN = "/usr/bin/say";
 const FFMPEG = existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg";
 
@@ -59,20 +60,54 @@ const bankFile = (key: string, i: number) => path.join(BANK_DIR, `${key}-${i}.og
  * ใช้ Gemini เพราะเป็นของที่ฟังบ่อยที่สุด ต้องเพราะ — อัดครั้งเดียวใช้ตลอด ไม่กินโควตาซ้ำ
  * โควตาหมดตอนอัด = ตกไปใช้ Kanya อัดแทน ดีกว่าไม่มีคลังเลย
  */
-export async function buildBank(force = false): Promise<{ made: number; skipped: number; via: string }> {
+async function engineMap(): Promise<Record<string, string>> {
+  try { return JSON.parse(await fs.readFile(ENGINE_FILE, "utf8")) as Record<string, string>; } catch { return {}; }
+}
+
+/**
+ * อัดคลังเสียง — ใช้ Gemini (เสียงที่เจ้าของเลือก) เป็นหลักเสมอ
+ *
+ * โควตาหมดตอนอัด = ยอมใช้ Kanya ไปก่อน แต่ "จดไว้" ว่าอัดด้วยอะไร
+ * แล้วอัดทับใหม่ด้วย Gemini อัตโนมัติทันทีที่โควตากลับมา
+ * (เจ้าของสั่ง 5 ส.ค.: "ให้มันพูดเป็นเสียงเดิม ไม่เอาเสียงแบบนี้")
+ */
+export async function buildBank(force = false): Promise<{ made: number; skipped: number; upgraded: number; via: string }> {
   await fs.mkdir(BANK_DIR, { recursive: true });
-  let made = 0, skipped = 0, via = "cache";
+  const eng = await engineMap();
+  let made = 0, skipped = 0, upgraded = 0, via = "cache";
+  let geminiDead = false;
+
   for (const [key, lines] of Object.entries(BANK)) {
     for (let i = 0; i < lines.length; i++) {
       const f = bankFile(key, i);
-      if (!force && existsSync(f)) { skipped++; continue; }
-      let buf = await speak(lines[i], { maxChars: 200 }).catch(() => null);
-      if (buf) via = "gemini";
-      else { buf = await sayKanya(lines[i]); if (buf) via = "kanya"; }
-      if (buf) { await fs.writeFile(f, buf); made++; }
+      const id = `${key}-${i}`;
+      const have = existsSync(f);
+      const isKanya = eng[id] === "kanya";
+      // มีแล้วและเป็นเสียงที่ต้องการ = ข้าม · เป็น Kanya = พยายามอัปเกรดเป็น Gemini
+      if (!force && have && !isKanya) { skipped++; continue; }
+      if (!force && have && isKanya && geminiDead) { skipped++; continue; }
+
+      let buf: Buffer | null = null;
+      if (!geminiDead) {
+        buf = await speak(lines[i], { maxChars: 200 }).catch(() => null);
+        if (buf) { eng[id] = "gemini"; via = "gemini"; if (have) upgraded++; else made++; }
+        else geminiDead = true; // โควตาหมด/ล่ม — ไม่ต้องลองซ้ำทุกประโยคให้เสียเวลา
+      }
+      if (!buf && !have) {
+        buf = await sayKanya(lines[i]);
+        if (buf) { eng[id] = "kanya"; via = via === "gemini" ? "ผสม" : "kanya"; made++; }
+      }
+      if (buf) await fs.writeFile(f, buf);
     }
   }
-  return { made, skipped, via };
+  await fs.writeFile(ENGINE_FILE, JSON.stringify(eng, null, 2)).catch(() => {});
+  return { made, skipped, upgraded, via };
+}
+
+/** ยังมีประโยคที่อัดด้วย Kanya ค้างอยู่ไหม (รอโควตา Gemini กลับมาแล้วอัปเกรด) */
+export async function bankNeedsUpgrade(): Promise<number> {
+  const eng = await engineMap();
+  return Object.values(eng).filter((v) => v === "kanya").length;
 }
 
 /** หยิบเสียงจากคลัง — คืน null ถ้ายังไม่ได้อัด (ผู้เรียกตกไป Kanya) */
@@ -150,13 +185,10 @@ export async function speakFast(opts: { bankKey?: string; text?: string; quality
   const text = (opts.text || "").trim();
   if (!text) return null;
 
-  if (opts.quality) {
-    const g = await speak(text).catch(() => null);
-    if (g) return { ogg: g, text, via: "gemini", ms: Date.now() - t0 };
-  }
-  const k = await sayKanya(text);
-  if (k) return { ogg: k, text, via: "kanya", ms: Date.now() - t0 };
-  // Kanya ก็ไม่ได้ (ไม่ได้อยู่บน mac?) — ลอง Gemini เป็นทางสุดท้าย
+  // Gemini (เสียง Iapetus ที่เจ้าของเลือก) เป็นหลักเสมอ — Kanya เหลือเป็นทางถอยตอนโควตาหมด/เน็ตล่ม
+  // เจ้าของสั่ง 5 ส.ค.: "ให้มันพูดเป็นเสียงเดิม ไม่เอาเสียงแบบนี้"
   const g = await speak(text).catch(() => null);
-  return g ? { ogg: g, text, via: "gemini", ms: Date.now() - t0 } : null;
+  if (g) return { ogg: g, text, via: "gemini", ms: Date.now() - t0 };
+  const k = await sayKanya(text);
+  return k ? { ogg: k, text, via: "kanya", ms: Date.now() - t0 } : null;
 }
