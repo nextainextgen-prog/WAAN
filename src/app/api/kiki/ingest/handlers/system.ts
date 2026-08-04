@@ -24,6 +24,31 @@ export const hermesHandler: Handler = async (ctx) => {
   return null;
 };
 
+export const voiceAnnounceHandler: Handler = async (ctx) => {
+  const { text, msgId, is, arg, reply } = ctx;
+  // ===== ให้ Vex พูดขึ้นมาเองในสาย (เฟส 2 — 4 ส.ค. 2026) =====
+  // กติกาเจ้าของ: ทุกอย่างที่เป็นเชิงรุก "ค่าเริ่มต้นคือไม่พูด" ต้องสั่งเปิดทีละกฎด้วยปาก
+  // ห้ามเปิดหมดแล้วรอให้เจ้าของมาปิดทีหลัง
+  if (!is("voice_announce")) return null;
+  const { ANNOUNCE_KEY, ownerInVoice } = await import("@/lib/kiki-outbox");
+  const mode = arg("mode");
+  const off = mode ? mode === "off" : /ปิด|เลิก|หยุด|ไม่ต้อง|เงียบ|ไม่เอา/.test(text);
+  await setSetting(ANNOUNCE_KEY, off ? "" : "1");
+  if (off) {
+    return reply([{ kind: "text", text: await vexLine("เงียบแล้วครับ จะไม่พูดขึ้นมาเองอีก รอโด้ถามอย่างเดียว"), replyTo: msgId }]);
+  }
+  const inVoice = await ownerInVoice();
+  return reply([{
+    kind: "text",
+    text: await vexLine(
+      `เปิดให้ผมพูดขึ้นมาเองแล้วครับ — บรีฟเช้า เตือนนัด บิลใกล้ตัด งานที่ฝากไว้เสร็จ พวกนี้ผมจะบอกเอง\n` +
+      (inVoice ? "ตอนนี้โด้อยู่ในสายอยู่ ผมพูดให้ฟังได้เลย" : "ตอนนี้โด้ยังไม่อยู่ในสาย ผมจะโพสต์ไว้ในห้องแชทก่อน แล้วพูดตอนเข้าสาย") +
+      `\nเบื่อเมื่อไหร่บอก "เงียบไว้" ได้เลย`,
+    ),
+    replyTo: msgId,
+  }]);
+};
+
 export const voiceModeHandler: Handler = async (ctx) => {
   const { text, msgId, is, arg, reply } = ctx;
   // ===== โหมดตอบเสียงตลอด =====

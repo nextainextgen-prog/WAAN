@@ -9,10 +9,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import {
   Client, GatewayIntentBits, Partials, Events,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
 } from "discord.js";
+import {
+  joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
+  entersState, VoiceConnectionStatus, AudioPlayerStatus, NoSubscriberBehavior,
+} from "@discordjs/voice";
 
 function loadEnv() {
   const p = path.join(process.cwd(), ".env");
@@ -183,16 +188,190 @@ async function downloadAttachments(msg) {
   return out;
 }
 
+// ===== ห้องเสียง (เฟส 2) =====
+//
+// เจ้าของเปิดห้องเสียงค้างทั้งวันบนมือถือแล้วดับจอ
+// กติกาเหล็กจากสเปก: ห้ามพูดใส่ห้องเปล่าเด็ดขาด · ต่อสายกลับเองอัตโนมัติ · พูดไม่ทับกัน
+
+const VOICE_CH = process.env.DISCORD_VOICE_CH_ID;
+const GUILD = process.env.DISCORD_GUILD_ID;
+
+let connection = null;
+const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+let speaking = false;
+let ownerInVoice = false;
+
+// เจ้าของอยู่ในห้องเสียงจริงไหม — อ่านจากสถานะจริงของห้อง ไม่ใช่เดาจาก idle time
+// (สเปก: "การอยู่ในห้องเสียง = สัญญาณว่าเจ้าของฟังอยู่ แม่นกว่าเดา และได้ฟรี")
+async function refreshPresence() {
+  try {
+    const ch = await client.channels.fetch(VOICE_CH);
+    const was = ownerInVoice;
+    ownerInVoice = Boolean(ch?.members?.has(OWNER));
+    if (was !== ownerInVoice) console.log(ownerInVoice ? "โด้เข้าห้องเสียงแล้ว" : "โด้ออกจากห้องเสียง — หยุดพูด เก็บเรื่องไว้ในคิว");
+    // ออกจากห้องกลางประโยค = หยุดทันที ไม่พูดต่อใส่ห้องเปล่า
+    if (!ownerInVoice && speaking) player.stop(true);
+  } catch {
+    ownerInVoice = false;
+  }
+  return ownerInVoice;
+}
+
+async function connectVoice() {
+  if (!VOICE_CH) return;
+  try {
+    const ch = await client.channels.fetch(VOICE_CH);
+    if (!ch) { console.error(`หาห้องเสียง ${VOICE_CH} ไม่เจอ`); return; }
+    if (ch.type !== 2) { console.error(`${VOICE_CH} ไม่ใช่ห้องเสียง (type ${ch.type})`); return; }
+    // อ่าน guild จากตัวห้องเอง ไม่เชื่อค่าใน .env
+    // (เคสจริง 4 ส.ค.: DISCORD_GUILD_ID ใน .env เป็นคนละ id → joinVoiceChannel ค้างจนหมดเวลา
+    //  โดยไม่มี error บอกสาเหตุเลย เพราะ gateway ไม่ตอบ voice event ของ guild ที่บอทไม่ได้อยู่)
+    if (GUILD && GUILD !== ch.guildId) {
+      console.warn(`⚠️ DISCORD_GUILD_ID ใน .env (${GUILD}) ไม่ตรงกับ guild จริงของห้อง (${ch.guildId}) — ใช้ของจริง`);
+    }
+    connection = joinVoiceChannel({
+      channelId: VOICE_CH,
+      guildId: ch.guildId,
+      adapterCreator: ch.guild.voiceAdapterCreator,
+      selfDeaf: true,   // เฟส 2 ยังไม่รับเสียงเข้า (เฟส 3 ค่อยเปิด) · หูปิด = ไม่ได้ยินเสียงตัวเองย้อน
+      selfMute: false,
+    });
+    connection.subscribe(player);
+    connection.on("stateChange", (o, n) => console.log(`  voice: ${o.status} → ${n.status}`));
+    connection.on("error", (e) => console.error("  voice error:", e?.message));
+
+    // ต่อกลับเอง: Discord ย้าย region หรือเน็ตสะดุด = สถานะเป็น Disconnected ชั่วคราว
+    // ถ้ากลับมาเป็น Connecting/Signalling ได้ใน 5 วิ แปลว่าย้ายเซิร์ฟเวอร์ ไม่ใช่โดนเตะ
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        ]);
+      } catch {
+        console.warn("หลุดจากห้องเสียง — เข้าใหม่ใน 5 วิ");
+        try { connection.destroy(); } catch { /* ปิดไปแล้ว */ }
+        connection = null;
+        setTimeout(connectVoice, 5000);
+      }
+    });
+
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    console.log(`เข้าห้องเสียงแล้ว: ${ch.name}`);
+    await refreshPresence();
+  } catch (e) {
+    console.error("เข้าห้องเสียงไม่ได้:", e?.message, "— ลองใหม่ใน 15 วิ");
+    connection = null;
+    setTimeout(connectVoice, 15_000);
+  }
+}
+
+/**
+ * พูดข้อความออกลำโพง — คืน true เมื่อพูดจบจริง
+ * TTS ของระบบคืน OGG/Opus อยู่แล้ว = ป้อนเข้า Discord ได้ตรง ๆ ไม่ต้องเข้ารหัสใหม่
+ */
+async function speak(oggBuffer) {
+  if (!connection || !ownerInVoice) return false;
+  if (speaking) return false; // พูดทับกันไม่ได้ (ตัวเรียกจะเอาเข้าคิวรอรอบหน้า)
+  speaking = true;
+  try {
+    const resource = createAudioResource(Readable.from(oggBuffer), { inputType: StreamType.OggOpus });
+    player.play(resource);
+    await entersState(player, AudioPlayerStatus.Playing, 10_000);
+    await entersState(player, AudioPlayerStatus.Idle, 5 * 60_000);
+    return true;
+  } catch (e) {
+    console.error("เล่นเสียงไม่สำเร็จ:", e?.message);
+    return false;
+  } finally {
+    speaking = false;
+  }
+}
+
+player.on("error", (e) => console.error("player error:", e?.message));
+
+// ===== วนหยิบงานจากกล่องขาออกของเว็บ =====
+// เว็บไม่รู้ว่าเจ้าของอยู่ในสายไหม (คนละโปรเซส) — ท่อนี้เป็นคนบอก แล้วรับงานกลับมาส่ง
+let pollBusy = false;
+async function pollOutbox() {
+  if (pollBusy) return;
+  pollBusy = true;
+  const done = [];
+  try {
+    await refreshPresence();
+    const res = await fetch(APP_URL + "/api/kiki/outbox", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ inVoice: ownerInVoice, done: pendingAck.splice(0) }),
+    });
+    if (!res.ok) return;
+    const { items } = await res.json();
+    for (const it of items || []) {
+      try {
+        if (it.target === "discord-voice") {
+          if (!ownerInVoice) continue; // ออกจากห้องระหว่างทาง = ปล่อยค้างไว้ในกล่อง รอรอบหน้า
+          const ogg = await tts(it.speak);
+          if (!ogg) { done.push({ id: it.id, error: "แปลงเป็นเสียงไม่ได้" }); continue; }
+          const spoke = await speak(ogg);
+          if (spoke) done.push({ id: it.id });
+        } else {
+          const ch = await client.channels.fetch(TEXT_CH);
+          const head = it.topic ? `**${it.topic}**\n` : "";
+          for (const part of chunk(head + htmlToDiscord(it.text || ""))) await ch.send(part);
+          done.push({ id: it.id });
+        }
+      } catch (e) {
+        done.push({ id: it.id, error: e?.message?.slice(0, 200) || "error" });
+      }
+    }
+  } catch { /* รอบหน้าลองใหม่ */ } finally {
+    pendingAck.push(...done);
+    pollBusy = false;
+  }
+}
+const pendingAck = [];
+
+// ขอไฟล์เสียงจากเว็บ (สมองเป็นคนเลือกเจ้า/เสียงตามค่าตั้งค่า ท่อไม่ต้องรู้จักโมเดลอะไร)
+async function tts(text) {
+  try {
+    const res = await fetch(APP_URL + "/api/kiki/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const { ogg } = await res.json();
+    return ogg ? Buffer.from(ogg, "base64") : null;
+  } catch {
+    return null;
+  }
+}
+
 // ===== เริ่มทำงาน =====
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates, // รู้ว่าใครอยู่ในห้องเสียง (ไม่ใช่ intent ที่ต้องขออนุญาต)
+  ],
   partials: [Partials.Channel],
 });
 
-client.once(Events.ClientReady, (c) => {
+client.on(Events.VoiceStateUpdate, () => { refreshPresence().catch(() => {}); });
+
+client.once(Events.ClientReady, async (c) => {
   console.log(`Vex พร้อมทำงานบน Discord: ${c.user.tag} · app ${APP_URL}`);
-  console.log(`ห้องข้อความ ${TEXT_CH} · ห้องบันทึก ${LOG_CH} · เจ้าของ ${OWNER}`);
+  console.log(`ห้องข้อความ ${TEXT_CH} · ห้องบันทึก ${LOG_CH} · ห้องเสียง ${VOICE_CH} · เจ้าของ ${OWNER}`);
   if (!OWNER) console.warn("⚠️ ยังไม่ได้ตั้ง DISCORD_OWNER_ID — API จะไม่รู้ว่าใครเป็นเจ้าของ");
+  // ตั้งตัววนหยิบงานก่อนเข้าห้องเสียง — ถ้าห้องเสียงต่อไม่ได้ ฝั่งข้อความต้องยังทำงานได้ปกติ
+  // (เคยพลาด: connectVoice ค้างรอสถานะ Ready 20 วิ แล้วบล็อกไม่ให้ตัววนหยิบงานเริ่มเลย)
+  setInterval(pollOutbox, 5000);
+  await connectVoice();
+  setInterval(() => {
+    if (!connection) connectVoice().catch(() => {});
+    refreshPresence().catch(() => {});
+  }, 30_000);
 });
 
 client.on(Events.MessageCreate, async (msg) => {

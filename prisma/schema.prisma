@@ -597,3 +597,26 @@ model DailyReport {
   shortText String                          // ข้อความย่อสำหรับส่งกลุ่ม
   posted    Boolean  @default(false)        // ส่งเข้ากลุ่มแล้วหรือยัง
 }
+
+// กล่องขาออกของช่องทางที่ไม่ใช่ Telegram (เฟส 2 — 4 ส.ค. 2026)
+//
+// ทำไมต้องมี: cron ของ Vex ทำงานในเว็บแล้วคืน sends ให้ kiki-bot.mjs เอาไปส่ง Telegram
+// แต่ท่อ Discord เป็นคนละโปรเซส และ "เจ้าของอยู่ในสายเสียงไหม" มีแต่ท่อ Discord ที่รู้
+// เว็บจึงหย่อนงานไว้ที่นี่ แล้วท่อ Discord มาหยิบไปส่งเอง
+//
+// ได้ของแถมที่จำเป็นด้วย: เจ้าของหลุดจากห้องเสียง = ของค้างในกล่องรอจนกลับมา
+// (สเปกข้อ 2: ห้ามพูดใส่ห้องเปล่าเด็ดขาด ต้องเก็บเรื่องไว้เล่าตอนกลับเข้ามา)
+model VexOutbox {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  target    String                        // discord-text | discord-voice
+  topic     String?                       // หัวเรื่อง — เอาไว้ทวนก่อนพูด ("เรื่องบรีฟเช้าที่ค้างไว้นะครับ")
+  text      String?                       // เนื้อความ (ฝั่งเสียงจะถูกย่อเป็นภาษาพูดก่อนอ่าน)
+  payload   String?                       // Send ตัวเต็มเป็น JSON (รูป/ไฟล์/ปุ่ม)
+  priority  Int      @default(0)          // สูงกว่า = ได้พูดก่อน (เผื่อชั้นให้คะแนนขัดจังหวะในเฟส 4)
+  sentAt    DateTime?
+  tries     Int      @default(0)
+  error     String?
+
+  @@index([target, sentAt])
+}

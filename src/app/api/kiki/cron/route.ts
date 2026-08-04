@@ -535,5 +535,35 @@ ${nags.join("\n")}`);
     const c = sanitizeVexText(s.text);
     return { ...s, text: c.text, ...(c.parseMode ? { parseMode: c.parseMode } : {}) };
   });
+
+  // ===== ชั้นเลือกปลายทาง (เฟส 2 — สเปกข้อ 4.4) =====
+  // Telegram ได้ของครบเหมือนเดิมทุกอย่างเสมอ (ค่าเริ่มต้นที่ปลอดภัย — ห้ามพลาดเรื่องสำคัญ)
+  // ที่เพิ่มคือ "สำเนา" ไปทาง Discord เมื่อเจ้าของเปิดโหมดประกาศไว้เท่านั้น
+  // ปิดอยู่ (ค่าเริ่มต้น) = routeProactive ไม่ทำอะไรเลย
+  try {
+    const { routeProactive } = await import("@/lib/kiki-outbox");
+    for (const s of cleaned) {
+      if (s.kind !== "text" || !s.text) continue;
+      // การ์ด/ไฟล์อ่านออกเสียงไม่ได้ — ตัวที่มีภาพมาคู่กันจะได้แค่ข้อความในห้อง text
+      const speakable = !cleaned.some((o) => o !== s && o.kind === "photo" && o.chatId === s.chatId);
+      await routeProactive({ topic: topicOf(s.text), text: s.text, speakable });
+    }
+  } catch { /* กล่องขาออกพังก็ไม่กระทบ Telegram */ }
+
   return NextResponse.json({ sends: cleaned });
+}
+
+// หัวเรื่องสั้น ๆ ของข้อความเชิงรุก — เอาไว้ทวนก่อนพูด (จอดับ เจ้าของมองไม่เห็นว่าตอบเรื่องไหน)
+function topicOf(text: string): string {
+  const t = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (/บรีฟเช้า/.test(t)) return "บรีฟเช้า";
+  if (/นัด|ปฏิทิน/.test(t)) return "นัดหมาย";
+  if (/บิล|ตัดบัญชี|subscription/i.test(t)) return "บิลที่ใกล้ตัด";
+  if (/หนี้|ผ่อน|งวด/.test(t)) return "หนี้/ค่างวด";
+  if (/งบ|pace|เกิน/.test(t)) return "งบประมาณ";
+  if (/รอระบุ|ค่าอะไร/.test(t)) return "รายการเงินที่ยังไม่ระบุ";
+  if (/Hermes|งานที่ฝาก/i.test(t)) return "งานที่ฝากไว้";
+  if (/สรุปสัปดาห์|รายงานสัปดาห์/.test(t)) return "รายงานสัปดาห์";
+  if (/เงินเข้า|เงินออก|ใช้ไป|฿/.test(t)) return "การเงิน";
+  return t.slice(0, 40);
 }

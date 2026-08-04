@@ -8,7 +8,7 @@ import {
   financeRecordHandler,
 } from "./handlers/finance";
 import { socialStatusHandler, socialDraftHandler } from "./handlers/social";
-import { hermesHandler, voiceModeHandler, devConfirmHandler, selfDevHandler, macHandler, voicePickHandler } from "./handlers/system";
+import { hermesHandler, voiceAnnounceHandler, voiceModeHandler, devConfirmHandler, selfDevHandler, macHandler, voicePickHandler } from "./handlers/system";
 import {
   dmConfirmHandler, groupConfirmHandler, createGroupHandler, listChatsHandler, aliasHandler,
   groupPostHandler, dmHandler, chatSummaryHandler,
@@ -19,6 +19,7 @@ import { wishHandler, debtHandler, recurringHandler, fitnessHandler, diaryHandle
 import { linkSaveHandler, researchHandler, docSummaryHandler } from "./handlers/research";
 import { calendarEditHandler, calendarViewHandler, calendarCreateHandler } from "./handlers/calendar";
 import { chatFallbackHandler } from "./handlers/chat";
+import { guiHandler } from "./handlers/gui";
 
 /**
  * ทะเบียนเส้นทางของ Vex — เดินจากบนลงล่าง ตัวไหนคืนคำตอบก่อนก็จบ
@@ -64,7 +65,8 @@ export const HANDLERS: Handler[] = [
   financeItemizeHandler,
   financeQueryHandler,
 
-  // เสียง
+  // เสียง (voiceAnnounce = พูดขึ้นมาเอง · voiceMode = ตอบเป็นเสียง — คนละเรื่องกัน)
+  voiceAnnounceHandler,
   voiceModeHandler,
 
   // ยืนยันที่ค้างอยู่ (ต้องมาก่อนตัวที่สร้างงานใหม่)
@@ -82,6 +84,8 @@ export const HANDLERS: Handler[] = [
   chatSummaryHandler,
 
   // เครื่อง Mac + เลือกเสียง
+  // คุมแอปบนเครื่อง (พิมพ์/สลับห้อง/สั่ง Warp) — ต้องมาก่อน macHandler ตัวเดิม
+  guiHandler,
   macHandler,
   voicePickHandler,
 
