@@ -1,4 +1,5 @@
-/**
+
+import { geminiFetch } from "./gemini-usage";/**
  * ตัวจัดเส้นทางคำสั่งของ Vex (เจ้าของสั่ง 4 ส.ค. 2026: "ไม่ต้องฟิกข้อมูลอะไรเลย ปล่อยให้อิสระ")
  *
  * ปัญหาเดิม: ingest ตัดสินใจด้วย regex ล้วน เรียงตายตัว → คำพูดธรรมชาติตกร่องผิดตลอด
@@ -103,6 +104,12 @@ export const INTENT_CATALOG: IntentSpec[] = [
     when: "สั่งให้รันคำสั่งใน Warp/เทอร์มินัล หรือสั่งงานต่อในแท็บที่เปิดค้างอยู่ (เช่น พิมพ์คำสั่งนี้ให้หน่อย / สั่งงานในแท็บพัฒนา Vex)",
     cap: "พิมพ์คำสั่งใน Warp ให้จริง + แคปผลกลับมา",
   },
+  {
+    id: "file_find",
+    when: `สั่งให้ "หาไฟล์ในเครื่อง" แล้วส่งไฟล์นั้นกลับมาให้ เช่น "ไปหาไฟล์นี้ในเครื่องผมแล้วส่งมาให้หน่อย" · "ขอไฟล์ใบเสนอราคาที่ทำเมื่อวาน" · "หา monitor-guide.md ให้ที"
+ถ้าเจ้าของ reply ข้อความที่มีชื่อไฟล์อยู่ในนั้น แล้วบอกว่า "ไฟล์นี้" = หมายถึงไฟล์ชื่อนั้น ให้ใส่ชื่อลง args ให้ด้วย`,
+    cap: "ค้นไฟล์ในเครื่องแล้วส่งไฟล์นั้นเข้าแชทให้เลย (ไฟล์ความลับไม่ส่ง บอกที่อยู่แทน)",
+  },
   { id: "mac", when: "สั่งงานที่เครื่อง Mac แบบอื่น: แคปหน้าจอ เปิดแอป/เว็บ เช็คแบต/ดิสก์ อ่านว่าบนจอมีอะไร", cap: "คุมเครื่อง Mac (แคปจอ/เปิดแอป/เช็คเครื่อง)" },
   { id: "eyes_watch", when: "สั่งให้เฝ้า/เลิกเฝ้าข้อความเข้าจากแชทไหน หรือถามว่าตอนนี้เฝ้าแชทอะไรอยู่ ('เฝ้าแชทอั๋น' 'เลิกเฝ้ากลุ่มงาน' 'ตอนนี้เฝ้าอะไรอยู่')", cap: "เลือกว่าจะให้เฝ้าข้อความเข้าจากแชทไหนบ้าง (ปิดอยู่เป็นค่าเริ่มต้น)" },
   { id: "job_status", when: "ถามว่างานที่สั่งไปถึงไหนแล้ว / ยังทำอะไรค้างอยู่บ้าง / เสร็จยัง / คืบหน้ายังไง", cap: "บอกสถานะงานเบื้องหลังที่กำลังทำอยู่" },
@@ -172,13 +179,14 @@ args ใส่เฉพาะที่เกี่ยวข้อง:
 - gui_type: {"app":"ชื่อแอปบนเครื่อง เช่น Discord, Warp, LINE, Telegram","target":"ห้อง/ช่อง/แท็บ ถ้าระบุ","message":"ข้อความที่จะพิมพ์ (ตัดคำสั่งอย่าง 'พิมพ์ว่า' ออก เอาเฉพาะเนื้อความ)","send":true/false}
   ทั้งสี่ค่านี้สำคัญมาก ต้องพยายามกรอกให้ครบเสมอ — ถ้าเจ้าของ reply ภาพหน้าจอ ให้ดูจากบริบทว่าแอป/ห้องไหน
 - gui_switch: {"app":"ชื่อแอป","target":"ห้อง/แท็บที่จะเปิด"}
+- file_find: {"file":"ชื่อไฟล์หรือบางส่วนของชื่อ ถ้าอยู่ในข้อความที่ reply ถึงให้ดึงมาจากตรงนั้น"}
 - warp_cmd: {"command":"คำสั่งหรือข้อความที่จะพิมพ์ใน Warp","tab":"ชื่อแท็บ ถ้าระบุ"}`;
 
 async function routeWithGemini(prompt: string): Promise<RouteResult | null> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) return null;
   const call = async (withThinkingOff: boolean) => {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -191,7 +199,7 @@ async function routeWithGemini(prompt: string): Promise<RouteResult | null> {
         },
       }),
       signal: AbortSignal.timeout(20_000),
-    });
+    }, "router");
     const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
     if (j.error?.message) throw new Error(j.error.message);
     return (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();

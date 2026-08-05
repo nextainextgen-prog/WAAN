@@ -23,6 +23,7 @@ import { jobStatusHandler, autoBackgroundHandler } from "./handlers/jobs";
 import { eyesHandler } from "./handlers/eyes";
 import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandler } from "./handlers/reply";
 import { guiHandler } from "./handlers/gui";
+import { fileFindHandler } from "./handlers/files";
 
 /**
  * ทะเบียนเส้นทางของ Vex — เดินจากบนลงล่าง ตัวไหนคืนคำตอบก่อนก็จบ
@@ -103,6 +104,8 @@ export const HANDLERS: Handler[] = [
   // เครื่อง Mac + เลือกเสียง
   // คุมแอปบนเครื่อง (พิมพ์/สลับห้อง/สั่ง Warp) — ต้องมาก่อน macHandler ตัวเดิม
   guiHandler,
+  // ค้นไฟล์ในเครื่อง ต้องมาก่อน macHandler (ไม่งั้นโดน agent ทั่วไปรับไปแล้วตอบว่าส่งไฟล์ไม่ได้)
+  fileFindHandler,
   macHandler,
   voicePickHandler,
 
