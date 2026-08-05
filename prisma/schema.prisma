@@ -161,6 +161,11 @@ model CalendarEvent {
   notified    Boolean   @default(false)        // แจ้งเตือนถึงวัน (เช้าวันนัด) แล้วหรือยัง
   remindedEve  Boolean  @default(false)        // เตือนเย็นก่อนวันนัดแล้ว (kiki ladder)
   remindedHour Boolean  @default(false)        // เตือนก่อนถึงเวลา/08:00 นัดทั้งวัน แล้ว (kiki ladder)
+  // เดิมบันไดจบที่ remindedHour → เงียบยาวตั้งแต่ T-65 นาทีจนนัดจบ เจ้าของแจ้งเอง 5 ส.ค. 2026
+  // ว่า "ถึงเวลาแล้วไม่มีอะไรแจ้งมาเลย" — 3 ขั้นนี้คือส่วนที่ขาดไป
+  remindedSoon Boolean  @default(false)        // เตือนอีก 10 นาทีจะถึง (kiki ladder)
+  remindedNow  Boolean  @default(false)        // เตือน "ถึงเวลาแล้ว" ตอน T-0 (kiki ladder)
+  nudgedLate   Boolean  @default(false)        // ทวงตอนเลยเวลาแล้วเจ้าของยังเงียบ (kiki ladder)
   followedUp   Boolean  @default(false)        // ทักถามหลังนัดจบแล้ว (kiki ladder)
   done        Boolean   @default(false)
   createdAt   DateTime  @default(now())
@@ -487,6 +492,11 @@ model KikiHermesJob {
   lastPingAt   DateTime?                  // ส่งรายงานเข้าแชทล่าสุดเมื่อไหร่
   pid          Int?                       // โปรเซสที่รันอยู่ (ไว้สั่งยกเลิก)
   canceled     Boolean   @default(false)
+
+  // reply ผลงานแล้วต้องต่อเรื่องเดิมได้ (เจ้าของแจ้ง 5 ส.ค. 2026: reply ผลที่ได้มาแล้วมันไม่ส่งของใหม่มา)
+  // เก็บข้อความที่ส่งผลออกไป ไว้เทียบกับ replyText ตอนเจ้าของ reply กลับมา
+  deliveredText String?                   // ข้อความผลงานที่ส่งเข้าแชทจริง (ย่อแล้ว) — ใช้จับคู่ตอน reply
+  parentId      String?                   // งานนี้ต่อยอดมาจากงานไหน (สั่งแก้/หาใหม่)
 
   @@index([status])
 }

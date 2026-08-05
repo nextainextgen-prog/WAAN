@@ -14,7 +14,13 @@ import { db } from "./db";
 
 const HERMES_GUARD = `คุณคือผู้ช่วยรับงานต่อจากเลขาส่วนตัวของเจ้าของ ทำงานที่มอบหมายให้จบด้วยเครื่องมือที่มี แล้วสรุปผลเป็นภาษาไทย
 กฎความปลอดภัย (เด็ดขาด): ห้ามใช้ sudo · ห้ามลบ/ย้าย/เขียนทับไฟล์ของผู้ใช้ · ห้ามเข้าโฟลเดอร์ ~/Projects และ ~/Desktop · ห้ามติดตั้งโปรแกรมระดับระบบ · ห้ามส่งข้อมูลออกไปที่อื่นนอกจากตอบกลับมา
-รูปแบบคำตอบ: สาระตรงประเด็น อ่านง่าย ถ้ามีลิงก์/ตัวเลขให้ครบถ้วน ไม่ต้องเล่าขั้นตอนการทำงาน`;
+รูปแบบคำตอบ: สาระตรงประเด็น อ่านง่าย ถ้ามีลิงก์/ตัวเลขให้ครบถ้วน ไม่ต้องเล่าขั้นตอนการทำงาน
+
+**ห้ามถามกลับแล้วจบงาน** (เจ้าของเจอปัญหานี้จริง 5 ส.ค. 2026 — สั่งหาของ แล้วได้คำถามกลับมาแทนของ)
+คุณคุยกับเจ้าของไม่ได้ คำถามที่คุณเขียนจะไม่มีใครตอบ งานจะจบลงเปล่า ๆ
+โจทย์กำกวม = ตีความให้สมเหตุสมผลที่สุดแล้ว "ลงมือทำ" ไปเลย ครอบหลายแนวทางได้ยิ่งดี
+เช่น ไม่ระบุรุ่น/แพลตฟอร์ม = เลือกที่นิยมและคุ้มที่สุดมาเสนอ 3-5 ตัว พร้อมบอกว่าตีความว่าอะไร
+จบด้วยของจริงเสมอ ถ้ามีจุดที่ต้องให้เจ้าของเลือก ให้ "เสนอมาพร้อมตัวเลือก" ไม่ใช่ถามแล้วหยุด`;
 
 function hermesCliPath(): string | null {
   const explicit = process.env.HERMES_CLI_PATH?.trim();
@@ -97,8 +103,8 @@ function runHermes(task: string, timeoutMs: number, jobId?: string): Promise<str
  * เดิมยิงทันทีทุกงานไม่มีเพดาน สั่งรัว 10 เรื่อง = แยก 10 โปรเซสพร้อมกัน กิน CPU จนเครื่องสะดุด
  * (สเปกข้อ 15ฉ — และต้องบอกเจ้าของด้วยว่ามีงานรอคิวอยู่ ไม่ใช่เงียบไป)
  */
-export async function queueHermesJob(chatId: string, task: string): Promise<{ id: string; queued: boolean; ahead: number }> {
-  const job = await db.kikiHermesJob.create({ data: { chatId, task: task.slice(0, 4000) } });
+export async function queueHermesJob(chatId: string, task: string, parentId?: string): Promise<{ id: string; queued: boolean; ahead: number }> {
+  const job = await db.kikiHermesJob.create({ data: { chatId, task: task.slice(0, 4000), parentId: parentId || null } });
   const { MAX_CONCURRENT, runningCount, queuedCount } = await import("./kiki-jobs");
   const running = await runningCount();
   if (running >= MAX_CONCURRENT) {
@@ -178,10 +184,47 @@ export async function cancelJob(jobId: string): Promise<{ ok: boolean; msg: stri
 }
 
 export interface HermesDelivery {
+  id: string;
   chatId: string;
   task: string;
   ok: boolean;
   body: string; // ผลงาน หรือเหตุที่พัง
+}
+
+/**
+ * เจ้าของ reply ข้อความผลงานที่ส่งไปแล้ว → หางานต้นทางให้เจอ (5 ส.ค. 2026)
+ *
+ * ทำไมต้องมี: reply ผลงานแล้วสั่งต่อ ("ไปหาใหม่หน่อย งบ 500") เดิมกลายเป็นงานใหม่ที่ไม่มีบริบท
+ * และถ้าเป็นคำถาม ("ไหนข้อมูลครับ") จะตกไปที่ job_status แล้วตอบว่า "ไม่มีงานค้าง ว่างสนิท"
+ *
+ * จับคู่ด้วยการซ้อนทับของข้อความ ไม่ใช่ regex รูปแบบ — ข้อความที่ส่งออกผ่านชั้นเรียบเรียงแล้ว
+ * คำพูดเปลี่ยนทุกครั้ง จะฟิกรูปแบบไม่ได้ (กติกาข้อ 1-2)
+ */
+const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+
+export async function findJobByDelivered(replyText: string): Promise<{ id: string; task: string; result: string | null } | null> {
+  const q = norm(replyText);
+  if (q.length < 12) return null;
+  const rows = await db.kikiHermesJob.findMany({
+    where: { deliveredText: { not: null }, sentAt: { gte: new Date(Date.now() - 3 * 24 * 3600_000) } },
+    orderBy: { sentAt: "desc" },
+    take: 25,
+    select: { id: true, task: true, result: true, deliveredText: true },
+  }).catch(() => []);
+  for (const r of rows) {
+    const d = norm(r.deliveredText || "");
+    if (!d) continue;
+    // Telegram ส่ง reply มาเต็มข้อความ แต่ตัวอย่างในบับเบิลอาจถูกตัด → เทียบสองทาง
+    if (d.includes(q.slice(0, 60)) || q.includes(d.slice(0, 60))) return { id: r.id, task: r.task, result: r.result };
+  }
+  return null;
+}
+
+/** บันทึกว่าผลงานนี้ถูกส่งออกไปด้วยข้อความหน้าตาแบบไหน — ไว้จับคู่ตอนเจ้าของ reply กลับมา */
+export async function markDelivered(jobId: string, deliveredText: string): Promise<void> {
+  await db.kikiHermesJob
+    .update({ where: { id: jobId }, data: { deliveredText: deliveredText.slice(0, 4000) } })
+    .catch(() => {});
 }
 
 // cron เรียกทุกนาที: หยิบงานที่เสร็จ/พังแล้วยังไม่ได้ส่ง + เก็บกวาดงานค้าง (เว็บรีสตาร์ทกลางคัน)
@@ -205,6 +248,7 @@ export async function collectHermesDeliveries(): Promise<HermesDelivery[]> {
   for (const r of rows) {
     await db.kikiHermesJob.update({ where: { id: r.id }, data: { sentAt: new Date() } }).catch(() => {});
     out.push({
+      id: r.id,
       chatId: r.chatId,
       task: r.task,
       ok: r.status === "done",

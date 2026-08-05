@@ -25,6 +25,7 @@ export interface JobPlan {
   seconds: number;     // ประเมินเวลาที่ใช้
   topic: string;       // หัวเรื่องสั้น ๆ ไว้ทวนก่อนรายงานผล
   ack: string;         // ประโยคตอบรับทันที
+  brief: string;       // โจทย์ที่สมบูรณ์ในตัว (รวมบริบทจากข้อความที่ reply ถึงแล้ว)
   reason: string;
 }
 
@@ -35,11 +36,17 @@ const BG_THRESHOLD_SEC = 10; // เกินนี้ = ตอบรับก่
  *
  * เรื่องความปลอดภัยที่ห้ามพลาด: Hermes ได้รับเฉพาะโจทย์ที่เจ้าของพิมพ์
  * งานที่ต้องใช้ความจำ / การเงิน / นัด / แชท / คลัง Obsidian = ห้ามฝาก ต้องทำในตัว Vex
+ *
+ * เพิ่ม 5 ส.ค. 2026 — `brief`: โจทย์ที่อ่านแล้วเข้าใจได้ด้วยตัวเอง
+ *   เคสจริงที่พัง: เจ้าของ reply ผลงานเก่า ("หาตัวต่อจอ 2 จอ") แล้วพิมพ์ว่า "ไปหาใหม่หน่อย งบ 500"
+ *   ตัวรับงานได้ไปแค่ประโยคหลัง เลยถามกลับว่า "หาอะไร" แล้วจบงานไปเฉย ๆ
+ *   ตรงนี้จึงหลอมบริบทจากข้อความที่ reply ถึงเข้าไปในโจทย์ให้ครบก่อนส่งออก
+ *   ยังคงกติกาเดิม: ห้ามให้ข้อมูลส่วนตัวหลุดออกไปกับโจทย์ (ระบุไว้ในคำสั่งด้านล่าง)
  */
-export async function planJob(text: string, intent: string): Promise<JobPlan> {
+export async function planJob(text: string, intent: string, replyText = ""): Promise<JobPlan> {
   const fallback: JobPlan = {
     background: false, runner: "vex", seconds: 5,
-    topic: text.slice(0, 40), ack: "", reason: "ประเมินไม่ได้",
+    topic: text.slice(0, 40), ack: "", brief: text, reason: "ประเมินไม่ได้",
   };
   // เจตนาที่รู้อยู่แล้วว่าเร็ว ไม่ต้องเสียเวลาถามโมเดล
   const FAST = ["chat", "task_list", "task_done", "memory_list", "rule_list", "calendar_view",
@@ -47,17 +54,28 @@ export async function planJob(text: string, intent: string): Promise<JobPlan> {
   if (FAST.includes(intent)) return fallback;
 
   try {
-    const raw = await askExtractor(`คำสั่งของเจ้าของ: """${text.slice(0, 1200)}"""\nเจตนาที่ระบบอ่านได้: ${intent}`, {
-      system: `ประเมินงานที่เลขาส่วนตัวได้รับ ตอบ JSON เท่านั้น:
-{"seconds":<ประเมินวินาทีที่ต้องใช้>,"needsPrivate":true/false,"topic":"หัวเรื่องสั้นมาก 2-5 คำ","ack":"ประโยคตอบรับสั้น ๆ ที่จะพูดทันทีก่อนไปทำ"}
+    const raw = await askExtractor(
+      `คำสั่งของเจ้าของ: """${text.slice(0, 1200)}"""\n` +
+        (replyText ? `ข้อความที่เจ้าของ reply ถึง (คือบริบทว่าเขาหมายถึงอะไร): """${replyText.slice(0, 1500)}"""\n` : "") +
+        `เจตนาที่ระบบอ่านได้: ${intent}`,
+      {
+        system: `ประเมินงานที่เลขาส่วนตัวได้รับ ตอบ JSON เท่านั้น:
+{"seconds":<ประเมินวินาทีที่ต้องใช้>,"needsPrivate":true/false,"topic":"หัวเรื่องสั้นมาก 2-5 คำ","ack":"ประโยคตอบรับสั้น ๆ ที่จะพูดทันทีก่อนไปทำ","brief":"โจทย์ฉบับสมบูรณ์"}
 
 seconds: ค้นเว็บหลายที่/อ่านลิงก์ยาว/เปรียบเทียบสินค้า/ทำเอกสาร = 30-300 · ตอบจากที่รู้/ดูข้อมูลในระบบ = 2-8
 needsPrivate: งานนี้ต้องใช้ข้อมูลส่วนตัวของเจ้าของไหม (ความจำ การเงิน นัดหมาย แชท คลังโน้ตส่วนตัว) — ถ้าต้องใช้ = true
-ack: เขียนแบบเลขานิ่ง ๆ เช่น "รับทราบครับ กำลังหาให้" ห้ามยาว ห้ามถามกลับ`,
-      timeoutMs: 45_000,
-    });
+ack: เขียนแบบเลขานิ่ง ๆ เช่น "รับทราบครับ กำลังหาให้" ห้ามยาว ห้ามถามกลับ
+brief: เขียนโจทย์ใหม่ให้ "คนที่ไม่เคยเห็นแชทนี้เลย" อ่านแล้วลงมือทำได้ทันที
+  - ถ้าเจ้าของ reply ถึงข้อความไหน ให้ดึงของ/เรื่องที่พูดถึงในนั้นมาระบุให้ชัดในโจทย์
+    เช่น reply เรื่อง "ตัวต่อจอ 2 จอ" แล้วพิมพ์ว่า "หาใหม่ งบ 500" → brief = "หาตัวต่อจอ 2 จอ ราคาไม่เกิน 500 บาท พร้อมลิงก์ร้าน"
+  - ใส่เงื่อนไข/งบ/จำนวนที่เจ้าของบอกให้ครบ
+  - ห้ามใส่ข้อมูลส่วนตัว: ยอดเงินในบัญชี ชื่อคนใกล้ตัว ที่อยู่ เบอร์โทร ชื่อไฟล์ส่วนตัว
+  - ไม่มีบริบทเพิ่มก็คัดลอกคำสั่งเดิมมาได้เลย`,
+        timeoutMs: 45_000,
+      },
+    );
     const j = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || "{}") as {
-      seconds?: number; needsPrivate?: boolean; topic?: string; ack?: string;
+      seconds?: number; needsPrivate?: boolean; topic?: string; ack?: string; brief?: string;
     };
     const seconds = Number(j.seconds) || 5;
     return {
@@ -66,6 +84,7 @@ ack: เขียนแบบเลขานิ่ง ๆ เช่น "รั�
       seconds,
       topic: (j.topic || text.slice(0, 40)).trim(),
       ack: (j.ack || "รับทราบครับ เดี๋ยวจัดให้").trim(),
+      brief: (j.brief || text).trim() || text,
       reason: `~${seconds} วิ · ${j.needsPrivate ? "ใช้ข้อมูลส่วนตัว ทำเองในตัว" : "ฝากได้"}`,
     };
   } catch {

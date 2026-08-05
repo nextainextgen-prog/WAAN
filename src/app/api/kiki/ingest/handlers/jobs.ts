@@ -1,5 +1,6 @@
 import { vexLine, askKiki, saveKikiChat } from "@/lib/kiki";
 import { jobStatusReport, markUrgent, planJob, pushFocus, MAX_CONCURRENT } from "@/lib/kiki-jobs";
+import { findJobByDelivered } from "@/lib/kiki-hermes";
 import type { Ctx, Handler } from "../types";
 
 /**
@@ -11,10 +12,22 @@ import type { Ctx, Handler } from "../types";
 
 /** "ที่สั่งไปถึงไหนแล้ว" — เดิมมีแต่ push ทุก 3 นาที ถามเองไม่ได้ */
 export const jobStatusHandler: Handler = async (ctx) => {
-  const { msgId, is, reply } = ctx;
+  const { msgId, replyText, is, reply } = ctx;
   if (!is("job_status")) return null;
   const report = await jobStatusReport();
   if (!report) {
+    // เจ้าของ reply ผลงานที่ส่งไปแล้วถามว่า "ไหนข้อมูล" = ผลอยู่ในมือเขาแล้ว ไม่ใช่ไม่มีงาน
+    // เคสจริง 5 ส.ค.: ตอบไปว่า "ไม่มีงานค้าง ว่างสนิท" ทั้งที่เพิ่งส่งผลไปเมื่อกี้ — ไร้ประโยชน์สิ้นเชิง
+    const src = replyText ? await findJobByDelivered(replyText) : null;
+    if (src) {
+      const say = await askKiki(
+        `[เจ้าของ reply ผลงานที่ส่งไปแล้ว] เขาถามว่า "${ctx.text.slice(0, 200)}"\n` +
+          `งานนั้นคือ: "${src.task.slice(0, 300)}"\nผลที่ส่งไปแล้วคือ:\n"""${(src.result || "").slice(0, 3000)}"""\n\n` +
+          `ตอบจากผลที่มีอยู่นี้เลย — ถ้าผลไม่ได้ตอบสิ่งที่เขาถาม ให้บอกตรง ๆ ว่าผลรอบนั้นได้แค่ไหน แล้วเสนอว่าจะไปหาต่อให้ไหม\n` +
+          `ห้ามบอกว่า "ไม่มีงานค้าง" เด็ดขาด`,
+      ).catch(() => null);
+      if (say) return reply([{ kind: "text", text: say, replyTo: msgId }]);
+    }
     return reply([{ kind: "text", text: await vexLine("ตอนนี้ไม่มีงานค้างอยู่เลยครับ ว่างสนิท"), replyTo: msgId }]);
   }
   await markUrgent(); // ถามย้ำแล้ว = พอเสร็จให้พูดได้ทันที ไม่ต้องรอจังหวะ
@@ -33,10 +46,11 @@ export const jobStatusHandler: Handler = async (ctx) => {
 const LONG_INTENTS = ["web_research", "shopping", "doc_summary"];
 
 export const autoBackgroundHandler: Handler = async (ctx: Ctx) => {
-  const { text, chatId, msgId, route, is, channel, reply } = ctx;
+  const { text, replyText, chatId, msgId, route, is, channel, reply } = ctx;
   if (!LONG_INTENTS.some((i) => is(i))) return null;
   // เจ้าของสั่ง "ฝาก" เองอยู่แล้ว = ตัวจัดการ hermes รับไปก่อนหน้านี้แล้ว
-  const plan = await planJob(text, route.intent);
+  // replyText ต้องส่งเข้าไปด้วย ไม่งั้น "ไปหาใหม่หน่อย งบ 500" ออกไปโดยไม่มีคำว่า "หาอะไร" ติดไปเลย
+  const plan = await planJob(text, route.intent, replyText);
   if (!plan.background) return null; // งานสั้น ให้ตัวจัดการเดิมทำสด ๆ ไป
 
   // งานที่ต้องใช้ข้อมูลส่วนตัว ฝาก Hermes ไม่ได้ (กฎเดิมของ kiki-hermes: ส่งไปเฉพาะโจทย์ที่พิมพ์)
@@ -46,7 +60,9 @@ export const autoBackgroundHandler: Handler = async (ctx: Ctx) => {
   const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
   if (!kikiHermesReady()) return null; // ไม่มีตัวรับงาน = ให้ตัวจัดการเดิมทำสดไป
 
-  const q = await queueHermesJob(chatId, text);
+  // ส่ง brief (โจทย์ที่สมบูรณ์ในตัว) ไม่ใช่ text ดิบ · ผูกกับงานเดิมถ้าเจ้าของ reply ผลงานเก่า
+  const parent = replyText ? await findJobByDelivered(replyText) : null;
+  const q = await queueHermesJob(chatId, plan.brief, parent?.id);
   await pushFocus({ kind: "job", ref: q.id, label: plan.topic });
   await saveKikiChat("assistant", `[รับงานเบื้องหลัง] ${plan.topic}`, "owner", channel);
 

@@ -8,7 +8,7 @@ import { PENDING_CATEGORY } from "@/lib/kiki-gmail";
 import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown, type KikiEvent } from "@/lib/kiki-calendar";
 import { dueRecurrings, debtNagFacts, weeklyReportFacts, debtDueReminders, autoRememberFromToday } from "@/lib/kiki-life";
 import { pollBankEmails } from "@/lib/kiki-gmail";
-import { collectHermesDeliveries, collectJobPings } from "@/lib/kiki-hermes";
+import { collectHermesDeliveries, collectJobPings, markDelivered } from "@/lib/kiki-hermes";
 import { tasksToNag, markNagged } from "@/lib/kiki-tasks";
 import { rollupRecentDays } from "@/lib/kiki-memory";
 import { vexSections, vexList } from "@/lib/kiki-format";
@@ -20,7 +20,11 @@ export const runtime = "nodejs";
 export const maxDuration = 240;
 
 // งานตามเวลาของ Vex — kiki-bot.mjs เรียกทุก 1 นาที แล้วเอา sends ไปส่งเอง (คนละโทเค็นกับวาน)
-// ladder เตือนนัด: เย็นก่อนวันนัด 18:00 → เช้าวันนัด 07:00 (ใน brief) → ก่อนเวลา 1 ชม. (ทั้งวัน = 08:00) → ทักหลังนัดจบ
+//
+// ladder เตือนนัด (แก้ 5 ส.ค. 2026 — เจ้าของแจ้งว่า "ถึงเวลาแล้วไม่มีอะไรแจ้งมาเลย"):
+//   เย็นก่อนวันนัด 18:00 → เช้าวันนัด 07:00 (ใน brief) → ก่อนเวลา 1 ชม. (ทั้งวัน = 08:00)
+//   → อีก 10 นาที → **ถึงเวลาแล้ว (T-0)** → เลยเวลา 10 นาทีแล้วยังเงียบ = ทวง → ทักหลังนัดจบ
+// ของเดิมจบที่ขั้น "1 ชม." แล้วเงียบยาวจนนัดจบ เพราะ remindedHour เป็นธงเดียวยิงครั้งเดียว
 interface CronSend {
   chatId: string;
   kind: "text" | "photo" | "document" | "voice";
@@ -80,8 +84,11 @@ export async function POST(req: Request) {
     for (const r of rows) {
       const kev = toKev(r);
       const st = evStart(kev);
+      // ปลายล่างของหน้าต่างคือ 12 นาที — ต่ำกว่านั้นปล่อยให้ขั้น "อีก 10 นาที" (A2) รับไป
+      // ไม่งั้นนัดที่ลงกระชั้น 5 นาทีจะได้การ์ด "อีก 1 ชม." ซึ่งผิดความจริง
+      const left = st ? st.getTime() - now.getTime() : 0;
       const fire = st
-        ? st.getTime() - now.getTime() > 0 && st.getTime() - now.getTime() <= 65 * 60_000
+        ? left > 12 * 60_000 && left <= 65 * 60_000
         : now.getHours() >= 8;
       if (!fire) continue;
       await db.calendarEvent.update({ where: { id: r.id }, data: { remindedHour: true } }).catch(() => {});
@@ -94,6 +101,69 @@ export async function POST(req: Request) {
       ).catch(() => `อีก${st ? ` ${fmtCountdown(st.getTime() - now.getTime())}` : "เดี๋ยว"}ถึงนัด "${r.title}" แล้วนะครับ ⏰ เตรียมตัวเลย`);
       sends.push({ chatId: r.chatId, kind: "text", text: t });
       await saveKikiChat("assistant", t);
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== A2/A3/A4) อีก 10 นาที · ถึงเวลาแล้ว · เลยเวลาแล้วยังเงียบ =====
+  //
+  // ขั้นที่ขาดหายไปทั้งหมดอยู่ตรงนี้ — เดิมเตือนครั้งสุดท้ายที่ T-65 นาทีแล้วเงียบจนนัดจบ
+  // ทั้งสามขั้นเป็นข้อความล้วน ไม่มีการ์ด (การ์ดรายละเอียดส่งไปแล้วตอน T-1 ชม. — ส่งซ้ำคือสแปม)
+  try {
+    const rows = (await db.calendarEvent.findMany({
+      where: {
+        agent: "kiki", done: false, date: { gte: dayStart, lt: dayEnd },
+        OR: [{ remindedSoon: false }, { remindedNow: false }, { nudgedLate: false }],
+      },
+    })) as (CalRow & { remindedSoon: boolean; remindedNow: boolean; nudgedLate: boolean })[];
+
+    for (const r of rows) {
+      const st = evStart(toKev(r));
+      if (!st) continue; // นัดทั้งวันไม่มี T-0 ให้เตือน
+      const left = st.getTime() - now.getTime();
+      const where = `${r.location ? ` ที่ ${r.location}` : ""}${r.withWho ? ` กับ${r.withWho}` : ""}`;
+
+      // --- A2) อีกราว 10 นาทีจะถึง ---
+      if (!r.remindedSoon && left > 0 && left <= 12 * 60_000) {
+        await db.calendarEvent.update({ where: { id: r.id }, data: { remindedSoon: true } }).catch(() => {});
+        const t = await askKiki(
+          `[เตือนนัด ใกล้ถึงแล้ว] อีก ${Math.max(1, Math.round(left / 60_000))} นาทีจะถึงนัด "${r.title}"${where}` +
+            ` — เตือนสั้น ๆ บรรทัดเดียว ให้เก็บของ/ออกตัวได้แล้ว`,
+        ).catch(() => `อีก ${Math.max(1, Math.round(left / 60_000))} นาทีถึงนัด "${r.title}" แล้วนะครับ`); // canned-ok: ตัวดักพังของงานตามเวลา — สมองล่มก็ต้องเตือนให้ทัน
+        sends.push({ chatId: r.chatId, kind: "text", text: t });
+        await saveKikiChat("assistant", t, "owner", "cron");
+        continue; // ขั้นเดียวต่อรอบต่อนัด — ไม่ยิงรัวติดกัน
+      }
+
+      // --- A3) ถึงเวลาแล้ว (T-0) — ขั้นที่เจ้าของบอกว่าหายไป ---
+      if (!r.remindedNow && left <= 0 && left > -6 * 60_000) {
+        await db.calendarEvent.update({
+          where: { id: r.id },
+          data: { remindedNow: true, remindedSoon: true, remindedHour: true },
+        }).catch(() => {});
+        const t = await askKiki(
+          `[เตือนนัด ถึงเวลาแล้ว] ตอนนี้ ${r.timeText} น. ถึงเวลานัด "${r.title}"${where} พอดี` +
+            ` — บอกสั้น ๆ ว่าถึงเวลาแล้ว 1-2 บรรทัด กวนได้นิดหน่อย`,
+        ).catch(() => `ถึงเวลานัด "${r.title}" แล้วครับ ⏰`); // canned-ok: ตัวดักพังของงานตามเวลา — สมองล่มก็ต้องเตือนให้ทัน
+        sends.push({ chatId: r.chatId, kind: "text", text: t });
+        await saveKikiChat("assistant", t, "owner", "cron");
+        continue;
+      }
+
+      // --- A4) เลยเวลามา 10 นาทีแล้ว "และเจ้าของยังไม่พูดอะไรเลย" = ทวง ---
+      // เงื่อนไขข้อหลังสำคัญ: ตอบแล้ว/คุยอยู่ = ไม่ต้องทวง (กฎข้อ 3 — ดูหลักฐานจริง ไม่เดา)
+      if (!r.nudgedLate && r.remindedNow && left <= -10 * 60_000 && left > -40 * 60_000) {
+        const spoke = await db.kikiChat.count({
+          where: { role: "user", scope: "owner", createdAt: { gte: new Date(st.getTime() - 60_000) } },
+        }).catch(() => 1); // นับไม่ได้ = ถือว่าพูดแล้ว ไม่ทวง (เงียบดีกว่ากวนผิด)
+        await db.calendarEvent.update({ where: { id: r.id }, data: { nudgedLate: true } }).catch(() => {});
+        if (spoke > 0) continue;
+        const t = await askKiki(
+          `[ทวงนัด] เลยเวลานัด "${r.title}"${where} มา ${Math.round(-left / 60_000)} นาทีแล้ว` +
+            ` และเจ้าของยังไม่ได้พูดอะไรเลยตั้งแต่ถึงเวลา — ทวงสั้น ๆ บรรทัดเดียวว่าไปหรือยัง`,
+        ).catch(() => `เลยเวลานัด "${r.title}" มา ${Math.round(-left / 60_000)} นาทีแล้วครับ ไปหรือยัง`); // canned-ok: ตัวดักพังของงานตามเวลา
+        sends.push({ chatId: r.chatId, kind: "text", text: t });
+        await saveKikiChat("assistant", t, "owner", "cron");
+      }
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
@@ -340,23 +410,38 @@ export async function POST(req: Request) {
   } catch { /* รอบหน้าลองใหม่ */ }
 
   // ===== G2) งานที่ฝาก Hermes เสร็จแล้ว → ส่งผลเข้าแชท =====
+  //
+  // ผลดิบห้ามออกไปตรง ๆ (แก้ 5 ส.ค. 2026): ตัวรับงานเป็นคนละตัวกับ Vex สรรพนาม/หางเสียงคนละแบบ
+  // เจ้าของเจอเองว่าลงท้าย "ค่ะ" แล้วหลุดคาแรกเตอร์ทันที · ตรงนี้จึงเรียบเรียงใหม่ด้วยเสียง Vex ก่อนส่ง
+  // ข้อเท็จจริงห้ามเปลี่ยน — ตัวเลข ลิงก์ ชื่อรุ่น ต้องยกมาครบเป๊ะ (เขียนกำกับไว้ในคำสั่ง)
   try {
     for (const d of await collectHermesDeliveries()) {
       const chatTo = d.chatId || mainChat;
       if (!chatTo) continue;
       const taskShort = d.task.length > 80 ? `${d.task.slice(0, 80)}...` : d.task;
       if (!d.ok) {
-        const t = `งานที่ฝากไว้ ("${taskShort}") ไม่สำเร็จครับ ⚠️ ${d.body}`;
+        const t = `งานที่ฝากไว้ ("${taskShort}") ไม่สำเร็จครับ ⚠️ ${d.body}`; // canned-ok: รายงานความล้มเหลว ต้องคงข้อความ error ดิบไว้ให้เห็น
         sends.push({ chatId: chatTo, kind: "text", text: t });
+        await markDelivered(d.id, t);
         await saveKikiChat("assistant", t);
         continue;
       }
       if (d.body.length > 3200) {
-        sends.push({ chatId: chatTo, kind: "text", text: await vexLine(`งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}") — ผลยาว แนบเป็นไฟล์ให้เปิดอ่าน`) });
+        const head = await vexLine(`งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}") — ผลยาว แนบเป็นไฟล์ให้เปิดอ่าน`);
+        sends.push({ chatId: chatTo, kind: "text", text: head });
         sends.push({ chatId: chatTo, kind: "document", dataBase64: Buffer.from(d.body, "utf8").toString("base64"), filename: `hermes-${today}.md`, caption: taskShort } as CronSend & { filename: string });
+        await markDelivered(d.id, head);
       } else {
-        const t = `งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}")\n\n${d.body}`;
+        const t = await askKiki(
+          `[ส่งผลงานที่ฝากไว้ให้เจ้าของ] โจทย์ที่สั่งไว้คือ: "${d.task.slice(0, 300)}"\n\n` +
+            `ผลที่ผู้ช่วยเบื้องหลังทำมา (ยังไม่ได้เรียบเรียง เป็นคนละคนกับคุณ สรรพนาม/หางเสียงอาจไม่ใช่ของคุณ):\n"""${d.body}"""\n\n` +
+            `เล่าผลนี้ให้เจ้าของฟังด้วยคำพูดของคุณเอง ขึ้นต้นด้วยการทวนว่านี่คือผลของงานอะไร\n` +
+            `กติกา: ตัวเลข ราคา ชื่อรุ่น ลิงก์ ต้องยกมาให้ครบเป๊ะ ห้ามตัดทิ้ง ห้ามแต่งเพิ่มเอง\n` +
+            `ลิสต์เขียนบรรทัดละรายการ · ถ้าผลมีตัวเลือกหลายอัน ปิดท้ายด้วยตัวที่แนะนำพร้อมเหตุผล\n` +
+            `ถ้าผลที่ได้มาเป็นแค่คำถามกลับ ไม่ใช่ของจริง ให้บอกเจ้าของตรง ๆ ว่ารอบนี้ยังไม่ได้ของ แล้วถามสิ่งที่ขาดพร้อมเสนอตัวเลือกให้เลือก`,
+        ).catch(() => `งานที่ฝากไว้เสร็จแล้วครับ ("${taskShort}")\n\n${d.body}`); // canned-ok: ตัวดักพัง — สมองล่มก็ต้องส่งผลถึงมือ
         sends.push({ chatId: chatTo, kind: "text", text: t });
+        await markDelivered(d.id, t);
       }
       await saveKikiChat("assistant", `[ผลงาน Hermes] ${d.body.slice(0, 1500)}`);
     }
