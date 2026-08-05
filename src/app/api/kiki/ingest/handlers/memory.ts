@@ -45,7 +45,7 @@ export const ruleListHandler: Handler = async (ctx) => {
       return reply([{ kind: "text", text: await vexLine('ยังไม่มีกฎพิเศษเลยครับ อยากให้ผมทำตัวยังไงบอกได้ เช่น "ต่อไปนี้ตอบสั้น ๆ พอ"'), replyTo: msgId }]);
     }
     const block = vexList({
-      title: `กฎที่พี่สอนผมไว้ (${rules.length} ข้อ)`,
+      title: `กฎที่โด้สอนผมไว้ (${rules.length} ข้อ)`,
       numbered: true,
       items: rules.map((r) => r.fact),
       note: 'ข้อไหนไม่เอาแล้วบอก "ลืมเรื่อง..." ได้เลยครับ',
@@ -141,15 +141,15 @@ export const memoryListHandler: Handler = async (ctx) => {
     const all = await listOwnerFacts();
     const profile = all.filter((f) => f.category !== VEX_RULE_CATEGORY);
     if (!all.length) {
-      return reply([{ kind: "text", text: await vexLine('ยังไม่รู้อะไรเกี่ยวกับพี่เลยครับ เล่ามาได้ หรือบอกว่า "จำไว้ว่า ..." ผมเก็บให้ถาวร'), replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine('ยังไม่รู้อะไรเกี่ยวกับโด้เลยครับ เล่ามาได้ หรือบอกว่า "จำไว้ว่า ..." ผมเก็บให้ถาวร'), replyTo: msgId }]);
     }
     // ขอ "ลิสต์" ตรง ๆ เท่านั้นถึงจะดัมป์เป็นรายการ
     if (/ลิสต์|ลิส|รายการ|ทีละข้อ|ทั้งหมดกี่|มีกี่ข้อ|ขอดูรายการ/.test(text)) {
       const block = vexList({
-        title: `ข้อมูลที่จำไว้เกี่ยวกับพี่ (${profile.length} เรื่อง)`,
+        title: `ข้อมูลที่จำไว้เกี่ยวกับโด้ (${profile.length} เรื่อง)`,
         numbered: true,
         items: profile.map((f) => ({ main: f.fact, sub: f.category })),
-        note: `กฎที่พี่สอนผมไว้อีก ${all.length - profile.length} ข้อ ถามแยกได้ · ข้อไหนไม่เอาแล้วบอก "ลืมเรื่อง..." ได้เลย`,
+        note: `กฎที่โด้สอนผมไว้อีก ${all.length - profile.length} ข้อ ถามแยกได้ · ข้อไหนไม่เอาแล้วบอก "ลืมเรื่อง..." ได้เลย`,
       });
       return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
     }

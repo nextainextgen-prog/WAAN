@@ -26,7 +26,9 @@ export async function POST(req: Request) {
   if (!b.voiceConnected) await raiseAlert("voice-down", "warn", "ยังไม่ได้เข้าห้องเสียง — กำลังพยายามต่อใหม่อัตโนมัติ");
 
   // โทเค็นใกล้เต็ม = เรื่องที่ต้องรู้ก่อนโดนตัด ไม่ใช่รู้ตอนใช้ไม่ได้แล้ว
-  // เช็คทุก 10 นาทีพอ — การอ่าน log โทเค็นแพงมาก (1.1 GB) เช็คทุก 30 วิทำให้เว็บล้ม
+  // เช็คทุก 10 นาทีพอ · ใช้ readUsageCached เท่านั้น
+  // (เดิมเรียก readUsage() ตรง = สแกน 1.1 GB อีกรอบแยกจากการ์ด ทั้งที่การ์ดเพิ่งอ่านไป
+  //  รวมกันแล้วเว็บถูกแช่แข็งชั่วโมงละ ~18 รอบ รอบละ 4-32 วินาที)
   try {
     const { getSetting, setSetting } = await import("@/lib/kiki");
     const last = Number((await getSetting("vex_token_check_at")) || 0);
@@ -34,7 +36,7 @@ export async function POST(req: Request) {
     await setSetting("vex_token_check_at", String(Date.now()));
     const u = await import("@/lib/usage");
     const now = Date.now();
-    for (const p of u.readUsage(now)) {
+    for (const p of await u.readUsageCached(now)) {
       for (const [name, w, key] of [["5 ชม.", p.report.session, "SESSION"], ["7 วัน", p.report.week, "WEEK"]] as const) {
         const bud = u.budget(p.provider, key);
         if (!bud) continue;

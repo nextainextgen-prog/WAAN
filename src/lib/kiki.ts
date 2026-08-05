@@ -5,6 +5,7 @@ import { db } from "./db";
 import { askClaude } from "./claude";
 import { getVaultPath } from "./obsidian";
 import { fetchUrlContent, type LinkContent } from "./weblink";
+import { geminiFetch } from "./gemini-usage";
 
 /**
  * Vex (โค้ดภายในใช้ชื่อ kiki) — เลขาส่วนตัวของเจ้าของ (ชีวิตส่วนตัว แยกจากงานบริษัท/น้องวานเด็ดขาด)
@@ -33,7 +34,9 @@ export const KIKI_PERSONA = `คุณคือ "Vex" เลขาส่วน�
 - ข้อความที่เรียบเรียงให้เจ้าของ "ก็อปไปส่งต่อคนอื่น": ครอบด้วย <copy>ข้อความ</copy> — ระบบจะทำเป็นกล่องแตะก็อปได้ก้อนเดียว ห้ามซอยส่วนนี้เป็นหลายข้อความ
 - ใส่อิโมจิได้พองาม เลือกตามสถานการณ์ แนวสัญลักษณ์เท่านั้น เช่น ⚠️ 📤 🌐 🔗 🎯 💻 ✅ ⬆️ ⏰ 🗓 💸 📉 📈 — ห้ามใช้อิโมจิหน้าคน/หน้ายิ้ม (เช่น 😊😂🥰)
 - ฉลาด คิดล่วงหน้า เชื่อมโยงข้อมูลเก่าที่เจ้าของเคยบอกมาใช้เอง ไม่ต้องรอถาม เห็นอะไรผิดปกติทักเลย
-- เรียกเจ้าของว่า "พี่" คำเดียวเท่านั้น ห้ามเรียกชื่อ/ชื่อเล่นอื่น ห้ามประจบสอพลอ
+- เรียกเจ้าของว่า "โด้" คำเดียวเท่านั้น (เจ้าของสั่งเอง 5 ส.ค. 2026 — เปลี่ยนจาก "พี่")
+  ห้ามเรียก "พี่" · "พี่โด้" · "คุณโด้" หรือชื่อ/ชื่อเล่นอื่นใดทั้งสิ้น ห้ามประจบสอพลอ
+  ลงท้าย "ครับ" ได้ตามปกติ แต่ห้าม "ครับพี่" — ใช้ "ครับโด้" หรือ "ครับ" เฉย ๆ
 
 กฎเหล็กเรื่องการกระทำ (สำคัญสุด — เคยพลาดจนเจ้าของต้องตามแก้):
 - คุณ "พูด" ได้อย่างเดียว การกระทำจริง (ส่งข้อความไปแชทอื่น สร้างกลุ่ม บันทึกเงิน ลงนัด ฯลฯ) ระบบเป็นคนทำและจะยืนยันผลเอง
@@ -52,7 +55,7 @@ export const KIKI_PERSONA = `คุณคือ "Vex" เลขาส่วน�
 
 กฎความเป็นมืออาชีพ (เจ้าของสั่ง 3 ส.ค. — เข้มเท่าตัวตน):
 - ประโยคแรกต้องเป็นสาระทันที ห้ามเปิดด้วยทักทาย/เกริ่น ("อรุณสวัสดิ์" "มาสรุปให้ฟังนะครับ" "เดี๋ยวผมเล่าให้ฟัง" = ห้ามทั้งหมด)
-- ห้ามคำฟุ่มเฟือย/อุทานเชิงเชียร์: เนอะ · น่าสนใจดีนะครับ · เจ๋งมากครับ · สุดยอดครับพี่ และคำชมลอย ๆ ทุกชนิด — ความเห็นใส่ได้เมื่อช่วยตัดสินใจเท่านั้น
+- ห้ามคำฟุ่มเฟือย/อุทานเชิงเชียร์: เนอะ · น่าสนใจดีนะครับ · เจ๋งมากครับ · สุดยอดเลยครับ และคำชมลอย ๆ ทุกชนิด — ความเห็นใส่ได้เมื่อช่วยตัดสินใจเท่านั้น
 - ห้ามเขียน markdown เด็ดขาด (** หัวข้อ ## ---) — เขียนข้อความล้วน ใช้การเว้นบรรทัดจัดโครงสร้างแทน
 - อิโมจิไม่เกิน 2 ตัวต่อการตอบหนึ่งครั้ง
 
@@ -673,7 +676,7 @@ export async function transcribeAudio(filePath: string, mime = "audio/ogg", opts
     } catch { /* ไม่มีบริบทก็ถอดตรง ๆ */ }
   }
 
-  const res = await fetch(
+  const res = await geminiFetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     {
       method: "POST",
@@ -690,8 +693,7 @@ export async function transcribeAudio(filePath: string, mime = "audio/ogg", opts
         generationConfig: { temperature: 0.1, ...(isShort ? { thinkingConfig: { thinkingBudget: 0 } } : {}) },
       }),
       signal: AbortSignal.timeout(isShort ? 20_000 : 90_000),
-    },
-  );
+    }, "transcribe");
   const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
   if (j.error?.message) throw new Error(j.error.message);
   const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -842,7 +844,7 @@ async function askGeminiChat(system: string, message: string, imagePaths: string
     parts.push({ inline_data: { mime_type: mime, data: buf.toString("base64") } });
   }
   parts.push({ text: message });
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+  const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -850,7 +852,7 @@ async function askGeminiChat(system: string, message: string, imagePaths: string
       contents: [{ role: "user", parts }],
     }),
     signal: AbortSignal.timeout(60_000),
-  });
+  }, "chat");
   const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
   if (j.error?.message) throw new Error(j.error.message);
   const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -902,7 +904,7 @@ ${rules}
 - สั้นกว่าหรือเท่าเดิม ไม่เกิน ${opts.maxLines ?? 4} บรรทัด
 - ห้ามใส่แท็ก <copy> (อันนั้นไว้ใช้เฉพาะข้อความที่เจ้าของจะก็อปไปส่งต่อคนอื่น)
 - ตอบเฉพาะข้อความที่จะส่ง ไม่ต้องอธิบายอะไรทั้งสิ้น`;
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -911,7 +913,7 @@ ${rules}
         generationConfig: { temperature: 0.9, thinkingConfig: { thinkingBudget: 0 } },
       }),
       signal: AbortSignal.timeout(15_000),
-    });
+    }, "say");
     const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
     if (j.error?.message) return src;
     const out = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -946,7 +948,7 @@ export async function askGeminiJson<T = unknown>(system: string, prompt: string,
 
 async function geminiJsonOnce<T>(key: string, system: string, prompt: string, timeoutMs: number): Promise<T | null> {
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -955,7 +957,7 @@ async function geminiJsonOnce<T>(key: string, system: string, prompt: string, ti
         generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
       }),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    }, "extract");
     const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
     if (j.error?.message) return null;
     const raw = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -1121,7 +1123,7 @@ export function isYoutubeUrl(u: string): boolean {
 export async function summarizeYoutube(url: string, userNote?: string): Promise<{ title: string; summary: string }> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new Error("ยังไม่ได้ตั้งค่า GEMINI_API_KEY");
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+  const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1136,7 +1138,7 @@ export async function summarizeYoutube(url: string, userNote?: string): Promise<
         },
       ],
     }),
-  });
+  }, "youtube");
   const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
   if (j.error?.message) throw new Error(j.error.message);
   const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -1264,12 +1266,12 @@ ${instruction}` }] }],
   for (let i = 0; i < 3; i++) {
     if (i) await new Promise((r) => setTimeout(r, i * 4000));
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+      const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
         signal: AbortSignal.timeout(90_000),
-      });
+      }, "research");
       const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
       if (j.error?.message) throw new Error(j.error.message);
       const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();

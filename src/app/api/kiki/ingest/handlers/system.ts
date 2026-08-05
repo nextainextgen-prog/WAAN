@@ -108,7 +108,7 @@ export const voiceModeHandler: Handler = async (ctx) => {
   }
   if (/(ปิด|เลิก|หยุด|ไม่เอา).{0,10}(โหมดเสียง|ตอบเสียง|พูดตลอด)|ตอบข้อความพอ/.test(text)) {
     await setSetting("kiki_voice_always", "");
-    return reply([{ kind: "text", text: await vexLine("ปิดโหมดตอบเสียงตลอดแล้วครับ ✅ จะพูดเฉพาะตอนพี่พูดมา หรือสั่ง \"ตอบเสียง\""), replyTo: msgId }]);
+    return reply([{ kind: "text", text: await vexLine("ปิดโหมดตอบเสียงตลอดแล้วครับ ✅ จะพูดเฉพาะตอนโด้พูดมา หรือสั่ง \"ตอบเสียง\""), replyTo: msgId }]);
   }
 
   return null;
@@ -134,7 +134,7 @@ export const devConfirmHandler: Handler = async (ctx) => {
       await setPendingDev(null, channel);
       if (await devJobRunning()) return reply([{ kind: "text", text: await vexLine(`มีงานพัฒนารันอยู่แล้วครับ ⚠️ รอตัวเดิมจบก่อน (สูงสุด 45 นาที) ค่อยสั่งตัวใหม่`), replyTo: msgId }]);
       await queueDevJob(chatId, pendingDev);
-      return reply([{ kind: "text", text: await vexLine(`รับงานแล้วครับ 🎯 ส่งสเปกให้วิศวกร (Claude ตัวเดียวกับที่พี่ใช้) ลงมือแก้โค้ดผมแล้ว\n\nใช้เวลาได้ถึง 45 นาที เสร็จแล้วรายงานพร้อม commit — ช่วงท้ายผมจะรีสตาร์ทตัวเองแป๊บนึง ถ้าเงียบช่วงสั้น ๆ คือกำลังเกิดใหม่ครับ`), replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine(`รับงานแล้วครับ 🎯 ส่งสเปกให้วิศวกร (Claude ตัวเดียวกับที่โด้ใช้) ลงมือแก้โค้ดผมแล้ว\n\nใช้เวลาได้ถึง 45 นาที เสร็จแล้วรายงานพร้อม commit — ช่วงท้ายผมจะรีสตาร์ทตัวเองแป๊บนึง ถ้าเงียบช่วงสั้น ๆ คือกำลังเกิดใหม่ครับ`), replyTo: msgId }]);
     }
   }
 
@@ -170,7 +170,7 @@ export const selfDevHandler: Handler = async (ctx) => {
     await setPendingDev(spec, channel);
     return reply([{
       kind: "text",
-      text: `จะส่งสเปกนี้ให้วิศวกรแก้โค้ดผมจริง ๆ นะครับ:\n\n"${spec.slice(0, 500)}"\n\nกติกา: แตะได้เฉพาะโค้ดฝั่งผม (Vex) · tsc ต้องผ่าน · commit+push · เสร็จแล้วรีสตาร์ทตัวเอง+รายงาน\nถ้าของที่ได้ไม่ตรงใจ บอกพี่โด้ให้ย้อน commit ได้เสมอ`, // canned-ok: สเปกที่จะส่งให้วิศวกร + กติกา ต้องตรงตัว
+      text: `จะส่งสเปกนี้ให้วิศวกรแก้โค้ดผมจริง ๆ นะครับ:\n\n"${spec.slice(0, 500)}"\n\nกติกา: แตะได้เฉพาะโค้ดฝั่งผม (Vex) · tsc ต้องผ่าน · commit+push · เสร็จแล้วรีสตาร์ทตัวเอง+รายงาน\nถ้าของที่ได้ไม่ตรงใจ บอกโด้ให้ย้อน commit ได้เสมอ`, // canned-ok: สเปกที่จะส่งให้วิศวกร + กติกา ต้องตรงตัว
       replyTo: msgId,
       buttons: [[{ text: "✅ พัฒนาเลย", data: "kiki:dev:yes" }, { text: "❌ ยกเลิก", data: "kiki:dev:no" }]],
     }]);

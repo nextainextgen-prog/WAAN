@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { collectVex, ENV, ago, shortAgo, nf, baht } from "./status-vex.mjs";
+import { collectGemini, geminiLines } from "./usage-gemini.mjs";
 
 const ROOT = path.resolve(new URL("..", import.meta.url).pathname);
 const LOGS = path.join(ROOT, ".run-logs");
@@ -49,13 +50,34 @@ function isWide(cp) {
     (cp >= 0x1f300 && cp <= 0x1f9ff) || (cp >= 0x1fa70 && cp <= 0x1faff) || (cp >= 0x1f000 && cp <= 0x1f2ff)
   );
 }
+/**
+ * สัญลักษณ์ใน BMP ที่แสดงเป็นอิโมจิโดยปริยาย (Emoji_Presentation=Yes) → กิน 2 คอลัมน์
+ * ตัวที่ไม่อยู่ในลิสต์นี้ (เช่น ● ▲ ✕ ที่ใช้ทำตาราง) กิน 1 คอลัมน์ตามปกติ
+ * เคสจริงที่ทำให้กล่องเบี้ยว: ⚡ (U+26A1) ในชื่อกลุ่ม Telegram
+ */
+function isEmojiPresentation(cp) {
+  return (
+    (cp >= 0x231a && cp <= 0x231b) || (cp >= 0x23e9 && cp <= 0x23ec) || cp === 0x23f0 || cp === 0x23f3 ||
+    (cp >= 0x25fd && cp <= 0x25fe) || (cp >= 0x2614 && cp <= 0x2615) || (cp >= 0x2648 && cp <= 0x2653) ||
+    cp === 0x267f || cp === 0x2693 || cp === 0x26a1 || (cp >= 0x26aa && cp <= 0x26ab) ||
+    (cp >= 0x26bd && cp <= 0x26be) || (cp >= 0x26c4 && cp <= 0x26c5) || cp === 0x26ce || cp === 0x26d4 ||
+    cp === 0x26ea || (cp >= 0x26f2 && cp <= 0x26f3) || cp === 0x26f5 || cp === 0x26fa || cp === 0x26fd ||
+    cp === 0x2705 || (cp >= 0x270a && cp <= 0x270b) || cp === 0x2728 || cp === 0x274c || cp === 0x274e ||
+    (cp >= 0x2753 && cp <= 0x2755) || cp === 0x2757 || (cp >= 0x2795 && cp <= 0x2797) || cp === 0x27b0 ||
+    cp === 0x27bf || (cp >= 0x2b1b && cp <= 0x2b1c) || cp === 0x2b50 || cp === 0x2b55
+  );
+}
 const STRIP_ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
 export function dw(s) {
+  const chars = [...String(s).replace(STRIP_ANSI, "")];
   let w = 0;
-  for (const ch of String(s).replace(STRIP_ANSI, "")) {
-    const cp = ch.codePointAt(0);
+  for (let i = 0; i < chars.length; i++) {
+    const cp = chars[i].codePointAt(0);
     if (isZeroWidth(cp)) continue;
-    w += isWide(cp) ? 2 : 1;
+    // สัญลักษณ์ธรรมดาที่มี VS16 (U+FE0F) ตามหลัง จะถูกบังคับให้แสดงเป็นอิโมจิ = กิน 2 คอลัมน์
+    const vs16 = chars[i + 1]?.codePointAt(0) === 0xfe0f;
+    const forcedEmoji = vs16 && cp >= 0x2000 && cp <= 0x2bff;
+    w += isWide(cp) || isEmojiPresentation(cp) || forcedEmoji ? 2 : 1;
   }
   return w;
 }
@@ -226,6 +248,23 @@ function pairRow(box, label, text) {
 let FRAME = [];
 let WORST = "OK";
 
+/**
+ * usage-cli.mjs เดินไฟล์ทั้ง ~/.claude/projects (1,700+ ไฟล์ · 1.2 GB) ใช้เวลา ~3.7 วิต่อครั้ง
+ * ถ้าเรียกทุกรอบรีเฟรช (15 วิ) จะกินดิสก์กับซีพียูราว 25% ของเวลาที่เปิดจออยู่ โดยไม่ได้อะไรเพิ่ม
+ * — ตัวเลขโทเค็นขยับช้ากว่านั้นมาก แคช 60 วินาทีก็เกินพอ
+ * (เคสจริง 5 ส.ค.: การ์ดมอนิเตอร์ฝั่งเว็บอ่านโฟลเดอร์เดียวกันทุก 30 วิ จนแรมบวมแล้วเว็บถูกฆ่าทิ้งทั้งเช้า)
+ */
+const USAGE_TTL = 60_000;
+let usageCache = { at: 0, text: "" };
+function cachedUsage() {
+  if (Date.now() - usageCache.at < USAGE_TTL) return usageCache.text;
+  const text = sh("node", [path.join(ROOT, "scripts", "usage-cli.mjs")], 15000).trim();
+  // อ่านไม่ได้ = ใช้ค่าเดิมต่อ ดีกว่าโชว์ช่องว่าง
+  if (text) usageCache = { at: Date.now(), text };
+  else usageCache.at = Date.now();
+  return usageCache.text;
+}
+
 function build() {
   const cols = process.stdout.columns || 100;
   const W = Math.max(64, Math.min(cols - 2, 96));
@@ -338,11 +377,18 @@ function build() {
   out.push(...b2.lines, "");
 
   // ---------- โซน 3 · โทเค็น/ค่าใช้จ่าย ----------
-  const usage = sh("node", [path.join(ROOT, "scripts", "usage-cli.mjs")], 10000).trim();
-  if (usage) {
+  const usage = cachedUsage();
+  const gem = geminiLines(collectGemini());
+  if (usage || gem.length) {
     const b3 = new Box(W, C.c);
     b3.top("AI USAGE · โทเค็น · ค่าใช้จ่าย · บริบท");
-    for (const l of usage.split("\n")) b3.text(l);
+    if (usage) for (const l of usage.split("\n")) b3.text(l);
+    // Claude/Codex เป็นค่าสมาชิกรายเดือน ตัวเลข $ เป็นมูลค่าเทียบเคียง
+    // แต่ Gemini คิดเงินจริงตามโทเค็น — แยกบรรทัดให้เห็นชัดว่าอันนี้คือเงินที่จ่ายจริง
+    if (gem.length) {
+      if (usage) b3.divider();
+      for (const l of gem) b3.text(l);
+    }
     b3.bottom();
     out.push(...b3.lines, "");
   }

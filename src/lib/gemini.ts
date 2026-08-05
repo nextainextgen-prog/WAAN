@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { geminiFetch } from "./gemini-usage";
 
 /**
  * เรียก Google Gemini — เป็น "สมองสำรอง" ของน้องวาน (last resort)
@@ -49,12 +50,12 @@ async function askGeminiApi(prompt: string, opts: GeminiOptions): Promise<string
     if (opts.maxOutputTokens) genCfg.maxOutputTokens = opts.maxOutputTokens;
     if (opts.temperature !== undefined) genCfg.temperature = opts.temperature;
     if (Object.keys(genCfg).length) body.generationConfig = genCfg;
-    const res = await fetch(url, {
+    const res = await geminiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, "gemini-ask");
     if (!res.ok) {
       const t = await res.text().catch(() => "");
       throw new Error(`Gemini API ตอบกลับ ${res.status} ${t.slice(0, 200)}`);
@@ -143,10 +144,9 @@ export async function askGeminiImage(
     if (opts.temperature !== undefined) genCfg.temperature = opts.temperature;
     if (Object.keys(genCfg).length) body.generationConfig = genCfg;
 
-    const res = await fetch(
+    const res = await geminiFetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal },
-    );
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal }, "image");
     if (!res.ok) throw new Error(`Gemini vision ตอบกลับ ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
     const data = await res.json();
     const parts = data?.candidates?.[0]?.content?.parts;

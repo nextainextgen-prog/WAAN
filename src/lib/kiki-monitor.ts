@@ -81,18 +81,16 @@ export async function buildCard(input: {
  * ใช้ของเดิมที่น้องวานมีอยู่แล้ว (src/lib/usage.ts อ่านจากไฟล์ log ในเครื่อง) ไม่สร้างตัวใหม่
  * งบต่อหน้าต่างอ่านจาก .env — ไม่ตั้ง = โชว์แค่จำนวน token ไม่โชว์ %
  */
-// อ่านโทเค็นแพงมาก — ต้องไล่ไฟล์ log 1,759 ไฟล์ รวม 1.1 GB
-// การ์ดอัปเดตทุก 30 วิ ถ้าอ่านใหม่ทุกรอบ = เว็บกินแรมจนโดนฆ่า (เกิดจริง 5 ส.ค. เว็บล้มทั้งเช้า
-// วัดได้ /api/kiki/monitor ใช้ 15-24 วินาทีต่อครั้ง) · ตัวเลขโทเค็นไม่ได้เปลี่ยนเร็วขนาดนั้น
-let tokenCache: { lines: string[]; at: number } | null = null;
-const TOKEN_TTL_MS = 5 * 60_000;
+// อ่านโทเค็นแพงมาก — ต้องไล่ไฟล์ log ~1,800 ไฟล์ รวม 1.1 GB
+// แคช/singleflight/แคชรายไฟล์ ย้ายไปอยู่ใน usage.ts แล้ว (readUsageCached)
+// ห้ามใส่แคชชั้นสองตรงนี้อีก — เคยมี 2 ชั้นแล้วนาฬิกาไม่ตรงกัน กลายเป็นสแกนซ้ำสองรอบ
+let tokenCache: { lines: string[] } | null = null;
 
 async function tokenBlock(): Promise<string[]> {
-  if (tokenCache && Date.now() - tokenCache.at < TOKEN_TTL_MS) return tokenCache.lines;
   try {
     const u = await import("./usage");
     const now = Date.now();
-    const usages = u.readUsage(now);
+    const usages = await u.readUsageCached(now);
     const out: string[] = ["📊 โทเค็นที่ใช้"];
     let todayTok = 0;
     let todayCost = 0;
@@ -119,7 +117,7 @@ async function tokenBlock(): Promise<string[]> {
       todayCost += p.report.today.costUsd;
     }
     out.push(`💰 วันนี้รวม ${u.fmtTokens(todayTok)} tokens · ~$${todayCost.toFixed(2)} (~${Math.round(todayCost * 36)} บาท)`);
-    tokenCache = { lines: out, at: Date.now() };
+    tokenCache = { lines: out }; // เก็บไว้เป็นของสำรองตอนอ่านไม่ได้เท่านั้น
     return out;
   } catch {
     return tokenCache?.lines ?? ["📊 โทเค็น    อ่านไม่ได้"];

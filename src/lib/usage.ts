@@ -35,14 +35,37 @@ function addCost(w: UsageWindow) {
   w.costUsd = (w.inputTokens / 1e6) * RATE_IN + (w.outputTokens / 1e6) * RATE_OUT;
 }
 
-function walkJsonl(dir: string, sinceMs: number): string[] {
-  const out: string[] = [];
+/**
+ * ===== ทำไมโค้ดส่วนนี้ถึงหน้าตาแบบนี้ (บทเรียน 5 ส.ค. 2026 — ห้ามรื้อกลับ) =====
+ *
+ * ของเดิมอ่าน log ทั้งกอง (~1,800 ไฟล์ · 1.1 GB) **ด้วย readFileSync** และอ่าน **3 รอบ**
+ * (session / week / today แยกกันคนละรอบ) ทุกครั้งที่มีคนขอตัวเลข
+ *   → บล็อก event loop ของเว็บ 4-32 วินาที · วัดจากของจริง: ingest ที่ใช้งานเอง 184 ms
+ *     ต้องรอคิว 10.6 วินาที เพราะ loop ไม่ว่าง · เว็บถูกฆ่าทิ้งซ้ำ ๆ ทั้งเช้า
+ *
+ * สามอย่างที่แก้:
+ *  1) อ่านไฟล์รอบเดียว แล้วโยนเข้าทั้ง 3 หน้าต่างพร้อมกัน (จาก 3 รอบ → 1 รอบ)
+ *  2) แคชรายไฟล์ด้วย mtime+size — log ที่เขียนเสร็จแล้วไม่มีวันเปลี่ยน
+ *     รอบต่อไปจึงอ่านใหม่เฉพาะไฟล์ที่กำลังถูกเขียนอยู่จริง ๆ (ปกติ 1-3 ไฟล์)
+ *     เก็บเป็น "ถังรายนาที" ไม่ใช่ยอดรวม เพราะหน้าต่างเลื่อนตามเวลา ยอดรวมใช้ซ้ำไม่ได้
+ *  3) เปลี่ยนเป็น async I/O ทั้งหมด — ต่อให้ต้องอ่านของหนักจริง เว็บก็ยังหายใจได้
+ */
+
+// วัดของจริง 5 ส.ค.: หน้าต่าง 7 วัน = 887 ไฟล์ · 0.59 GB · แต่มีแค่ 21,110 event
+// → เก็บทุก event ไว้ตรง ๆ ได้สบาย (<1 MB) และได้ยอด "ตรงเป๊ะเท่าของเดิม" ไม่ต้องปัดเป็นถังเวลา
+type Ev = { ts: number; in: number; out: number; cache: number };
+type FileEntry = { mtimeMs: number; size: number; events: Ev[] };
+
+const fileCache = new Map<string, FileEntry>();
+
+async function walkJsonl(dir: string, sinceMs: number): Promise<{ path: string; mtimeMs: number; size: number }[]> {
+  const out: { path: string; mtimeMs: number; size: number }[] = [];
   const stack = [dir];
   while (stack.length) {
     const d = stack.pop()!;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(d, { withFileTypes: true });
+      entries = await fs.promises.readdir(d, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -52,7 +75,8 @@ function walkJsonl(dir: string, sinceMs: number): string[] {
       else if (e.name.endsWith(".jsonl")) {
         try {
           // ข้ามไฟล์ที่แก้ล่าสุดก่อนช่วงเวลา (เร็วขึ้นมาก)
-          if (fs.statSync(p).mtimeMs >= sinceMs) out.push(p);
+          const st = await fs.promises.stat(p);
+          if (st.mtimeMs >= sinceMs) out.push({ path: p, mtimeMs: st.mtimeMs, size: st.size });
         } catch {
           /* ignore */
         }
@@ -62,80 +86,142 @@ function walkJsonl(dir: string, sinceMs: number): string[] {
   return out;
 }
 
-// รวม Claude usage ในช่วง since..now
-function readClaude(sinceMs: number): UsageWindow {
-  const base = path.join(os.homedir(), ".claude", "projects");
-  const w = empty();
-  if (!fs.existsSync(base)) return w;
-  for (const file of walkJsonl(base, sinceMs)) {
-    let content: string;
-    try {
-      content = fs.readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-    for (const line of content.split("\n")) {
-      if (!line.includes('"usage"')) continue;
-      let d: any;
-      try {
-        d = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const ts = Date.parse(d.timestamp || "");
-      if (!Number.isFinite(ts) || ts < sinceMs) continue;
-      const u = d.message?.usage;
-      if (!u) continue;
-      w.inputTokens += u.input_tokens || 0;
-      w.outputTokens += u.output_tokens || 0;
-      w.cacheTokens += (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
-      if (!w.firstTs || ts < w.firstTs) w.firstTs = ts;
-    }
+/** แยกทีละบรรทัด → รายการ event (ไฟล์ที่เขียนจบแล้วให้ผลเดิมเสมอ = แคชได้) */
+function parseEvents(content: string, parse: (line: string) => Ev | null): Ev[] {
+  const out: Ev[] = [];
+  for (const line of content.split("\n")) {
+    const ev = parse(line);
+    if (ev) out.push(ev);
   }
+  return out;
+}
+
+const parseClaudeLine = (line: string): Ev | null => {
+  if (!line.includes('"usage"')) return null;
+  let d: any;
+  try {
+    d = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const ts = Date.parse(d.timestamp || "");
+  const u = d.message?.usage;
+  if (!Number.isFinite(ts) || !u) return null;
+  return {
+    ts,
+    in: u.input_tokens || 0,
+    out: u.output_tokens || 0,
+    cache: (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+  };
+};
+
+/** รวม event ของไฟล์เดียวเข้าหน้าต่างที่กำหนด — เงื่อนไข ts >= sinceMs เหมือนของเดิมเป๊ะ */
+function foldInto(w: UsageWindow, events: Ev[], sinceMs: number) {
+  for (const e of events) {
+    if (e.ts < sinceMs) continue;
+    w.inputTokens += e.in;
+    w.outputTokens += e.out;
+    w.cacheTokens += e.cache;
+    if (!w.firstTs || e.ts < w.firstTs) w.firstTs = e.ts;
+  }
+}
+
+function seal(w: UsageWindow): UsageWindow {
   w.totalTokens = w.inputTokens + w.outputTokens + w.cacheTokens;
   addCost(w);
   return w;
 }
 
-// รวม Codex usage: total_token_usage เป็นยอดสะสมต่อ session → ใช้ค่าสูงสุดต่อไฟล์ที่ active ในช่วง
-function readCodex(sinceMs: number): UsageWindow {
-  const base = path.join(os.homedir(), ".codex", "sessions");
-  const w = empty();
-  if (!fs.existsSync(base)) return w;
-  for (const file of walkJsonl(base, sinceMs)) {
-    let content: string;
-    try {
-      content = fs.readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-    let best: { in: number; out: number; total: number } | null = null;
-    let lastTs = 0;
-    for (const line of content.split("\n")) {
-      if (!line.includes("token_usage")) continue;
-      let d: any;
+// Claude: ทุกบรรทัดคือ event เพิ่มยอด → บวกสะสมได้ตรง ๆ
+async function readClaude(nowMs: number): Promise<UsageReport> {
+  const base = path.join(os.homedir(), ".claude", "projects");
+  const report: UsageReport = { session: empty(), week: empty(), today: empty() };
+  const weekSince = nowMs - 7 * 86400_000;
+  if (!fs.existsSync(base)) return report;
+
+  const seen = new Set<string>();
+  for (const f of await walkJsonl(base, weekSince)) {
+    seen.add(f.path);
+    let entry = fileCache.get(f.path);
+    // ไฟล์เดิมขนาดเดิม เวลาแก้เดิม = เนื้อในเดิม ไม่ต้องอ่านซ้ำ
+    if (!entry || entry.mtimeMs !== f.mtimeMs || entry.size !== f.size) {
+      let content: string;
       try {
-        d = JSON.parse(line);
+        content = await fs.promises.readFile(f.path, "utf8");
       } catch {
         continue;
       }
-      const ts = Date.parse(d.timestamp || "");
-      const tu = d.payload?.info?.total_token_usage || d.payload?.total_token_usage || d.total_token_usage;
-      if (!tu) continue;
-      if (Number.isFinite(ts)) lastTs = Math.max(lastTs, ts);
-      if (!best || (tu.total_tokens || 0) > best.total) {
-        best = { in: tu.input_tokens || 0, out: tu.output_tokens || 0, total: tu.total_tokens || 0 };
-      }
+      entry = { mtimeMs: f.mtimeMs, size: f.size, events: parseEvents(content, parseClaudeLine) };
+      fileCache.set(f.path, entry);
     }
-    if (best && lastTs >= sinceMs) {
-      w.inputTokens += best.in;
-      w.outputTokens += best.out;
-      if (!w.firstTs || lastTs < w.firstTs) w.firstTs = lastTs;
+    foldInto(report.session, entry.events, nowMs - 5 * 3600_000);
+    foldInto(report.week, entry.events, weekSince);
+    foldInto(report.today, entry.events, nowMs - 24 * 3600_000);
+  }
+  // ไฟล์ที่หลุดหน้าต่าง 7 วันไปแล้ว = ปล่อยแคชทิ้ง ไม่งั้นบวมไปเรื่อย ๆ
+  for (const k of fileCache.keys()) if (!seen.has(k) && k.startsWith(base)) fileCache.delete(k);
+
+  return { session: seal(report.session), week: seal(report.week), today: seal(report.today) };
+}
+
+// Codex: total_token_usage เป็นยอด "สะสมทั้ง session" ไม่ใช่ต่อ event
+// → ต้องเอาค่าสูงสุดของไฟล์ ไม่ใช่บวกทุกบรรทัด (บวกแล้วยอดจะพองเป็นสิบเท่า)
+type CodexEntry = { mtimeMs: number; size: number; best: { in: number; out: number; total: number } | null; lastTs: number };
+const codexCache = new Map<string, CodexEntry>();
+
+async function readCodex(nowMs: number): Promise<UsageReport> {
+  const base = path.join(os.homedir(), ".codex", "sessions");
+  const report: UsageReport = { session: empty(), week: empty(), today: empty() };
+  const weekSince = nowMs - 7 * 86400_000;
+  if (!fs.existsSync(base)) return report;
+
+  const seen = new Set<string>();
+  for (const f of await walkJsonl(base, weekSince)) {
+    seen.add(f.path);
+    let entry = codexCache.get(f.path);
+    if (!entry || entry.mtimeMs !== f.mtimeMs || entry.size !== f.size) {
+      let content: string;
+      try {
+        content = await fs.promises.readFile(f.path, "utf8");
+      } catch {
+        continue;
+      }
+      let best: { in: number; out: number; total: number } | null = null;
+      let lastTs = 0;
+      for (const line of content.split("\n")) {
+        if (!line.includes("token_usage")) continue;
+        let d: any;
+        try {
+          d = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const ts = Date.parse(d.timestamp || "");
+        const tu = d.payload?.info?.total_token_usage || d.payload?.total_token_usage || d.total_token_usage;
+        if (!tu) continue;
+        if (Number.isFinite(ts)) lastTs = Math.max(lastTs, ts);
+        if (!best || (tu.total_tokens || 0) > best.total) {
+          best = { in: tu.input_tokens || 0, out: tu.output_tokens || 0, total: tu.total_tokens || 0 };
+        }
+      }
+      entry = { mtimeMs: f.mtimeMs, size: f.size, best, lastTs };
+      codexCache.set(f.path, entry);
+    }
+    if (!entry.best) continue;
+    for (const [w, since] of [
+      [report.session, nowMs - 5 * 3600_000],
+      [report.week, weekSince],
+      [report.today, nowMs - 24 * 3600_000],
+    ] as const) {
+      if (entry.lastTs < since) continue;
+      w.inputTokens += entry.best.in;
+      w.outputTokens += entry.best.out;
+      if (!w.firstTs || entry.lastTs < w.firstTs) w.firstTs = entry.lastTs;
     }
   }
-  w.totalTokens = w.inputTokens + w.outputTokens + w.cacheTokens;
-  addCost(w);
-  return w;
+  for (const k of codexCache.keys()) if (!seen.has(k) && k.startsWith(base)) codexCache.delete(k);
+
+  return { session: seal(report.session), week: seal(report.week), today: seal(report.today) };
 }
 
 export interface ProviderUsage {
@@ -144,19 +230,38 @@ export interface ProviderUsage {
   report: UsageReport;
 }
 
-export function readUsage(nowMs: number): ProviderUsage[] {
-  const sessionSince = nowMs - 5 * 3600_000;
-  const weekSince = nowMs - 7 * 86400_000;
-  const todaySince = nowMs - 24 * 3600_000;
-  const build = (fn: (s: number) => UsageWindow): UsageReport => ({
-    session: fn(sessionSince),
-    week: fn(weekSince),
-    today: fn(todaySince),
-  });
+export async function readUsage(nowMs: number): Promise<ProviderUsage[]> {
+  const [claude, codex] = await Promise.all([readClaude(nowMs), readCodex(nowMs)]);
   return [
-    { provider: "claude", label: "Claude", report: build(readClaude) },
-    { provider: "codex", label: "Codex", report: build(readCodex) },
+    { provider: "claude", label: "Claude", report: claude },
+    { provider: "codex", label: "Codex", report: codex },
   ];
+}
+
+/**
+ * ทางเข้าเดียวที่ทุกคนควรใช้ — แคชร่วม + singleflight
+ *
+ * เดิมมีคนอ่านของหนักนี้ 2 ทางแยกกัน (การ์ดมอนิเตอร์ กับตัวเช็คโทเค็นใกล้เต็ม)
+ * ต่างคนต่างมีนาฬิกาของตัวเอง เลยสแกนซ้ำกันคนละรอบ · ตอนนี้เหลือทางเดียว
+ * singleflight สำคัญตอนเว็บเพิ่งขึ้น: การ์ดกับตัวเช็คยิงมาพร้อมกัน จะได้สแกนครั้งเดียว
+ */
+const USAGE_TTL_MS = 60_000;
+let usageCache: { at: number; data: ProviderUsage[] } | null = null;
+let usageInFlight: Promise<ProviderUsage[]> | null = null;
+
+export async function readUsageCached(nowMs: number): Promise<ProviderUsage[]> {
+  if (usageCache && nowMs - usageCache.at < USAGE_TTL_MS) return usageCache.data;
+  if (usageInFlight) return usageInFlight;
+  usageInFlight = readUsage(nowMs)
+    .then((data) => {
+      usageCache = { at: Date.now(), data };
+      return data;
+    })
+    .finally(() => {
+      usageInFlight = null;
+    });
+  // อ่านไม่ได้ก็ยังคืนของเก่าดีกว่าโยน error ใส่การ์ด
+  return usageInFlight.catch(() => usageCache?.data ?? []);
 }
 
 // bar แบบ text (เหมือนในภาพ) จาก 0..1

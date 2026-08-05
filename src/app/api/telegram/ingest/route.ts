@@ -49,7 +49,7 @@ import {
 } from "@/lib/roles";
 
 import { addTask, updateTask, listTasks, formatBoard, type TaskStatus } from "@/lib/tasks";
-import { readUsage, formatMonitorCard } from "@/lib/usage";
+import { readUsageCached, formatMonitorCard } from "@/lib/usage";
 import { parseTaxIntent, answerTaxIntent } from "@/lib/tax-reply";
 import { formatCustomerScript } from "@/lib/customer-script";
 
@@ -948,7 +948,7 @@ export async function POST(req: Request) {
   // ===== ดู Usage Monitor ทันที =====
   if (/^\s*(usage|monitor|สรุปการใช้งาน|การใช้งาน|ใช้ไปเท่าไห?ร่)\s*$/i.test(text)) {
     const nowMs = Date.now();
-    const card = formatMonitorCard(readUsage(nowMs), new Date(nowMs).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" }));
+    const card = formatMonitorCard(await readUsageCached(nowMs), new Date(nowMs).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" }));
     return NextResponse.json({ sends: [{ kind: "text", text: card.text, threadId, plain: true }] as Send[] });
   }
 

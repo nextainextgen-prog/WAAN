@@ -140,7 +140,11 @@ if (process.argv.includes("--json")) {
 // ---- โหมด dashboard: พิมพ์บรรทัดสรุป ----
 const out = [];
 for (const p of providers) {
-  if (p.session.total === 0 && p.today.total === 0) continue; // no usage in this window -> skip
+  // ไม่มียอดในหน้าต่างนี้ → ยังโชว์บรรทัดเดียวไว้ ให้รู้ว่าระบบยังอ่านค่าได้อยู่ (เงียบหายไปเลยแยกไม่ออกว่า "ไม่ได้ใช้" หรือ "อ่านไม่ได้")
+  if (p.session.total === 0 && p.today.total === 0) {
+    out.push(`${p.label}  Session 5h  ${bar(0)}   0%  ยังไม่ได้ใช้วันนี้`);
+    continue;
+  }
   const bS = budget(p.provider, "SESSION");
   const billS = p.session.in + p.session.out;
   const sPct = bS > 0 ? Math.round((billS / bS) * 100) : null;

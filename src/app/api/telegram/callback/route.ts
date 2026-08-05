@@ -4,7 +4,7 @@ import { getAllowedChatId, getAllowedGroups, getManagerSigner } from "@/lib/tele
 import { isOwner, isAuthorized } from "@/lib/team";
 import { decideDocument } from "@/lib/documents";
 import { setGroupFunc, getGroupFunc, GROUP_FUNCS, isGroupFunc, setTopicRole, ROLES, isRoleId, setOhoAlertChat } from "@/lib/roles";
-import { readUsage, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
+import { readUsageCached, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { executeExpiry } from "@/lib/thunder-expiry";
 import { logActivity } from "@/lib/activity";
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
       // โพสต์การ์ดทันที (best-effort) เพื่อยืนยันว่าเปิดฟีเจอร์แล้ว
       try {
         const now = Date.now();
-        const usages = readUsage(now);
+        const usages = await readUsageCached(now);
         const nowLabel = new Date(now).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
         const png = await renderHtmlToPng(monitorCardHtml(usages, nowLabel, now), { width: 720, height: 40 });
         sends.push({ kind: "photo", dataBase64: png.toString("base64"), filename: "usage-monitor.png", chatId: targetChatId });
@@ -92,7 +92,7 @@ export async function POST(req: Request) {
         // เรนเดอร์ไม่ได้ → ส่งเป็นข้อความสำรองเข้ากลุ่มเป้าหมาย
         const now = Date.now();
         const nowLabel = new Date(now).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
-        const { text } = formatMonitorCard(readUsage(now), nowLabel);
+        const { text } = formatMonitorCard(await readUsageCached(now), nowLabel);
         sends.push({ kind: "text", text, chatId: targetChatId });
       }
     } else {

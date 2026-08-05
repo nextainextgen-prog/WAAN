@@ -61,7 +61,7 @@ export const imageFindHandler: Handler = async (ctx) => {
       }
       if (old.length > 1) return reply(old);
     }
-    return reply([{ kind: "text", text: await vexLine("หาไม่เจอครับ — ผมเก็บเฉพาะไฟล์ที่พี่สั่งให้เก็บเท่านั้น (ส่งมาเฉย ๆ ผมดูให้แต่ไม่ได้เก็บ)"), replyTo: msgId }]);
+    return reply([{ kind: "text", text: await vexLine("หาไม่เจอครับ — ผมเก็บเฉพาะไฟล์ที่โด้สั่งให้เก็บเท่านั้น (ส่งมาเฉย ๆ ผมดูให้แต่ไม่ได้เก็บ)"), replyTo: msgId }]);
   }
 
   return null;

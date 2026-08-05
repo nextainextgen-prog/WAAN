@@ -1,4 +1,5 @@
 import { getSetting, setSetting } from "./kiki";
+import { geminiFetch } from "./gemini-usage";
 
 /**
  * โหมดการฟัง + สายสนทนาของ Vex (สเปกข้อ 6 · ปรับใหญ่ 5 ส.ค. 2026 หลังเจ้าของเทสจริง)
@@ -193,7 +194,7 @@ export async function addressedToVex(text: string, recentContext: string): Promi
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) return false;
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -210,7 +211,7 @@ export async function addressedToVex(text: string, recentContext: string): Promi
         generationConfig: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } },
       }),
       signal: AbortSignal.timeout(6000),
-    });
+    }, "listen");
     const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
     const raw = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
     return JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || "{}").toVex === true;

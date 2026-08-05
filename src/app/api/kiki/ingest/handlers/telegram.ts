@@ -20,7 +20,7 @@ export const dmConfirmHandler: Handler = async (ctx) => {
       await setPendingDm(null, channel);
       try {
         await sendAsOwner(pending.data.peerId, pending.data.message);
-        return reply([{ kind: "text", text: await vexLine(`ส่งหา ${pending.data.peerName} แล้วครับ 📤 (ในนามบัญชีพี่เอง)`), replyTo: msgId }]);
+        return reply([{ kind: "text", text: await vexLine(`ส่งหา ${pending.data.peerName} แล้วครับ 📤 (ในนามบัญชีของโด้เอง)`), replyTo: msgId }]);
       } catch (e) {
         return reply([{ kind: "text", text: await vexLine(`ส่งไม่สำเร็จครับ ⚠️ (${e instanceof Error ? e.message.slice(0, 120) : "error"})`), replyTo: msgId }]);
       }
@@ -63,12 +63,12 @@ export const groupConfirmHandler: Handler = async (ctx) => {
             kind: "text",
             chatId: g.chatId,
             parseMode: "HTML",
-            text: `กลุ่ม "${escHtml(g.title)}" พร้อมใช้แล้วครับ <a href="tg://user?id=${fromId}">พี่</a> — ผมประจำการที่นี่แล้ว ใช้ได้ทุกความสามารถเหมือนกลุ่มหลักเลย 🎯`, // canned-ok: มีแท็ก HTML tg://user
+            text: `กลุ่ม "${escHtml(g.title)}" พร้อมใช้แล้วครับ <a href="tg://user?id=${fromId}">โด้</a> — ผมประจำการที่นี่แล้ว ใช้ได้ทุกความสามารถเหมือนกลุ่มหลักเลย 🎯`, // canned-ok: มีแท็ก HTML tg://user
           });
         }
         sends.push({
           kind: "text",
-          text: await vexLine(`สร้างกลุ่ม "${g.title}" เสร็จแล้วครับ ✅ พี่เป็นเจ้าของกลุ่ม${g.botAdded ? " ผมเข้าไปประจำการ+ทักไว้ในนั้นแล้ว" : " ⚠️ แต่ดึงผมเข้าไม่สำเร็จ — เชิญ @kiki_lekha_bot เข้ากลุ่มให้หน่อยครับ"}\n\nเปิดดูในลิสต์แชท Telegram ได้เลย`),
+          text: await vexLine(`สร้างกลุ่ม "${g.title}" เสร็จแล้วครับ ✅ โด้เป็นเจ้าของกลุ่ม${g.botAdded ? " ผมเข้าไปประจำการ+ทักไว้ในนั้นแล้ว" : " ⚠️ แต่ดึงผมเข้าไม่สำเร็จ — เชิญ @kiki_lekha_bot เข้ากลุ่มให้หน่อยครับ"}\n\nเปิดดูในลิสต์แชท Telegram ได้เลย`),
           replyTo: msgId,
         });
         return reply(sends);
@@ -86,7 +86,7 @@ export const createGroupHandler: Handler = async (ctx) => {
   // ===== สร้างกลุ่มใหม่: รับคำสั่ง + ตั้งชื่อ + ปุ่มยืนยัน =====
   if (is("tg_create_group") && !text.startsWith("[ปุ่ม")) {
     const { userbotReady: ubReady } = await import("@/lib/kiki-userbot");
-    if (!ubReady()) return reply([{ kind: "text", text: await vexLine(`สร้างกลุ่มต้องใช้บัญชี Telegram พี่ครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน (ครั้งเดียว)`), replyTo: msgId }]);
+    if (!ubReady()) return reply([{ kind: "text", text: await vexLine(`สร้างกลุ่มต้องใช้บัญชี Telegram ของโด้ครับ ⚠️ รัน: npm run kiki:tg-auth ก่อน (ครั้งเดียว)`), replyTo: msgId }]);
     const nameM = text.match(/สร้างกลุ่ม.{0,8}(?:ชื่อ|ว่า)\s*["“']?([^"”'\n]{2,60})/);
     let title = nameM?.[1]?.trim() || "";
     if (!title) {
@@ -105,7 +105,7 @@ export const createGroupHandler: Handler = async (ctx) => {
     await setPendingFor("kiki_pending_group", channel, { title });
     return reply([{
       kind: "text",
-      text: await vexLine(`จะสร้างกลุ่ม "${title}" ผ่านบัญชีพี่ (พี่เป็นเจ้าของกลุ่มอัตโนมัติ) แล้วดึงผมเข้าไปประจำการครับ\n\nถ้าอยากได้ชื่ออื่น พิมพ์ "สร้างกลุ่มชื่อ ..." มาใหม่ได้เลย`),
+      text: await vexLine(`จะสร้างกลุ่ม "${title}" ผ่านบัญชีของโด้ (โด้เป็นเจ้าของกลุ่มอัตโนมัติ) แล้วดึงผมเข้าไปประจำการครับ\n\nถ้าอยากได้ชื่ออื่น พิมพ์ "สร้างกลุ่มชื่อ ..." มาใหม่ได้เลย`),
       replyTo: msgId,
       buttons: [[{ text: "✅ สร้างเลย", data: "kiki:grp:yes" }, { text: "❌ ยกเลิก", data: "kiki:grp:no" }]],
     }]);
@@ -130,7 +130,7 @@ export const listChatsHandler: Handler = async (ctx) => {
         return `${i + 1}. ${r.name}${r.username ? ` (@${r.username})` : ""}${r.isGroup ? " · กลุ่ม" : ""}${al ? ` — เรียกว่า "${al.alias}"` : ""}`;
       });
       return reply([
-        { kind: "text", text: `แชทล่าสุดในบัญชีพี่ (${rows.length}${kind === "user" ? " · เฉพาะคน" : kind === "group" ? " · เฉพาะกลุ่ม" : ""}):\n\n${lines.join("\n")}`, replyTo: msgId }, // canned-ok: ลิสต์รายชื่อแชทจริง
+        { kind: "text", text: `แชทล่าสุดในบัญชีของโด้ (${rows.length}${kind === "user" ? " · เฉพาะคน" : kind === "group" ? " · เฉพาะกลุ่ม" : ""}):\n\n${lines.join("\n")}`, replyTo: msgId }, // canned-ok: ลิสต์รายชื่อแชทจริง
         { kind: "text", text: await vexLine(`ตั้งชื่อเรียกเองได้เลยครับ เช่น "แชท 3 คืออั๋น แฟนผม" หรือ "แชท <ชื่อ> คือพี่ภูมิ" — ต่อไปสั่ง "ไปบอกอั๋นว่า..." ได้ทันที 🎯`) },
       ]);
     } catch (e) {
@@ -196,10 +196,10 @@ export const groupPostHandler: Handler = async (ctx) => {
       ).catch(() => "");
       if (!content.trim()) return reply([{ kind: "text", text: await vexLine(`เรียบเรียงเนื้อหาไม่สำเร็จครับ ⚠️ ลองสั่งใหม่อีกที`), replyTo: msgId }]);
       const clean = sanitizeVexText(content).text.replace(/<[^>]+>/g, "");
-      const finalHtml = `${wantTag ? `<a href="tg://user?id=${fromId}">พี่โด้</a>\n\n` : ""}${escHtml(clean)}`;
+      const finalHtml = `${wantTag ? `<a href="tg://user?id=${fromId}">โด้</a>\n\n` : ""}${escHtml(clean)}`;
       return reply([
         { kind: "text", chatId: target, parseMode: "HTML", text: finalHtml },
-        { kind: "text", text: `ส่งเข้ากลุ่ม "${titles[target] || target}" แล้วครับ ✅${wantTag ? " (แท็กพี่ไว้บรรทัดแรก)" : ""}\n\nเนื้อหาที่ส่ง:\n${clean.slice(0, 400)}${clean.length > 400 ? "..." : ""}`, replyTo: msgId }, // canned-ok: โควตเนื้อหาที่โพสต์เข้ากลุ่มจริง
+        { kind: "text", text: `ส่งเข้ากลุ่ม "${titles[target] || target}" แล้วครับ ✅${wantTag ? " (แท็กโด้ไว้บรรทัดแรก)" : ""}\n\nเนื้อหาที่ส่ง:\n${clean.slice(0, 400)}${clean.length > 400 ? "..." : ""}`, replyTo: msgId }, // canned-ok: โควตเนื้อหาที่โพสต์เข้ากลุ่มจริง
       ]);
     }
     // ไม่รู้จักกลุ่มไหนเลย → ตกไปทาง userbot ข้างล่าง (กลุ่มนอกที่ Vex ไม่ได้อยู่)
@@ -213,7 +213,7 @@ export const dmHandler: Handler = async (ctx) => {
   // ===== Telegram userbot: ส่งข้อความหาใครก็ได้ในนามเจ้าของ (ยืนยันก่อนส่งเสมอ) =====
   if (is("tg_dm")) {
     if (!userbotReady()) {
-      return reply([{ kind: "text", text: await vexLine(`ยังไม่ได้เชื่อมบัญชี Telegram พี่ครับ ⚠️ รันในเทอร์มินัล: npm run kiki:tg-auth (ครั้งเดียว) แล้วผมส่งแทนพี่ได้เลย`), replyTo: msgId }]);
+      return reply([{ kind: "text", text: await vexLine(`ยังไม่ได้เชื่อมบัญชี Telegram ของโด้ครับ ⚠️ รันในเทอร์มินัล: npm run kiki:tg-auth (ครั้งเดียว) แล้วผมส่งแทนโด้ได้เลย`), replyTo: msgId }]);
     }
     let dm: { target?: string; message?: string } | null = null;
     try {
@@ -226,14 +226,14 @@ export const dmHandler: Handler = async (ctx) => {
     } catch { dm = null; }
     if (!dm?.target || !dm.message) return reply([{ kind: "text", text: await vexLine(`บอกใหม่อีกทีครับ ใครและข้อความว่าอะไร เช่น "ไปบอกแม่ว่า เดี๋ยวกลับดึก"`), replyTo: msgId }]);
     const hits = await findPeer(dm.target).catch(() => []);
-    if (!hits.length) return reply([{ kind: "text", text: await vexLine(`หาแชท "${dm.target}" ในบัญชีพี่ไม่เจอครับ 🎯 ลองบอกชื่อตามที่โชว์ใน Telegram หรือ @username`), replyTo: msgId }]);
+    if (!hits.length) return reply([{ kind: "text", text: await vexLine(`หาแชท "${dm.target}" ในบัญชีของโด้ไม่เจอครับ 🎯 ลองบอกชื่อตามที่โชว์ใน Telegram หรือ @username`), replyTo: msgId }]);
     if (hits.length > 1) {
       return reply([{ kind: "text", text: `เจอหลายแชทครับ หมายถึงอันไหน:\n${hits.map((h, i) => `${i + 1}. ${h.name}${h.username ? ` (@${h.username})` : ""}${h.isGroup ? " · กลุ่ม" : ""}`).join("\n")}\n\nสั่งใหม่โดยระบุชื่อเต็ม/username ครับ`, replyTo: msgId }]); // canned-ok: ลิสต์แชทให้เลือก
     }
     await setPendingDm({ peerId: hits[0].id, peerName: hits[0].name, message: dm.message }, channel);
     return reply([{
       kind: "text",
-      text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีพี่ ว่า:\n\n"${dm.message}"`, // canned-ok: ข้อความที่จะส่งในนามเจ้าของ ต้องตรงตัว
+      text: `จะส่งหา ${hits[0].name}${hits[0].username ? ` (@${hits[0].username})` : ""} ในนามบัญชีของโด้ ว่า:\n\n"${dm.message}"`, // canned-ok: ข้อความที่จะส่งในนามเจ้าของ ต้องตรงตัว
       replyTo: msgId,
       buttons: [[{ text: "✅ ส่งเลย", data: "kiki:dm:yes" }, { text: "❌ ไม่ส่ง", data: "kiki:dm:no" }]],
     }]);

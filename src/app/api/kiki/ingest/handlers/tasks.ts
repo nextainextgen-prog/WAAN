@@ -24,7 +24,7 @@ export const tasksHandler: Handler = async (ctx) => {
       t.kind === "idea" ? "เก็บไว้พัฒนา" : t.kind === "waiting" ? "รออยู่" : "ต้องทำ",
       t.priority === "high" ? "สำคัญ" : "",
       t.dueDate ? `กำหนด ${t.dueDate.toLocaleDateString("th-TH-u-ca-gregory", { day: "numeric", month: "short" })}` : "",
-      t.triggerText ? `จะเตือนตอนพี่พูดถึง "${t.triggerText}"` : "จะตามเตือนจนกว่าจะปิด",
+      t.triggerText ? `จะเตือนตอนโด้พูดถึง "${t.triggerText}"` : "จะตามเตือนจนกว่าจะปิด",
     ].filter(Boolean);
     const block = vexList({ title: "จดลงกระดานงานแล้ว", items: [{ main: t.title, sub: bits.join(" · ") }] });
     return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);

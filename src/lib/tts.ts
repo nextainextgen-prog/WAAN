@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { getSetting } from "./kiki";
+import { geminiFetch } from "./gemini-usage";
 
 /**
  * ชั้นเสียงพูดของ Vex — ถอดเปลี่ยนผู้ให้บริการได้ด้วยค่าตั้งค่า
@@ -140,7 +141,7 @@ type Provider = (text: string, voice: string, model: string) => Promise<Buffer |
 const callGemini = async (text: string, voice: string, model: string): Promise<Buffer | null> => {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) return null;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+  const res = await geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -151,7 +152,7 @@ const callGemini = async (text: string, voice: string, model: string): Promise<B
       },
     }),
     signal: AbortSignal.timeout(120_000),
-  });
+  }, "tts");
   const j = (await res.json()) as {
     candidates?: { content?: { parts?: { inlineData?: { data?: string } }[] } }[];
     error?: { message?: string };

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
-import { readUsage, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
+import { readUsageCached, formatMonitorCard, monitorCardHtml } from "@/lib/usage";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { findRoleTopic } from "@/lib/roles";
 import { getAllowedChatId } from "@/lib/telegram";
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   if (!isServiceRequest(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const now = Date.now();
-  const usages = readUsage(now);
+  const usages = await readUsageCached(now);
   const nowLabel = new Date(now).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
   const { text, alerts } = formatMonitorCard(usages, nowLabel);
 

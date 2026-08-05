@@ -75,8 +75,40 @@ function kickstart(label) {
 }
 
 const AUTHERR = /invalid_grant|unauthorized|login required|เข้าสู่ระบบ|ต้องล็อกอิน|\b401\b|\b403\b|sign.?in|เซสชันหมด/i;
+// อาการ "ต่อไม่ติด" — บอกไม่ได้ว่าเซสชันหมดจริงหรือแค่ปลายทางล่ม
+// เว็บของเราล่มเมื่อไหร่ ทุก service จะพ่นคำพวกนี้พร้อมกันหมด (บทเรียน 5 ส.ค.)
 const SOFTERR = /ENOTFOUND|fetch failed|scan fail|browser has been closed|ECONNREFUSED|ETIMEDOUT/i;
 const BANNER = /พร้อมทำงาน|เฝ้า|poll ทุก|เฝ้าคำขอ|เฝ้าดู|เฝ้าแชท|watching|ready/;
+
+// ไฟล์เซสชันของแต่ละ service — ใช้ดูว่า "ล็อกอินใหม่แล้วจริงไหม" หลังเราเตือนไป
+// (ต้องประกาศเหนือลูปหลัก — เคยไว้ข้างล่างแล้ว watchdog ตายทั้งวันด้วย TDZ
+//  "Cannot access 'SESSION_FILE' before initialization" · ฟังก์ชัน hoist ได้ const ไม่ได้)
+const SESSION_FILE = {
+  drive: ".drive-token.json",
+  oho: ".oho-session.json",
+  fb: ".fb-session.json",
+  line: ".line-session.json",
+  refund: ".thunder-session.json",
+};
+function sessionRenewedAfter(name, ts) {
+  const f = SESSION_FILE[name];
+  if (!f) return true; // ไม่รู้จักไฟล์ → ใช้พฤติกรรมเดิม (ปล่อยให้เตือนใหม่ได้)
+  try {
+    return fs.statSync(path.join(ROOT, f)).mtimeMs > ts;
+  } catch {
+    return false; // ยังไม่มีไฟล์ = ยังไม่ได้ล็อกอิน → คง cooldown ไว้ อย่าเพิ่งเตือนซ้ำ
+  }
+}
+
+// เว็บตอบอยู่ไหม — ต้องรู้ก่อนตัดสินเรื่องเซสชัน
+function webAlive() {
+  try {
+    const r = execSync(`curl -s -o /dev/null -w "%{http_code}" --max-time 8 "${WEB}"`, { encoding: "utf8" }).trim();
+    return /^(200|301|302|307|308)$/.test(r);
+  } catch {
+    return false;
+  }
+}
 
 // อ่านเฉพาะบรรทัดหลัง banner ล่าสุด
 function afterBanner(logf, n = 50) {
@@ -107,6 +139,12 @@ try { state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch {}
 state.fail = state.fail || {};
 state.alerted = state.alerted || {};
 
+// เว็บล่ม = ทุก service พ่น "fetch failed" พร้อมกัน — ไม่ใช่เซสชันใครหมด
+// (เกิดจริง 5 ส.ค.: เว็บล้มเมื่อเช้า → refund.log เต็มไปด้วย fetch failed ครบ 3 รอบ
+//  → watchdog สรุปว่าเซสชัน REFUND หมด แล้วสั่งให้เจ้าของไปรัน thunder:auth ฟรี ๆ
+//  ทั้งที่เซสชันยังดีอยู่ · poll รอบถัดมาสำเร็จเอง)
+const WEB_OK = webAlive();
+
 const restarted = [];
 const expired = [];
 
@@ -121,12 +159,7 @@ for (const s of SERVICES) {
 
   // 2) web ไม่ตอบ → รีสตาร์ท
   if (s.web) {
-    let ok = false;
-    try {
-      const r = execSync(`curl -s -o /dev/null -w "%{http_code}" --max-time 8 "${WEB}"`, { encoding: "utf8" }).trim();
-      ok = /^(200|301|302|307|308)$/.test(r);
-    } catch {}
-    if (!ok) { if (kickstart(s.label)) restarted.push(s.name + " (เว็บไม่ตอบ)"); }
+    if (!WEB_OK) { if (kickstart(s.label)) restarted.push(s.name + " (เว็บไม่ตอบ)"); }
     continue;
   }
 
@@ -137,7 +170,10 @@ for (const s of SERVICES) {
   try {
     if (fs.statSync(logf).mtimeMs > now - LOG_FRESH) {
       const region = afterBanner(logf).join("\n");
-      if (AUTHERR.test(region) || SOFTERR.test(region)) failing = true;
+      // AUTHERR = หลักฐานตรงว่า auth ไม่ผ่าน → เชื่อได้เสมอ
+      // SOFTERR = แค่ "ต่อไม่ติด" → เชื่อได้ต่อเมื่อเว็บเรายังดีอยู่ ไม่งั้นคือเรากล่าวหาผิดตัว
+      if (AUTHERR.test(region)) failing = true;
+      else if (SOFTERR.test(region) && WEB_OK) failing = true;
     }
   } catch {}
   if (failing) {
@@ -153,24 +189,6 @@ for (const s of SERVICES) {
     // ใหม่: ล้าง cooldown เฉพาะเมื่อมีหลักฐานว่า "ล็อกอินใหม่จริง" = ไฟล์ session ถูกเขียนหลังเวลาที่เตือนไป
     const alertedAt = state.alerted[s.name] || 0;
     if (alertedAt && sessionRenewedAfter(s.name, alertedAt)) delete state.alerted[s.name];
-  }
-}
-
-// ไฟล์เซสชันของแต่ละ service — ใช้ดูว่า "ล็อกอินใหม่แล้วจริงไหม" หลังเราเตือนไป
-const SESSION_FILE = {
-  drive: ".drive-token.json",
-  oho: ".oho-session.json",
-  fb: ".fb-session.json",
-  line: ".line-session.json",
-  refund: ".thunder-session.json",
-};
-function sessionRenewedAfter(name, ts) {
-  const f = SESSION_FILE[name];
-  if (!f) return true; // ไม่รู้จักไฟล์ → ใช้พฤติกรรมเดิม (ปล่อยให้เตือนใหม่ได้)
-  try {
-    return fs.statSync(path.join(ROOT, f)).mtimeMs > ts;
-  } catch {
-    return false; // ยังไม่มีไฟล์ = ยังไม่ได้ล็อกอิน → คง cooldown ไว้ อย่าเพิ่งเตือนซ้ำ
   }
 }
 

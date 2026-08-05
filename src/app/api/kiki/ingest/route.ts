@@ -290,7 +290,7 @@ export async function POST(req: Request) {
       const hits = await matchTriggers(text);
       if (hits.length) {
         await markNagged(hits.map((h) => h.id));
-        triggerNote = `เตือนตามที่พี่สั่งไว้:\n${hits.map((h) => `· ${h.title}`).join("\n")}`;
+        triggerNote = `เตือนตามที่โด้สั่งไว้:\n${hits.map((h) => `· ${h.title}`).join("\n")}`;
       }
     } catch { /* ไม่มีงานเงื่อนไขก็ข้าม */ }
 

@@ -240,6 +240,13 @@ async function connectVoice() {
       selfMute: false,
     });
     connection.subscribe(player);
+    // joinVoiceChannel คืน "ตัวเดิม" ถ้า guild นั้นมี connection ค้างอยู่แล้ว
+    // ต่อกลับทีนึงก็ผูก listener ทับเพิ่มอีกชุด → ขึ้น MaxListenersExceededWarning
+    // แล้วทุก event ถูกพิมพ์ซ้ำเป็นสิบรอบ (เจอจริง 5 ส.ค. ล็อกบวมจนอ่านไม่รู้เรื่อง)
+    // ล้างของเก่าก่อนผูกใหม่เสมอ — แบบเดียวกับที่ attachReceiver ทำกับ speaking
+    connection.removeAllListeners("stateChange");
+    connection.removeAllListeners("error");
+    connection.removeAllListeners(VoiceConnectionStatus.Disconnected);
     connection.on("stateChange", (o, n) => console.log(`  voice: ${o.status} → ${n.status}`));
     connection.on("error", (e) => console.error("  voice error:", e?.message));
 
