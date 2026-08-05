@@ -147,9 +147,25 @@ export async function POST(req: Request) {
   //
   // ตัวกรอง "พูดกับเราไหม" มีไว้กันเสียงที่เขาคุยกับคนอื่น ซึ่งถูก
   // แต่ตอนที่ "เราเพิ่งถามเขาไปเอง" ประโยคถัดไปคือคำตอบแทบจะแน่นอน — ห้ามกรองทิ้ง
-  const lastSpokenNow = (await getSetting(LAST_SPOKEN_KEY)) || "";
-  const weJustAsked = /\?|ไหมครับ|มั้ยครับ|ไหม$|มั้ย$|พิมพ์.*มา|บอกมา|ส่งมา|ขอ(เบอร์|รหัส|โค้ด|OTP)/i.test(lastSpokenNow)
-    && Date.now() - Number((await getSetting(LAST_HEARD_KEY)) || 0) < 5 * 60_000;
+  // แคบไว้ให้สุด — ต้องเป็น "งานที่ค้างรออินพุตจริง ๆ" เท่านั้น
+  //
+  // รอบแรกผมเขียนกว้างเกิน (จับคำว่า "ไหมครับ" ในสิ่งที่เพิ่งพูด) ซึ่งพังทันที
+  // เพราะ Vex ลงท้ายด้วย "...ไหมครับ" แทบทุกประโยคตามบุคลิกที่โด้สั่งไว้เอง
+  // = ตัวกรอง "พูดกับเราไหม" ถูกปิดเกือบตลอดเวลา → เจ้าของบ่นว่า "ใครพูดมันก็ฟังแล้วตอบ"
+  //
+  // ตอนนี้เชื่อเฉพาะหลักฐานจากระบบจริง: มีโปรเซสที่ค้างรออินพุตอยู่หรือเปล่า
+  // (ล็อกอิน Telegram รอเบอร์/OTP/2FA) — ไม่เดาจากถ้อยคำอีกแล้ว
+  // เชื่อเฉพาะงานที่เพิ่งถามจริง ๆ ภายใน 3 นาที —
+  // เจอจริง: งานล็อกอินค้างจากเมื่อคืน ทำให้ระบบคิดว่ารออินพุตอยู่ทั้งวัน
+  // = ตัวกรองถูกปิดทิ้งไว้ตลอด ใครพูดอะไรก็รับหมด
+  const awaitingInput = await import("@/lib/vex-ops")
+    .then(async (o) => {
+      const run = await o.currentRun();
+      if (!run || o.readRunStatus(run.id) !== "running" || !o.pendingPrompt(run.id)) return false;
+      return Date.now() - (run.lastAskedAt || run.startedAt) < 3 * 60_000;
+    })
+    .catch(() => false);
+  const weJustAsked = awaitingInput && Date.now() - Number((await getSetting(LAST_HEARD_KEY)) || 0) < 5 * 60_000;
 
   const quick = quickAddressed(command, { inSession: nowInSession });
   if (quick === "no" && !weJustAsked) return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard, timing, sessionOpen: await sessionOpen() });
@@ -317,11 +333,28 @@ async function raceOrDefer(
     await setSetting(LAST_SPOKEN_KEY, spoken);
     await saveKikiChat("assistant", spoken, "owner", "discord-voice");
     void setActivity("✅", `เสร็จแล้ว: ${topic}`);
-    await queueOut({ target: "discord-voice", topic, text: spoken, priority: 3 });
+    // ทวนหัวเรื่องก่อนเสมอ — ระหว่างที่เราไปทำ เขาอาจคุยเรื่องอื่นไปแล้ว
+    // โผล่มาพูดคำตอบลอย ๆ = เขางงว่านี่ตอบอะไร (เจ้าของบ่นเรื่องนี้ตรง ๆ)
+    const label = topic.replace(/^ทำ /, "").slice(0, 40);
+    const withTopic = label && !spoken.includes(label.slice(0, 12))
+      ? `เรื่อง${label}ที่ถามไว้นะครับ ${spoken}`
+      : spoken;
+    await queueOut({ target: "discord-voice", topic, text: withTopic, priority: 3 });
   })();
 
+  // ===== บอกให้ตรงเรื่อง ไม่ใช่ "รับทราบครับ เดี๋ยวไปหาให้" ทุกครั้ง =====
+  //
+  // เจ้าของบ่น: "มันพูดแต่รับทราบครับเดี๋ยวไปหาให้ตลอด ต้องปรับให้ตอบตามสถานการณ์นั้น ๆ"
+  // คลังเสียงสำเร็จรูปพูดเหมือนเดิมทุกครั้งจริง เพราะมันคือไฟล์อัดไว้ชุดเดียว
+  // → ประกอบประโยคจากเรื่องที่กำลังทำแทน เขาจะได้รู้ว่าเรากำลังทำอะไรให้อยู่
+  //   (ยังเป็นเสียงสังเคราะห์สด แต่เนื้อความตรงกับสิ่งที่เกิดขึ้นจริง)
+  const shortTopic = topic.replace(/^ทำ /, "").slice(0, 40);
   timing.รวม = Date.now() - t0;
-  return NextResponse.json({ action: { do: "cue", bank: "onit" }, heard, timing, sessionOpen: await sessionOpen(), background: true });
+  return NextResponse.json({
+    // ถ้าให้ AI เรียบเรียงจะกลายเป็นเคลมว่าทำเสร็จแล้ว (เคยพลาดมาแล้ว)
+    action: { do: "say", text: `ขอเวลาแป๊บนะครับ กำลังดูเรื่อง${shortTopic}ให้อยู่`, brief: true }, // canned-ok: บอกว่ายังไม่เสร็จ ต้องคงรูปเดิม
+    heard, timing, sessionOpen: await sessionOpen(), background: true,
+  });
 }
 
 /** ส่งเข้าสมองเดียว (ทะเบียนตัวจัดการ 57 ตัว) แล้วย่อผลให้พูดออกเสียงได้ */
