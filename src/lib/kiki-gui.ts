@@ -241,7 +241,7 @@ export async function typeInApp(opts: {
     if (after) {
       shots.push({ label: "หลังกดส่ง", path: after });
       // ตรวจด้วยตาว่าข้อความขึ้นในห้องจริงไหม — กดปุ่มแล้วไม่ได้แปลว่าส่งสำเร็จ
-      verified = await seenOnScreen(after, opts.text);
+      verified = await seenOnScreen(after, opts.text, resolved.app);
     }
     sent = verified !== false;
   }
@@ -262,17 +262,31 @@ export async function typeInApp(opts: {
  * ตรวจด้วยวิชันว่าข้อความที่เพิ่งส่งขึ้นบนหน้าจอจริงไหม
  * (เจ้าของสั่งไว้ตั้งแต่ต้น: ห้ามเคลมว่าทำแล้วถ้าไม่มีหลักฐาน — กดคีย์ไม่เท่ากับส่งสำเร็จ)
  * คืน null = ตรวจไม่ได้ (ถือว่าไม่ยืนยัน แต่ไม่ฟันธงว่าล้มเหลว)
+ *
+ * **กับดักที่เจอตอนเทสจริง 5 ส.ค. 2026 — ภาพหลักฐานอาจเป็นของคนละ Space**
+ * `screencapture` เก็บได้แค่ Space ที่กำลังแสดงอยู่บนจอหลัก ถ้าหน้าต่างแอปเป้าหมาย
+ * อยู่คนละ Space (เจ้าของจัด Warp ไว้อีกเดสก์ท็อป) ภาพที่ได้จะเป็นของแอปอื่นทั้งใบ
+ * ผลคือ: **คำสั่งรันสำเร็จจริง แต่ระบบรายงานว่า "ส่งไม่สำเร็จ"** (พิสูจน์แล้วด้วยไฟล์ token)
+ * → จึงต้องถามวิชันเพิ่มว่า "ภาพนี้เป็นของแอปที่เราสั่งไหม" ไม่ใช่ก็คืน null (ตรวจไม่ได้)
+ *   ไม่ใช่ false — เพราะ "มองไม่เห็น" คนละเรื่องกับ "เห็นแล้วว่าไม่มี"
  */
-export async function seenOnScreen(shotPath: string, text: string): Promise<boolean | null> {
+export async function seenOnScreen(shotPath: string, text: string, app?: string): Promise<boolean | null> {
   try {
     const { askExtractor } = await import("./kiki");
     const raw = await askExtractor(
-      `ดูภาพหน้าจอที่ path นี้: ${shotPath}\n\nข้อความที่เพิ่งพยายามส่งคือ: """${text.slice(0, 200)}"""\n\nข้อความนี้ปรากฏเป็น "ข้อความที่ส่งไปแล้ว" ในหน้าต่างแชท/เทอร์มินัลบนภาพหรือยัง (ไม่นับกรณีที่ยังค้างอยู่ในช่องพิมพ์)\nตอบ JSON เท่านั้น: {"sent":true/false,"where":"เห็นตรงไหน หรือเหตุผลสั้น ๆ"}`,
+      `ดูภาพหน้าจอที่ path นี้: ${shotPath}\n\nข้อความที่เพิ่งพยายามส่งคือ: """${text.slice(0, 200)}"""\n` +
+        (app ? `แอปที่ควรอยู่ในภาพคือ: ${app}\n` : "") +
+        `\nตอบ JSON เท่านั้น: {"appVisible":true/false,"sent":true/false,"where":"เห็นตรงไหน หรือเหตุผลสั้น ๆ"}\n` +
+        `appVisible: ในภาพเห็นหน้าต่างของแอปที่ระบุไว้ไหม (ไม่ระบุแอป = ตอบ true)\n` +
+        `sent: ข้อความนั้นปรากฏเป็น "ข้อความที่ส่งไปแล้ว" ในหน้าต่างแชท/เทอร์มินัลหรือยัง (ยังค้างในช่องพิมพ์ไม่นับ)`,
       { imagePaths: [shotPath], timeoutMs: 60_000 },
     );
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
-    return Boolean((JSON.parse(m[0]) as { sent?: boolean }).sent);
+    const j = JSON.parse(m[0]) as { sent?: boolean; appVisible?: boolean };
+    // ภาพไม่มีแอปเป้าหมายอยู่เลย = ตรวจไม่ได้ ห้ามฟันธงว่าล้มเหลว
+    if (app && j.appVisible === false) return null;
+    return Boolean(j.sent);
   } catch {
     return null;
   }
@@ -329,9 +343,34 @@ export async function switchTo(app: string, target: string): Promise<GuiResult> 
   }
 }
 
-/** สั่งคำสั่งใน Warp แล้วรอผล + แคปหน้าจอ */
+/**
+ * สั่งคำสั่งใน Warp แล้วรอผล + แคปหน้าจอ
+ *
+ * **เปิดแท็บใหม่เสมอถ้าเจ้าของไม่ได้ระบุแท็บ** (เจ้าของเตือนเอง 5 ส.ค. 2026)
+ * เดิมพิมพ์ลงแท็บที่โฟกัสอยู่ ซึ่งบ่อยครั้งคือแท็บที่มีเซสชัน Claude กำลังทำงานอยู่
+ * → คำสั่งจะกลายเป็นข้อความสั่ง Claude แทนที่จะเป็นคำสั่งเชลล์ กวนงานที่รันค้างอยู่
+ * แท็บใหม่ = พื้นที่สะอาด ไม่มีอะไรให้กวน · ระบุแท็บมาเอง = เจ้าของรับผิดชอบเอง ไม่แตะ
+ */
 export async function runInWarp(command: string, opts: { tab?: string; waitMs?: number } = {}): Promise<GuiResult> {
+  const shots: { label: string; path: string }[] = [];
+  if (!opts.tab) {
+    try {
+      await osa(`tell application "Warp" to activate`);
+      await wait(1200);
+      await pressKey("t", ["command down"]); // Cmd+T = แท็บใหม่
+      await wait(1500);
+      const s = await snap("warpnewtab");
+      if (s) shots.push({ label: "เปิดแท็บใหม่ (ไม่แตะแท็บที่ทำงานค้างอยู่)", path: s });
+    } catch {
+      // เปิดแท็บใหม่ไม่ได้ = ห้ามพิมพ์ลงแท็บเดิม เสี่ยงไปกวนเซสชันที่รันอยู่
+      return {
+        ok: false, app: "Warp", sent: false, shots,
+        problem: "เปิดแท็บใหม่ใน Warp ไม่ได้ — ไม่พิมพ์ลงแท็บเดิมเพราะอาจไปกวนงานที่รันค้างอยู่",
+      };
+    }
+  }
   const r = await typeInApp({ app: "Warp", target: opts.tab, text: command, send: true });
+  r.shots.unshift(...shots);
   if (!r.ok) return r;
   await wait(opts.waitMs ?? 4000); // รอคำสั่งทำงานก่อนแคปผล
   const s = await snap("warpresult");

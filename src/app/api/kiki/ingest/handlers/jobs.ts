@@ -1,6 +1,7 @@
 import { vexLine, askKiki, saveKikiChat } from "@/lib/kiki";
 import { jobStatusReport, markUrgent, planJob, pushFocus, MAX_CONCURRENT } from "@/lib/kiki-jobs";
 import { findJobByDelivered } from "@/lib/kiki-hermes";
+import { isYoutubeUrl } from "@/lib/kiki";
 import type { Ctx, Handler } from "../types";
 
 /**
@@ -46,8 +47,13 @@ export const jobStatusHandler: Handler = async (ctx) => {
 const LONG_INTENTS = ["web_research", "shopping", "doc_summary"];
 
 export const autoBackgroundHandler: Handler = async (ctx: Ctx) => {
-  const { text, replyText, chatId, msgId, route, is, channel, reply } = ctx;
+  const { text, replyText, chatId, msgId, route, is, channel, urls, reply } = ctx;
   if (!LONG_INTENTS.some((i) => is(i))) return null;
+
+  // คลิป YouTube ห้ามฝาก Hermes เด็ดขาด — Hermes ดูคลิปไม่ได้ มันขูดหน้าเว็บแล้วเล่าจากนั้น
+  // เจอตอนเทสจริง 5 ส.ค.: คลิปดัง ๆ ยังได้คำตอบถูกเพราะมีบทความให้ขูด แต่คลิปที่ไม่มีใครเขียนถึงจะพังเงียบ
+  // ท่อของ Vex เอง (summarizeYoutube) ดูภาพจริง — เทสแล้วบรรยายได้ถึงสีเสื้อ/โซ่ที่ขาช้าง/ฟางแขวน
+  if (urls.some(isYoutubeUrl)) return null;
   // เจ้าของสั่ง "ฝาก" เองอยู่แล้ว = ตัวจัดการ hermes รับไปก่อนหน้านี้แล้ว
   // replyText ต้องส่งเข้าไปด้วย ไม่งั้น "ไปหาใหม่หน่อย งบ 500" ออกไปโดยไม่มีคำว่า "หาอะไร" ติดไปเลย
   const plan = await planJob(text, route.intent, replyText);

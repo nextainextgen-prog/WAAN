@@ -14,6 +14,11 @@ export const hermesHandler: Handler = async (ctx) => {
     text.match(/^\s*(?:ผม)?(?:ฝาก|ให้)\s*(?:เฮอ(?:ร์)?เ?มี?ส|hermes)\s*(?:ไป|ช่วย|ทำ|จัดการ)?\s*[:：]?\s*([\s\S]{5,})/i) ||
     (!/ฝากบอก|ฝากแคป|ฝากทัก/.test(text) ? text.match(/^\s*(?:ผม)?ฝาก(?:มัน|ไป)\s*(?:ไป)?((?:สร้าง|ทำ|จัด|หา|เช็ค|รวบรวม|เตรียม)[\s\S]{5,})/) : null);
   if (hermesM || is("hermes")) {
+    // คลิป YouTube = งานที่ Hermes ทำไม่ได้จริง (มันดูคลิปไม่ได้ ได้แค่ขูดหน้าเว็บมาเล่า)
+    // ต่อให้เจ้าของสั่ง "ฝาก Hermes" ตรง ๆ ก็ต้องทำเอง ดีกว่าส่งไปแล้วได้ของปลอม
+    const { isYoutubeUrl } = await import("@/lib/kiki");
+    if (ctx.urls.some(isYoutubeUrl)) return null; // ปล่อยให้ท่ออ่านของ Vex รับไป (ดูคลิปจริง)
+
     const { kikiHermesReady, queueHermesJob } = await import("@/lib/kiki-hermes");
     if (!kikiHermesReady()) return reply([{ kind: "text", text: await vexLine(`Hermes ยังไม่พร้อมใช้ในเครื่องครับ ⚠️ (หา CLI ไม่เจอ)`), replyTo: msgId }]);
     const task = (hermesM?.[1] || text).trim();
