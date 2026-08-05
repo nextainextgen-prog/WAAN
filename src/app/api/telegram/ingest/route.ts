@@ -829,11 +829,6 @@ export async function POST(req: Request) {
     // Thunder: คลังความรู้ (สอน/ค้นลูกค้า/ตอบจากคลัง) — คืน null ถ้าไม่ตรง ให้ไหลต่อ
     const kbReply = await handleThunderKnowledge(text, threadId);
     if (kbReply) return NextResponse.json({ sends: kbReply });
-    // ห้องคุมระบบ: ยืนยันรันคำสั่ง / คุมเครื่อง — เฉพาะเจ้าของ (id ตัวเลข) คนอื่นพิมพ์ "รันเลย" = เมินเงียบ
-    if (ownerHere) {
-      const ops = await handleOps(text, chatId, threadId, replyText);
-      if (ops) return NextResponse.json({ sends: ops });
-    }
     // Thunder: รายงานแชทประจำวัน (ผูกห้อง / ถามย้อนหลัง)
     const chatRep = await handleChatReport(text, chatId, threadId);
     if (chatRep) return NextResponse.json({ sends: chatRep });
@@ -864,6 +859,14 @@ export async function POST(req: Request) {
   // /start หรือทักทาย
   if (/^\/start$/i.test(text)) {
     return NextResponse.json({ sends: [{ kind: "text", text: WELCOME }] as Send[] });
+  }
+
+  // ===== ยืนยันรันคำสั่งกู้ระบบ — เฉพาะเจ้าของ (Telegram id ตัวเลข) =====
+  // อยู่นอกบล็อกกลุ่มโดยตั้งใจ: แจ้งเตือนเซสชันไปเข้าแชทส่วนตัว การตอบ "รันเลย" จึงต้องทำงานที่นั่นด้วย
+  // คนอื่นพิมพ์คำเดียวกันในกลุ่ม → ownerHere เป็น false → เมินเงียบ
+  if (ownerHere) {
+    const ops = await handleOps(text, chatId, threadId, replyText);
+    if (ops) return NextResponse.json({ sends: ops });
   }
 
   // ===== ตั้งบทบาทของห้อง (topic) — เจ้าของเท่านั้น =====

@@ -29,8 +29,8 @@
     "fb:watch": "node scripts/fb-watch.mjs",
     "line:auth": "node scripts/line-auth.mjs",
     "line:watch": "node scripts/line-watch.mjs",
-    "status": "bash scripts/status.sh",
-    "status:once": "bash scripts/status.sh once",
+    "status": "node scripts/status.mjs",
+    "status:once": "node scripts/status.mjs once",
     "watchdog": "node scripts/watchdog.mjs",
     "usage": "node scripts/usage-cli.mjs",
     "thunder:ingest": "tsx --tsconfig tsconfig.json scripts/thunder-ingest.ts",
@@ -39,7 +39,8 @@
     "kiki:chrome": "node scripts/kiki-chrome-start.mjs",
     "kiki:check": "node scripts/kiki-check-canned.mjs",
     "kiki:discord": "node scripts/kiki-discord.mjs",
-    "vex:eyes": "node scripts/vex-eyes.mjs"
+    "vex:eyes": "node scripts/vex-eyes.mjs",
+    "status:old": "bash scripts/status.sh"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

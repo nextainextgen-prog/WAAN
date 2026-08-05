@@ -134,7 +134,10 @@ export async function resolveConfirm(
 }
 
 export const CONFIRM_RE = /^\s*(รันเลย|รันได้เลย|เอาเลย|จัดเลย|ทำเลย|ok\s*run|run\s*it|ยืนยัน(รัน)?)\s*[ค่ะครับนะ.!]*\s*$/i;
-export const CONFIRM_LOOSE_RE = /(รันเลย|รันได้เลย|รันให้เลย|เอาเลย|จัดเลย|ทำเลย|ยืนยันรัน)/i;
+// รวม "รัน <ชื่อ service>" ด้วย — พี่โด้พิมพ์ "รัน REFUND" แล้วเดิมหลุดไปให้ AI ตอบมั่ว (เคสจริง 4 ส.ค. 2026)
+// ชื่อ service ที่พิมพ์มาจะถูก resolveConfirm เอาไปจับคู่กับใบที่ค้างอยู่อีกที ไม่ได้เอาไปรันตรง ๆ
+export const CONFIRM_LOOSE_RE =
+  /(รันเลย|รันได้เลย|รันให้เลย|เอาเลย|จัดเลย|ทำเลย|ยืนยันรัน|^\s*รัน\s+[a-zA-Z][\w:.-]*\s*$)/i;
 
 // ===== รันจริง =====
 export interface RunResult {

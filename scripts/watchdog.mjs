@@ -148,7 +148,29 @@ for (const s of SERVICES) {
     }
   } else {
     state.fail[s.name] = 0;
-    delete state.alerted[s.name]; // หายแล้ว → ครั้งหน้าเตือนใหม่ได้
+    // เดิม: log ไม่มี error รอบนี้ = ลบ alerted ทิ้งทันที → cooldown 6 ชม. ใช้ไม่ได้จริง
+    // เพราะ service ที่เซสชันหมดจะ "เงียบ" เป็นช่วง ๆ (ไม่มี error ใหม่เขียนลง log) แล้ววนเตือนซ้ำทุก ~30 นาที
+    // ใหม่: ล้าง cooldown เฉพาะเมื่อมีหลักฐานว่า "ล็อกอินใหม่จริง" = ไฟล์ session ถูกเขียนหลังเวลาที่เตือนไป
+    const alertedAt = state.alerted[s.name] || 0;
+    if (alertedAt && sessionRenewedAfter(s.name, alertedAt)) delete state.alerted[s.name];
+  }
+}
+
+// ไฟล์เซสชันของแต่ละ service — ใช้ดูว่า "ล็อกอินใหม่แล้วจริงไหม" หลังเราเตือนไป
+const SESSION_FILE = {
+  drive: ".drive-token.json",
+  oho: ".oho-session.json",
+  fb: ".fb-session.json",
+  line: ".line-session.json",
+  refund: ".thunder-session.json",
+};
+function sessionRenewedAfter(name, ts) {
+  const f = SESSION_FILE[name];
+  if (!f) return true; // ไม่รู้จักไฟล์ → ใช้พฤติกรรมเดิม (ปล่อยให้เตือนใหม่ได้)
+  try {
+    return fs.statSync(path.join(ROOT, f)).mtimeMs > ts;
+  } catch {
+    return false; // ยังไม่มีไฟล์ = ยังไม่ได้ล็อกอิน → คง cooldown ไว้ อย่าเพิ่งเตือนซ้ำ
   }
 }
 

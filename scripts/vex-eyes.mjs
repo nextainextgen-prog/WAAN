@@ -13,6 +13,7 @@ import path from "node:path";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
+import { execSync } from "node:child_process";
 
 function loadEnv() {
   const p = path.join(process.cwd(), ".env");
@@ -33,8 +34,34 @@ if (!fs.existsSync(SESSION_PATH)) {
   process.exit(1);
 }
 
-// ห้องที่ไม่ต้องเฝ้า — เจ้าของสั่งเพิ่มได้ทีหลังผ่านการตั้งค่า
+// ห้องที่ไม่ต้องเฝ้า
 const IGNORE_RE = /telegram|spam|proxy|บอท|bot$/i;
+
+/**
+ * รายชื่อแชทที่ให้เฝ้า — อ่านสดจาก DB ทุกข้อความ (เปลี่ยนได้โดยไม่ต้องรีสตาร์ท)
+ *
+ * เจ้าของสั่งปิด 5 ส.ค. 2026: "ระบบที่จับข้อความตอนนี้ปิดรับไปก่อน
+ * ถ้าจะให้จับข้อความไหนเดี๋ยวผมบอกอีกที"
+ *
+ *   ว่าง / ไม่มีค่า = ปิดสนิท ไม่จับอะไรเลย (ค่าเริ่มต้นตอนนี้)
+ *   ["*"]           = จับทุกแชท
+ *   ["อั๋น","แม่"]  = จับเฉพาะที่ชื่อตรงกับในรายการ
+ */
+function watchList() {
+  try {
+    const v = execSync(`sqlite3 "${path.join(process.cwd(), "prisma/changoh.db")}" "SELECT value FROM Setting WHERE key='vex_eyes_watch' LIMIT 1;"`, { encoding: "utf8" }).trim();
+    return v ? JSON.parse(v) : [];
+  } catch {
+    return [];
+  }
+}
+
+function shouldWatch(list, chatName, fromName) {
+  if (!list.length) return false;               // ปิดอยู่
+  if (list.includes("*")) return true;          // เปิดหมด
+  const hay = `${chatName} ${fromName}`.toLowerCase();
+  return list.some((w) => hay.includes(String(w).toLowerCase()));
+}
 
 async function main() {
   const session = new StringSession(fs.readFileSync(SESSION_PATH, "utf8").trim());
@@ -48,7 +75,13 @@ async function main() {
     process.exit(1);
   }
   const me = await client.getMe();
-  console.log(`ตาของ Vex เปิดแล้ว: เฝ้าบัญชี ${me.firstName || ""} (${me.id}) · ส่งเข้า ${APP_URL}/api/kiki/event`);
+  const list = watchList();
+  console.log(`ตาของ Vex ต่อบัญชี ${me.firstName || ""} (${me.id}) แล้ว`);
+  console.log(
+    list.length
+      ? `  รายการที่เฝ้า: ${list.includes("*") ? "ทุกแชท" : list.join(" · ")}`
+      : `  ยังไม่เฝ้าแชทไหนเลย (ปิดอยู่) — สั่งเปิดผ่านแชทได้ เช่น "เฝ้าแชทอั๋น" หรือ "เฝ้าทุกแชท"`,
+  );
 
   client.addEventHandler(async (event) => {
     try {
@@ -65,6 +98,10 @@ async function main() {
         sender?.username || chat?.title || "ไม่ทราบชื่อ";
       const chatName = chat?.title || fromName;
       if (IGNORE_RE.test(chatName)) return;
+
+      // ปิดอยู่ / ไม่อยู่ในรายการที่สั่งให้เฝ้า = ไม่แตะเลย ไม่เปลืองอะไรทั้งนั้น
+      const list = watchList();
+      if (!shouldWatch(list, chatName, fromName)) return;
 
       const peerId = String(chat?.id ?? sender?.id ?? "");
       const res = await fetch(APP_URL + "/api/kiki/event", {

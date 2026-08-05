@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { getBotToken, tgSendMessage, getAllowedChatId } from "@/lib/telegram";
-import { addPending, getOpsChatId, isAllowedScript } from "@/lib/waan-ops";
-import { db } from "@/lib/db";
+import { addPending, isAllowedScript } from "@/lib/waan-ops";
 
 export const runtime = "nodejs";
 
@@ -23,28 +22,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "service/script ไม่ถูกต้องหรือไม่อยู่ใน allowlist" }, { status: 400 });
   }
 
-  const opsChat = await getOpsChatId();
-  const chatId = opsChat || (await getAllowedChatId());
-  if (!chatId) return NextResponse.json({ ok: false, error: "ยังไม่ได้ผูกห้องคุมระบบ" }, { status: 400 });
+  // แจ้งเข้า "แชทส่วนตัวของพี่โด้" เสมอ — เรื่องเซสชันหมดอายุเป็นงานหลังบ้าน คนอื่นในกลุ่มไม่ต้องเห็น
+  // (พี่โด้สั่งย้ายกลับจากกลุ่ม Leader เมื่อ 5 ส.ค. 2026 — ห้ามย้ายกลับไปกลุ่มโดยไม่ได้สั่ง)
+  const chatId = await getAllowedChatId();
+  if (!chatId) return NextResponse.json({ ok: false, error: "ยังไม่รู้แชทเจ้าของ" }, { status: 400 });
 
   const item = await addPending(service, script, String(chatId));
   if (!item) return NextResponse.json({ ok: false, error: "ตั้งคำขอไม่สำเร็จ" }, { status: 400 });
 
-  const owner = await ownerTag();
-  // ข้อความสั้น ไม่ต้องสอนวิธีตอบ (พี่โด้รู้อยู่แล้ว — สั่งไว้ 3 ส.ค. 2026)
+  // ข้อความสั้น ไม่ต้องสอนวิธีตอบ ไม่ต้องแท็ก (แชทส่วนตัว มีพี่โด้คนเดียวอยู่แล้ว)
   const text =
-    `🔑 <b>เซสชัน ${service.toUpperCase()} หมดอายุ</b>${owner ? ` — ${owner}` : ""}\n` +
+    `🔑 <b>เซสชัน ${service.toUpperCase()} หมดอายุ</b>\n` +
     `ให้ผมรัน <code>npm run ${script}</code> ให้เลยไหมครับ`;
 
   const res = await tgSendMessage(chatId, text, { parse_mode: "HTML", disable_web_page_preview: true });
   return NextResponse.json({ ok: true, chatId, pending: item, sent: Boolean((res as { ok?: boolean })?.ok) });
-}
-
-// แท็กเจ้าของด้วย tg://user?id= (ใช้ได้แม้ไม่มี username — ต้องเป็นสมาชิกกลุ่ม)
-async function ownerTag(): Promise<string> {
-  const id = await getAllowedChatId();
-  if (!id) return "";
-  const row = await db.setting.findUnique({ where: { key: "owner_display_name" } }).catch(() => null);
-  const name = row?.value?.trim() || "พี่โด้";
-  return `<a href="tg://user?id=${id}">${name}</a>`;
 }
