@@ -886,13 +886,33 @@ const VOICE_STYLE = `=== สำคัญที่สุด: ตอนนี้�
 - เขาขัดจังหวะได้ตลอด ไม่ต้องเกรงใจ หยุดแล้วรับเรื่องใหม่เลย
 - ถ้าเขากำลังคิดอยู่ อย่ารีบยัดคำตอบ ปล่อยให้เงียบได้`;
 
-export async function askKikiVoice(message: string, extraContext?: string): Promise<string> {
-  const [rules, facts, convo, tasks, focus] = await Promise.all([
+export async function askKikiVoice(
+  message: string,
+  extraContext?: string,
+  opts: { withFacts?: boolean } = {},
+): Promise<string> {
+  const [rules, facts, convo, tasks, focus, gathered] = await Promise.all([
     vexRulesContext().catch(() => ""),
     ownerFactsContext().catch(() => ""),
     kikiConversation(12).catch(() => ""),   // 12 ข้อความพอ (เต็มรูปแบบใช้ 40 = ช้าโดยเปล่าประโยชน์)
     import("./kiki-tasks").then((t) => t.tasksContext()).catch(() => ""),
     import("./kiki-jobs").then((j) => j.focusContext()).catch(() => ""),
+    // ===== ไปหาข้อเท็จจริงจริง ๆ ก่อนตอบ (เฟส 2 — 5 ส.ค. 2026) =====
+    //
+    // นี่คือจุดที่ทำให้เจ้าของบ่นว่า "ถามอะไรก็บอกไม่รู้"
+    // ชั้นหาข้อมูล (ค้นเว็บ · อ่านลิงก์ · การเงิน · ปฏิทิน · งาน · ความจำ) มีมาตั้งแต่แรก
+    // แต่ฝั่งข้อความมีเงื่อนไข `!voiceNote` กันไว้ = พูดมาเป็นเสียงเมื่อไหร่ ข้ามการหาข้อมูลทั้งหมด
+    // เหตุผลตอนนั้นคือ "เสียงต้องตอบไว" ซึ่งถูก แต่แลกมาด้วยการตอบว่าไม่รู้ทุกเรื่อง
+    // เคสจริง: "18:00 ฝนจะตกมั้ย" → ตอบว่าไม่มีข้อมูลพยากรณ์อากาศ ทั้งที่ค้นเว็บได้
+    //
+    // ตอนนี้หาได้แล้ว และความไวไปฝากไว้กับตัวจับเวลาที่ /api/kiki/voice แทน
+    // (เกิน 3.5 วิ = พูด "ขอเวลาแป๊บนะ" แล้วส่งผลตามทีหลัง) — ได้ทั้งเร็วและรู้จริง
+    opts.withFacts && message.trim().length >= 6
+      ? import("./kiki-agent")
+          .then((a) => a.gatherFacts(message))
+          .then((g) => g.notes)
+          .catch(() => "")
+      : Promise.resolve(""),
   ]);
   const now = new Date();
   const sys = [
@@ -900,6 +920,11 @@ export async function askKikiVoice(message: string, extraContext?: string): Prom
     rules,
     `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`,
     facts, tasks, focus, convo, extraContext || "",
+    gathered
+      ? `=== ข้อเท็จจริงที่ระบบไปหามาให้สด ๆ ก่อนตอบ (เชื่อถือได้ ใช้ตอบได้เลย) ===\n${gathered}\n\n` +
+        `ตัวเลข ราคา วันที่ ชื่อรุ่น ในนี้ต้องยกมาให้ตรง ห้ามปัด ห้ามแต่งเพิ่ม\n` +
+        `ถ้าในนี้บอกว่าหาไม่เจอ ให้บอกโด้ตรง ๆ ห้ามเดาแทน`
+      : "",
     VOICE_STYLE,
   ].filter(Boolean).join("\n\n");
 

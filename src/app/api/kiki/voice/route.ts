@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { isServiceRequest } from "@/lib/auth";
 import { transcribeAudio, kikiConversation, getSetting, setSetting, saveKikiChat, askKikiVoice } from "@/lib/kiki";
 import { setActivity } from "@/lib/kiki-monitor";
+import { routeIntent } from "@/lib/kiki-router";
 import {
   getMode, setMode, MODE_LABEL, matchWake, isStopCommand, isUndoCommand, matchModeCommand,
   isCloseCommand, quickAddressed, addressedToVex, looksLikeEcho, maybeWakeShort,
@@ -27,8 +28,27 @@ export const maxDuration = 240;
 const LAST_SPOKEN_KEY = "vex_last_spoken";
 const LAST_HEARD_KEY = "vex_last_heard_at";
 
-/** งานที่รู้ทั้งที่ยังไม่ต้องคิดว่าต้องออกไปหาข้อมูลข้างนอก = ตอบรับก่อนแล้วค่อยไปทำ */
-const NEEDS_LOOKUP = /หา|ค้น|เช็ค(ราคา|ดู)|ราคา|รีวิว|เปรียบเทียบ|ที่พัก|โรงแรม|ร้าน|คอร์ส|ข่าว|สรุปเว็บ|อ่านลิงก์/;
+/**
+ * เจตนาที่เป็นการ "ถาม/อ่าน" ล้วน ๆ — ตอบในเส้นเสียงเอง ไม่ต้องส่งเข้าทะเบียน
+ *
+ * เพราะชั้นหาข้อเท็จจริง (kiki-agent) มีเครื่องมืออ่านครบอยู่แล้ว:
+ *   ค้นเว็บ · อ่านลิงก์ · การเงิน · ปฏิทิน · งาน · ความจำ · ข้อมูลเจ้าของ
+ * และมันใช้ Gemini ซึ่งเร็วกว่าตัวจัดการฝั่งข้อความที่เรียก Claude CLI (15-45 วินาที) มาก
+ *
+ * เคสจริง 5 ส.ค.: ถาม "วันนี้ฝนตกไหม" → route เป็น web_research → ส่งเข้าทะเบียน
+ * → ตัวจัดการเรียก Claude CLI → ช้าจนตกไปทางสำรอง → ได้คำตอบว่า "เดี๋ยวเช็กให้"
+ * ทั้งที่ควรค้นแล้วตอบเลยในรอบเดียว
+ *
+ * ที่เหลือ (บันทึกเงิน · ลงปฏิทิน · ส่งแชท · คุมเครื่อง · เปิดเพลง) = การกระทำจริง
+ * ต้องผ่านทะเบียนเท่านั้น เพราะเส้นเสียงลงมือทำเองไม่ได้ (กติกา: สมองเดียว ท่อหลายทาง)
+ */
+const READ_ONLY_INTENTS = new Set([
+  "chat", "web_research", "shopping",
+  "finance_query", "finance_analyze", "finance_health", "finance_forecast",
+  "calendar_view", "task_list", "memory_recall", "memory_list", "rule_list",
+]);
+
+
 
 export async function POST(req: Request) {
   if (!isServiceRequest(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -129,81 +149,133 @@ export async function POST(req: Request) {
   await touchSession();
   await saveKikiChat("user", command, "owner", "discord-voice");
 
-  // ===== งานที่ต้องออกไปหาข้อมูล = ตอบรับก่อน แล้วไปทำเบื้องหลัง =====
-  // เจ้าของสั่ง: "ถ้าผมบอกแล้วก็พูดทันทีว่า รับทราบครับ เดี๋ยวไปหาข้อมูลให้"
-  if (NEEDS_LOOKUP.test(command) && command.length > 8) {
-    void setActivity("🔍", `กำลังหา: ${command.slice(0, 50)}`);
-    void runInBackground(command);
-    return NextResponse.json({ action: { do: "cue", bank: "onit" }, heard, timing, sessionOpen: await sessionOpen(), background: true });
+  // ===== เลือกทางด้วยเจตนา ไม่ใช่ด้วยคำ (เฟส 2 — 5 ส.ค. 2026) =====
+  //
+  // ของเดิมใช้ regex ฟิกคำ 12 คำ (หา|ค้น|ราคา|รีวิว|...) ตัดสินว่าต้องออกไปหาข้อมูลไหม
+  // ผลคือ "18:00 ฝนจะตกมั้ย" ไม่มีสักคำในนั้น → ไม่ออกไปหา → ตอบว่าไม่รู้
+  // และผิดกติกาข้อ 1 ของเราเอง (ห้ามตัดสินใจด้วย regex)
+  //
+  // ตอนนี้ใช้ตัวจัดเส้นทางตัวเดียวกับฝั่งข้อความ = เส้นเสียงเข้าถึงความสามารถครบทั้ง 57 ตัว
+  //   เจตนาที่เป็น "การกระทำ" (เปิดเพลง · ส่งแชท · จัดหมวดเงิน · คุมเครื่อง) → ส่งเข้าสมองเดียว
+  //   เจตนาที่เป็น "คำถาม/คุย"                                              → ตอบเร็วในเส้นเสียง
+  const tRoute = Date.now();
+  const route = await routeIntent({ text: command, convo: await kikiConversation(6).catch(() => "") })
+    .catch(() => ({ intent: "chat", confidence: 0, args: {} }));
+  mark("อ่านเจตนา", tRoute);
+
+  // ปลายทางที่ "ลงมือทำ" ต้องผ่านทะเบียนตัวจัดการจริงเท่านั้น เส้นเสียงทำเองไม่ได้
+  // (คุยเล่น/ถามความเห็น/ถามข้อมูล ปล่อยให้เส้นเสียงตอบเองเพื่อความเร็ว)
+  const isAction = !READ_ONLY_INTENTS.has(route.intent) && route.confidence >= 0.5;
+  if (isAction) {
+    void setActivity("⚙️", `${route.intent}: ${command.slice(0, 40)}`);
+    return await raceOrDefer(command, `ทำ ${route.intent}`, heard, timing, t0, () => runThroughBrain(command));
   }
 
-  // ===== สายด่วน: ตอบเลย =====
+  // ===== คำถาม/คุย: ตอบเร็ว แต่ต้องมีข้อเท็จจริงจริง =====
   void setActivity("🧠", `กำลังคิด: ${command.slice(0, 50)}`);
-  const tBrain = Date.now();
-  let spoken = "";
-  try {
-    spoken = await askKikiVoice(command);
-  } catch {
-    spoken = "";
-  }
-  mark("คิดคำตอบ", tBrain);
-  if (!spoken) return NextResponse.json({ action: { do: "cue", bank: "broke" }, heard, timing, sessionOpen: await sessionOpen() });
-
-  await setSetting(LAST_SPOKEN_KEY, spoken);
-  await saveKikiChat("assistant", spoken, "owner", "discord-voice");
-  timing.รวม = Date.now() - t0;
-  void setActivity("🗣️", "กำลังพูดตอบ");
-  return NextResponse.json({ action: { do: "say", text: spoken }, heard, timing, sessionOpen: await sessionOpen() });
+  return await raceOrDefer(command, command.slice(0, 40), heard, timing, t0, async () => {
+    const tBrain = Date.now();
+    const out = await askKikiVoice(command, undefined, { withFacts: true });
+    mark("คิดคำตอบ", tBrain);
+    return out;
+  });
 }
 
 /**
- * งานยาว: ทำเบื้องหลังแล้วหย่อนผลลงกล่องขาออก (ท่อจะเอาไปพูดเอง)
- * ทวนหัวเรื่องก่อนเสมอ — เจ้าของจอดับ ไม่รู้ว่ากำลังตอบเรื่องไหน
+ * แข่งกับนาฬิกา แทนการเดาจากคำว่างานนี้นานไหม (เจ้าของสั่ง 5 ส.ค.)
+ *
+ * "ถ้างานไหนที่มันต้องใช้เวลา ให้พูดบอกผมเลยว่า ขอหาข้อมูลให้สักครู่ แล้วจะมาบอก"
+ *
+ * เดิมใช้ regex เดาว่างานไหนนาน ซึ่งเดาผิดตลอด — คำถามสั้น ๆ อาจต้องค้นเว็บ
+ * ส่วนคำสั่งที่ดูใหญ่อาจเสร็จใน 1 วินาที · ตัวจับเวลาไม่มีทางเดาผิดเพราะมันวัดของจริง
+ *
+ * ทันเวลา  → ตอบเลย เหมือนคุยกันปกติ
+ * ไม่ทัน   → พูด "ขอเวลาแป๊บนะ" ทันทีจากคลังเสียง (0 วินาที) แล้วงานวิ่งต่อเบื้องหลัง
+ *            เสร็จเมื่อไหร่หย่อนลงกล่องขาออก ท่อเอาไปพูดตามให้เอง
  */
-async function runInBackground(command: string) {
-  const { queueOut } = await import("@/lib/kiki-outbox");
-  const { pushFocus } = await import("@/lib/kiki-jobs");
-  const topic = command.replace(/^(ช่วย|ขอ|ไป)?\s*/, "").slice(0, 40);
-  await pushFocus({ kind: "topic", ref: `voice:${Date.now()}`, label: topic });
-  try {
-    const internal = process.env.INTERNAL_API_TOKEN || "";
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
-    const res = await fetch(`${appUrl}/api/kiki/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-internal-token": internal },
-      body: JSON.stringify({
-        chatId: process.env.DISCORD_TEXT_CH_ID || "voice",
-        text: command,
-        fromId: process.env.DISCORD_OWNER_ID || "",
-        fromName: "โด้",
-        platform: "discord",
-        channel: "discord-voice",
-        msgId: String(Date.now()),
-      }),
-      signal: AbortSignal.timeout(230_000),
-    });
-    const j = (await res.json()) as { sends?: { kind: string; text?: string }[] };
-    const full = (j.sends || []).filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
-    if (!full) {
-      // canned-ok: ข้อความบอกว่า "ทำไม่สำเร็จ" ห้ามให้ AI เรียบเรียงจนกลายเป็นเคลมว่าทำได้แล้ว
-      await queueOut({ target: "discord-voice", topic, text: `เรื่อง${topic}ที่สั่งไว้นะครับ ผมหาไม่ได้ ลองใหม่อีกทีได้ไหม`, priority: 2 });
+const PATIENCE_MS = 3500;
+
+async function raceOrDefer(
+  command: string,
+  topic: string,
+  heard: string,
+  timing: Record<string, number>,
+  t0: number,
+  work: () => Promise<string>,
+): Promise<Response> {
+  let done = false;
+  const job = work()
+    .then((r) => { done = true; return r; })
+    .catch(() => { done = true; return ""; });
+
+  const winner = await Promise.race([
+    job,
+    new Promise<null>((r) => setTimeout(() => r(null), PATIENCE_MS)),
+  ]);
+
+  if (winner !== null && done) {
+    const spoken = String(winner || "");
+    if (!spoken) return NextResponse.json({ action: { do: "cue", bank: "broke" }, heard, timing, sessionOpen: await sessionOpen() });
+    await setSetting(LAST_SPOKEN_KEY, spoken);
+    await saveKikiChat("assistant", spoken, "owner", "discord-voice");
+    timing.รวม = Date.now() - t0;
+    void setActivity("🗣️", "กำลังพูดตอบ");
+    return NextResponse.json({ action: { do: "say", text: spoken }, heard, timing, sessionOpen: await sessionOpen() });
+  }
+
+  // ช้าเกินความอดทน → บอกเขาก่อน อย่าให้รอเงียบ ๆ แล้วส่งผลตามทีหลัง
+  // ลงกระดาน "เรื่องที่ค้างอยู่" ด้วย เผื่อเขาถามระหว่างรอว่ากำลังทำอะไรให้
+  void import("@/lib/kiki-jobs").then((j) => j.pushFocus({ kind: "topic", ref: `voice:${Date.now()}`, label: topic })).catch(() => {});
+  void (async () => {
+    const spoken = await job;
+    const { queueOut } = await import("@/lib/kiki-outbox");
+    if (!spoken) {
+      // canned-ok: ข้อความบอกว่าทำไม่สำเร็จ ห้ามให้ AI เรียบเรียงจนกลายเป็นเคลมว่าทำได้
+      await queueOut({ target: "discord-voice", topic, text: `เรื่อง${topic}นะครับ ผมทำไม่สำเร็จ ลองสั่งใหม่อีกทีได้ไหม`, priority: 3 });
       return;
     }
-    // เสียงต้องมาก่อนข้อความเสมอ (เจ้าของสั่ง 5 ส.ค.: "ไม่ต้องส่งข้อความมาก่อนแล้วค่อยพูดแบบนี้ไม่เอา")
-    // เขาจอดับอยู่ ข้อความที่มาก่อนเสียงคือเสียงเตือนเปล่า ๆ ที่เขาดูไม่ได้
-    void setActivity("✅", `หาเสร็จแล้ว: ${topic}`);
-    const { askKikiVoice: brief } = await import("@/lib/kiki");
-    const say = await brief(
-      `[รายงานผลงานที่ฝากไว้] เรื่อง: ${topic}\nผลที่ได้:\n"""${full.replace(/<[^>]+>/g, " ").slice(0, 5000)}"""\n\n` +
-        `พูดรายงานให้เจ้าของฟัง ขึ้นต้นด้วยการทวนว่ากำลังพูดเรื่องอะไร แล้วบอกแก่น 1-2 ประโยค`,
-    ).catch(() => `เรื่อง${topic}ที่สั่งไว้เสร็จแล้วครับ รายละเอียดลงในห้องแชทให้แล้ว`);
-    // priority สูงกว่า = ท่อหยิบไปพูดก่อน แล้วเนื้อเต็มค่อยตามลงห้องแชท
-    await queueOut({ target: "discord-voice", topic, text: say, priority: 3 });
-    await queueOut({ target: "discord-text", topic, text: full, priority: 2 });
-  } catch {
-    // canned-ok: เหตุผลเดียวกัน — ต้องบอกตรง ๆ ว่าไม่สำเร็จ
-    await queueOut({ target: "discord-voice", topic, text: `เรื่อง${topic}ที่สั่งไว้นะครับ ระบบมีปัญหาระหว่างทาง ลองสั่งใหม่ได้ไหม`, priority: 2 });
-  }
+    await setSetting(LAST_SPOKEN_KEY, spoken);
+    await saveKikiChat("assistant", spoken, "owner", "discord-voice");
+    void setActivity("✅", `เสร็จแล้ว: ${topic}`);
+    await queueOut({ target: "discord-voice", topic, text: spoken, priority: 3 });
+  })();
+
+  timing.รวม = Date.now() - t0;
+  return NextResponse.json({ action: { do: "cue", bank: "onit" }, heard, timing, sessionOpen: await sessionOpen(), background: true });
+}
+
+/** ส่งเข้าสมองเดียว (ทะเบียนตัวจัดการ 57 ตัว) แล้วย่อผลให้พูดออกเสียงได้ */
+async function runThroughBrain(command: string): Promise<string> {
+  const internal = process.env.INTERNAL_API_TOKEN || "";
+  const appUrl = process.env.APP_URL || "http://localhost:3000";
+  const res = await fetch(`${appUrl}/api/kiki/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-internal-token": internal },
+    body: JSON.stringify({
+      chatId: process.env.DISCORD_TEXT_CH_ID || "voice",
+      text: command,
+      fromId: process.env.DISCORD_OWNER_ID || "",
+      fromName: "โด้",
+      platform: "discord",
+      channel: "discord-voice",
+      msgId: String(Date.now()),
+    }),
+    signal: AbortSignal.timeout(230_000),
+  });
+  const j = (await res.json()) as { sends?: { kind: string; text?: string }[] };
+  const full = (j.sends || []).filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
+  if (!full) return "";
+
+  // เนื้อเต็มลงห้องแชทไว้ให้ย้อนดู · เสียงพูดแค่แก่น (เขาจอดับ อ่านไม่ได้อยู่แล้ว)
+  const { queueOut } = await import("@/lib/kiki-outbox");
+  const plain = full.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (plain.length > 220) void queueOut({ target: "discord-text", topic: "", text: full, priority: 1 });
+
+  // สั้นพออยู่แล้วก็พูดไปตรง ๆ ไม่ต้องเสียเวลาเรียกสมองย่อซ้ำ
+  if (plain.length <= 220) return plain;
+  return await askKikiVoice(
+    `[ระบบทำงานเสร็จแล้ว รายงานผลให้โด้ฟัง] ผลที่ได้:\n"""${plain.slice(0, 5000)}"""`,
+  ).catch(() => plain.slice(0, 220));
 }
 
 /** โหมดฟังเงียบ: จดสิ่งที่ควรจด แต่ไม่พูดสักคำ */
