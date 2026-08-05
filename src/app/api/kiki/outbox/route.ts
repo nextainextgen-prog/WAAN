@@ -31,13 +31,14 @@ export async function POST(req: Request) {
   const voice = body.inVoice ? await pendingOut("discord-voice", 1) : [];
   const text = await pendingOut("discord-text", 5);
   const watch = await pendingOut("discord-watch", 5); // ห้องเฝ้าระวัง
+  const logs = await pendingOut("discord-log", 8);    // ห้องบันทึก
 
   const items = [];
   for (const r of voice) {
     // ย่อเป็นภาษาพูดตรงนี้ ใช้สมองฝั่งเว็บ — ท่อไม่ต้องรู้จักโมเดลอะไรเลย
     items.push({ id: r.id, target: r.target, topic: r.topic, speak: await toSpeech(r.topic || "ที่ฝากไว้", r.text || "") });
   }
-  for (const r of [...text, ...watch]) {
+  for (const r of [...text, ...watch, ...logs]) {
     items.push({ id: r.id, target: r.target, topic: r.topic, text: r.text, payload: r.payload ? JSON.parse(r.payload) : null });
   }
 

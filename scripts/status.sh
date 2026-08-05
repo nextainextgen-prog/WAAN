@@ -25,15 +25,22 @@ SOFTERR='ENOTFOUND|fetch failed|scan fail|browser has been closed|ECONNREFUSED|E
 BANNER='พร้อมทำงาน|เฝ้า|poll ทุก|เฝ้าคำขอ|เฝ้าดู|เฝ้าแชท|watching|ready'
 
 # label|logfile|shortname|role|auth-cmd|psmatch (for uptime)
-SERVICES=(
+# โซนบน — ระบบบริษัท (น้องวาน)
+WAAN_SERVICES=(
   "com.changoh.web|dev.log|web|Web/API :3000||next dev"
   "com.changoh.bot|bot.log|bot|Telegram (Waan)||telegram-bot.mjs"
-  "com.changoh.kiki|kiki.log|kiki|Telegram (Vex ส่วนตัว)||kiki-bot.mjs"
   "com.changoh.drive|drive.log|drive|Google Drive watcher|npm run drive:auth|drive-watch.mjs"
   "com.changoh.oho|oho.log|oho|OHO chat watcher|npm run oho:auth|oho-watch.mjs"
   "com.changoh.fb|fb.log|fb|Facebook inbox watcher|npm run fb:auth|fb-watch.mjs"
   "com.changoh.line|line.log|line|LINE OA watcher|npm run line:auth|line-watch.mjs"
   "com.changoh.refund|refund.log|refund|Thunder credit refunds|npm run thunder:auth|refund-watch.mjs"
+)
+
+# โซนล่าง — เลขาส่วนตัว (Vex) แยกขาดจากของบริษัท ไม่ปนกัน
+VEX_SERVICES=(
+  "com.changoh.kiki|kiki.log|kiki|ท่อ Telegram|npm run kiki:tg-auth|kiki-bot.mjs"
+  "com.changoh.vexdiscord|vex-discord.log|discord|ท่อ Discord (ข้อความ+เสียง)||kiki-discord.mjs"
+  "com.changoh.vexeyes|vex-eyes.log|eyes|ตาเฝ้าเหตุการณ์ขาเข้า||vex-eyes.mjs"
 )
 
 # ---- animation ----
@@ -140,18 +147,21 @@ layout() {
 
 # ---- table rows ----
 add_row() {  # name state uptime details
-  local name="$1" st="$2" up="$3" det="$4" word col
+  local name="$1" st="$2" up="$3" det="$4" word col pad
+  # pad นับ "ช่องว่างที่ต้องเติมให้ครบ 6 คอลัมน์" เอง — printf ของ bash นับไบต์ ไม่ใช่คอลัมน์
+  # ถ้าปล่อยให้ %-6s จัดเอง อักษรหลายไบต์อย่าง "·" จะทำให้ตารางเบี้ยว
   case "$st" in
-    OK)   word=UP;   col="$G";;
-    WARN) word=WARN; col="$Y";;
-    AUTH) word=AUTH; col="$M";;
-    DOWN) word=DOWN; col="$R";;
-    *)    word="$st"; col="$N";;
+    OK)   word=UP;   col="$G"; pad=4;;
+    WARN) word=WARN; col="$Y"; pad=2;;
+    AUTH) word=AUTH; col="$M"; pad=2;;
+    DOWN) word=DOWN; col="$R"; pad=2;;
+    INFO) word="·";  col="$D"; pad=5;;   # แค่บอกข้อมูล ไม่ใช่สถานะขึ้น/ลง
+    *)    word="$st"; col="$N"; pad=$(( 6 - ${#st} )); (( pad < 1 )) && pad=1;;
   esac
   local budget=$(( COLS - 33 )); (( budget < 20 )) && budget=20
   det="${det:0:budget}"
   local line
-  printf -v line '  %-9s %s%s%-6s%s %-11s %s' "$name" "$col" "$B" "$word" "$N" "$up" "$det"
+  printf -v line '  %-9s %s%s%s%*s%s %-11s %s' "$name" "$col" "$B" "$word" "$pad" '' "$N" "$up" "$det"
   BODY_LINES+=("$line")
 }
 add_note() {  # text
@@ -159,22 +169,42 @@ add_note() {  # text
   local line; printf -v line '      %s↳ note: %s%s' "$D" "${1:0:budget}" "$N"
   BODY_LINES+=("$line")
 }
-
-# ---- gather all data into BODY_LINES + WORST ----
-collect() {
-  layout
-  BODY_LINES=(); local worst=OK
-
-  for s in "${SERVICES[@]}"; do
+# เส้นแบ่งโซน — ให้เห็นชัดว่าอันไหนของบริษัท อันไหนของ Vex
+add_section() {  # title color
+  local title="$1" col="${2:-$C}" w
+  w=$(( ${#RULE} - ${#title} - 5 )); (( w < 4 )) && w=4
+  local dash; dash=$(printf '%*s' "$w" '' | tr ' ' '=')
+  BODY_LINES+=("")
+  BODY_LINES+=("  ${col}${B}== ${title} ${dash}${N}")
+  BODY_LINES+=("")
+}
+# วนเช็คบริการหนึ่งชุด — อัปเดต SECT_WORST ให้ผู้เรียก
+# ส่งสมาชิก array มาตรง ๆ ("${ARR[@]}") เพราะ bash 3.2 ของ macOS ไม่มี nameref (local -n)
+run_services() {
+  local s
+  for s in "$@"; do
     IFS='|' read -r label logf name role auth psmatch <<< "$s"
     check_service "$label" "$logf" "$auth"
     local up det; up=$(uptime_of "$psmatch")
     if [[ "$STATE" == OK ]]; then det="$role · $MSG"; else det="$MSG"; fi
     add_row "$name" "$STATE" "$up" "$det"
     [[ -n "$NOTE" ]] && add_note "$NOTE"
-    [[ "$STATE" == DOWN || "$STATE" == AUTH ]] && worst=BAD
-    [[ "$STATE" == WARN && "$worst" == OK ]] && worst=WARN
+    [[ "$STATE" == DOWN || "$STATE" == AUTH ]] && SECT_WORST=BAD
+    [[ "$STATE" == WARN && "$SECT_WORST" == OK ]] && SECT_WORST=WARN
   done
+}
+
+# ---- gather all data into BODY_LINES + WORST ----
+collect() {
+  layout
+  BODY_LINES=(); local worst=OK
+
+  # ===================== โซน 1 · บริษัท (น้องวาน) =====================
+  add_section "WAAN · ระบบบริษัท" "$C"
+  SECT_WORST=OK
+  run_services "${WAAN_SERVICES[@]}"
+  [[ "$SECT_WORST" == BAD ]] && worst=BAD
+  [[ "$SECT_WORST" == WARN && "$worst" == OK ]] && worst=WARN
 
   # Google token
   local tokline tstate tmsg
@@ -202,13 +232,47 @@ collect() {
   lastrep=$(sqlite3 prisma/changoh.db "SELECT bizDate||' ('||chatCount||' cases)' FROM DailyReport ORDER BY bizDate DESC LIMIT 1" 2>/dev/null)
   add_row "chat" OK "-" "reports · ${cstats:-no data yet}${lastrep:+ · latest $lastrep}"
 
-  # AI usage panel
+  # ===================== โซน 2 · เลขาส่วนตัว (Vex) =====================
+  add_section "VEX · เลขาส่วนตัวของโด้" "$M"
+  SECT_WORST=OK
+  run_services "${VEX_SERVICES[@]}"
+
+  # Chrome ตัวจริงของ Vex — launchd เป็น one-shot (KeepAlive false) เช็ค PID ไม่ได้ ต้องเคาะพอร์ตดีบักเอง
+  local cver
+  cver=$(curl -s --max-time 3 http://localhost:9222/json/version 2>/dev/null | sed -n 's/.*"Browser": *"\([^"]*\)".*/\1/p')
+  if [[ -n "$cver" ]]; then
+    add_row "chrome" OK "-" "Chrome ตัวจริง :9222 · ${cver}"
+  else
+    add_row "chrome" WARN "-" "Chrome ตัวจริงไม่เปิด — เปิดใหม่: npm run kiki:chrome"
+    [[ "$SECT_WORST" == OK ]] && SECT_WORST=WARN
+  fi
+
+  # แผงละเอียดของ Vex (สาย/คิวพูด/งาน/ความจำ/คลัง/เงิน/นัด/เสียง/เซสชัน)
+  local vexlines
+  vexlines=$(node scripts/status-vex.mjs 2>/dev/null)
+  if [[ -n "$vexlines" ]]; then
+    BODY_LINES+=("")
+    while IFS='|' read -r vname vstate vdet; do
+      [[ -z "$vname" ]] && continue
+      add_row "$vname" "$vstate" "-" "$vdet"
+      [[ "$vstate" == DOWN || "$vstate" == AUTH ]] && SECT_WORST=BAD
+      [[ "$vstate" == WARN && "$SECT_WORST" == OK ]] && SECT_WORST=WARN
+    done <<< "$vexlines"
+  else
+    add_row "vexinfo" WARN "-" "อ่านแผงละเอียดของ Vex ไม่ได้ — ลอง: node scripts/status-vex.mjs"
+    [[ "$SECT_WORST" == OK ]] && SECT_WORST=WARN
+  fi
+
+  [[ "$SECT_WORST" == BAD ]] && worst=BAD
+  [[ "$SECT_WORST" == WARN && "$worst" == OK ]] && worst=WARN
+
+  # ===================== โซน 3 · โทเค็น/ค่าใช้จ่าย AI =====================
   local usage; usage=$(node scripts/usage-cli.mjs 2>/dev/null)
-  BODY_LINES+=("")
   if [[ -n "$usage" ]]; then
-    BODY_LINES+=("  ${C}${B}AI USAGE (tokens · cost · context)${N}")
+    add_section "AI USAGE · โทเค็น · ค่าใช้จ่าย · บริบท" "$C"
     while IFS= read -r l; do BODY_LINES+=("  ${C}${l}${N}"); done <<< "$usage"
   fi
+  BODY_LINES+=("")
 
   WORST="$worst"
 }
@@ -242,7 +306,7 @@ shimmer() {  # offset
 draw() {  # spinner clock offset
   local sp="$1" clk="$2" off="$3" ln
   printf '\033[H'
-  printf '  %s  WAAN \302\267 SYSTEM STATUS\033[K\033[%dG\033[2mlive \302\267 %s\033[0m\033[K\n' "$sp" "$CLKCOL" "$clk"
+  printf '  %s  WAAN + VEX \302\267 SYSTEM STATUS\033[K\033[%dG\033[2mlive \302\267 %s\033[0m\033[K\n' "$sp" "$CLKCOL" "$clk"
   printf '  \033[2mrefresh %ss \302\267 Ctrl+C to quit\033[0m\033[K\n' "$REFRESH"
   printf '  \033[2m%s\033[0m\033[K\n' "$RULE"
   printf '\033[K\n'

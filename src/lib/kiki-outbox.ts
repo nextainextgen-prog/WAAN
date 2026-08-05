@@ -44,7 +44,7 @@ export async function announceEnabled(): Promise<boolean> {
 }
 
 export interface QueueItem {
-  target: "discord-text" | "discord-voice" | "discord-watch";
+  target: "discord-text" | "discord-voice" | "discord-watch" | "discord-log";
   topic?: string;
   text?: string;
   payload?: unknown; // Send ตัวเต็ม (รูป/ไฟล์/ปุ่ม)
@@ -93,14 +93,37 @@ export async function routeProactive(opts: {
   return out;
 }
 
-/** งานที่รอส่ง — ท่อ Discord มาหยิบ */
+/**
+ * งานที่รอส่ง — ท่อ Discord มาหยิบ
+ *
+ * ลองใหม่แบบถอยห่างขึ้นเรื่อย ๆ แทนการเลิกถาวรที่ 3 ครั้ง
+ * เคสจริง 5 ส.ค.: เน็ตหลุดตอนตี 0 (getaddrinfo ENOTFOUND) → ลองครบ 3 → ค้างในกล่องตลอดกาล
+ * ทั้งที่พอเน็ตกลับมาก็ส่งได้ปกติ · ของเก่าเกิน 12 ชม. ค่อยเลิก (ไม่มีประโยชน์แล้ว)
+ */
+const RETRY_BACKOFF_MS = [0, 30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000];
+const GIVE_UP_MS = 12 * 60 * 60_000;
+
+// เสียงที่ค้างนานเกินไปไม่ควรพูดย้อนหลัง — เข้าห้องเสียงตอนบ่ายแล้วโดนถล่มด้วยเรื่องเมื่อเช้า
+// ข้อความเต็มอยู่ในห้องแชทอยู่แล้ว ย้อนดูได้ตลอด
+const VOICE_STALE_MS = 30 * 60_000;
+
 export async function pendingOut(target: string, limit = 5) {
-  return db.vexOutbox.findMany({
-    where: { target, sentAt: null, tries: { lt: 3 } },
+  const floor = target === "discord-voice" ? VOICE_STALE_MS : GIVE_UP_MS;
+  const rows = await db.vexOutbox.findMany({
+    where: { target, sentAt: null, createdAt: { gt: new Date(Date.now() - floor) } },
     orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
-    take: limit,
+    take: limit * 3,
   });
+  const now = Date.now();
+  return rows
+    .filter((r) => {
+      if (!r.tries) return true;
+      const wait = RETRY_BACKOFF_MS[Math.min(r.tries, RETRY_BACKOFF_MS.length - 1)];
+      return now - r.createdAt.getTime() >= wait;
+    })
+    .slice(0, limit);
 }
+
 
 export async function markSent(id: string, error?: string): Promise<void> {
   await db.vexOutbox

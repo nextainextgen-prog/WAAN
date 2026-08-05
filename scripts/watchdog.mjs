@@ -92,6 +92,9 @@ const SERVICES = [
   { label: "com.changoh.web", log: "dev.log", name: "web", auth: null, web: true },
   { label: "com.changoh.bot", log: "bot.log", name: "bot", auth: null },
   { label: "com.changoh.kiki", log: "kiki.log", name: "kiki (Vex)", auth: null, vex: true },
+  // ท่อ Discord กับตาของ Vex — เพิ่ม 5 ส.ค. 2026 (เดิมไม่มีใครเฝ้า ตายแล้วเงียบหายเลย)
+  { label: "com.changoh.vexdiscord", log: "vex-discord.log", name: "Vex Discord", auth: null, vex: true },
+  { label: "com.changoh.vexeyes", log: "vex-eyes.log", name: "Vex ตา", auth: null, vex: true },
   { label: "com.changoh.drive", log: "drive.log", name: "drive", auth: "npm run drive:auth", script: "drive:auth" },
   { label: "com.changoh.oho", log: "oho.log", name: "oho", auth: "npm run oho:auth", script: "oho:auth" },
   { label: "com.changoh.fb", log: "fb.log", name: "fb", auth: "npm run fb:auth", script: "fb:auth" },

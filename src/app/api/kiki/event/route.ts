@@ -45,6 +45,16 @@ export async function POST(req: Request) {
   }
 
   const on = await announceEnabled();
+  // ลงห้องบันทึกทุกเหตุการณ์ ไม่ว่าจะแจ้งหรือไม่แจ้ง — เจ้าของย้อนดูได้ว่าเข้ามาอะไรบ้าง
+  // 📥 ข้อความเข้า · 🚀 ปกติ · 🔴 ต้องดู (ชุดอิโมจิที่เจ้าของกำหนด 5 ส.ค.)
+  // canned-ok: บรรทัดบันทึกต้องคงรูปแบบเดิมทุกครั้ง (ระดับ/เหตุผลต้องตรงตัว ห้ามให้ AI เรียบเรียง)
+  await queueOut({
+    target: "discord-log",
+    topic: v.topic,
+    // canned-ok: บรรทัดบันทึกต้องคงรูปแบบเดิม (ระดับ/เหตุผลต้องตรงตัว ห้ามให้ AI เรียบเรียง)
+    text: `🚀 📥 ${line.slice(0, 200)} · ระดับ ${v.level} (${v.why})`,
+    priority: 0,
+  });
   if (!on) return NextResponse.json({ ok: true, level: v.level, why: "โหมดประกาศปิดอยู่ — บันทึกอย่างเดียว" });
 
   if (v.level === 3) {

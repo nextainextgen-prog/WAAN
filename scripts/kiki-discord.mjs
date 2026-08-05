@@ -453,11 +453,12 @@ async function handleUtterance(oggPath, bytes = 0) {
       }
     }
 
-    // วัดเวลาจริงทุกขั้น ลงห้องบันทึก — จะได้เห็นว่าขั้นไหนบวม ไม่ต้องเดา (เจ้าของขอเอง)
+    // รายงานลงห้องบันทึก — ชุดอิโมจิที่เจ้าของกำหนดเอง 5 ส.ค.
+    //   📥 ข้อความเข้า · 📤 ข้อความออก · 🚀 ปกติ · 🔴 คิดนาน/ติดปัญหา
     if (timing && action.do !== "ignore") {
       const total = Date.now() - t0;
       const parts = Object.entries(timing).filter(([k]) => k !== "รวม").map(([k, v]) => `${k} ${(v / 1000).toFixed(1)}`).join(" · ");
-      logLine(`📊 "${(heard || "").slice(0, 40)}" · รวม ${(total / 1000).toFixed(1)} วิ${parts ? ` — ${parts}` : ""}`);
+      logLine(`${health(total)} 📥 "${(heard || "").slice(0, 45)}" · ${(total / 1000).toFixed(1)} วิ${parts ? ` — ${parts}` : ""}`);
     }
   } catch (e) {
     console.error("  ประมวลผลเสียงพลาด:", e?.message);
@@ -466,6 +467,10 @@ async function handleUtterance(oggPath, bytes = 0) {
     if (s2) await speak(s2.ogg);
   }
 }
+
+// เกินนี้ถือว่าช้าจนรู้สึกได้ (เป้าคือตอบภายใน 3-6 วิ)
+const SLOW_MS = 10_000;
+const health = (ms) => (ms > SLOW_MS ? "🔴" : "🚀");
 
 /** เขียนลงห้องบันทึก — ไม่ให้พังกระทบทางหลัก */
 async function logLine(text) {
@@ -593,6 +598,7 @@ async function pollOutbox() {
     if (!res.ok) return;
     const { items } = await res.json();
     for (const it of items || []) {
+      const tItem = Date.now();
       try {
         if (it.target === "discord-voice") {
           if (!ownerInVoice) continue; // ออกจากห้องระหว่างทาง = ปล่อยค้างไว้ในกล่อง รอรอบหน้า
@@ -611,6 +617,10 @@ async function pollOutbox() {
           }
           const spoke = await speak(ogg);
           if (spoke) done.push({ id: it.id });
+          logLine(`${health(Date.now() - tItem)} 📤 พูด "${(it.speak || "").slice(0, 55)}"`);
+        } else if (it.target === "discord-log") {
+          await logLine(it.text || "");
+          done.push({ id: it.id });
         } else if (it.target === "discord-watch") {
           const ch = watchCh || (await client.channels.fetch(TEXT_CH));
           await ch.send(htmlToDiscord(it.text || "").slice(0, 1900));
@@ -620,9 +630,11 @@ async function pollOutbox() {
           const head = it.topic ? `**${it.topic}**\n` : "";
           for (const part of chunk(head + htmlToDiscord(it.text || ""))) await ch.send(part);
           done.push({ id: it.id });
+          logLine(`${health(Date.now() - tItem)} 📤 ${it.topic ? `${it.topic} — ` : ""}ลงห้องแชท`);
         }
       } catch (e) {
         done.push({ id: it.id, error: e?.message?.slice(0, 200) || "error" });
+        logLine(`🔴 📤 ส่งไม่สำเร็จ (${it.target}) — ${e?.message?.slice(0, 90) || "error"}`);
       }
     }
   } catch { /* รอบหน้าลองใหม่ */ } finally {
