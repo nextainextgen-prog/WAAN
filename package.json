@@ -40,7 +40,8 @@
     "kiki:check": "node scripts/kiki-check-canned.mjs",
     "kiki:discord": "node scripts/kiki-discord.mjs",
     "vex:eyes": "node scripts/vex-eyes.mjs",
-    "status:old": "bash scripts/status.sh"
+    "status:old": "bash scripts/status.sh",
+    "vex:voicepick": "node scripts/vex-openai-voice-pick.mjs"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

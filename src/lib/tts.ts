@@ -195,8 +195,90 @@ const geminiProvider: Provider = async (text, voice, model) => {
   return null;
 };
 
+/**
+ * ===== OpenAI =====
+ *
+ * เจ้าของเลือกเอง 5 ส.ค. 2026 หลังฟัง F5-TTS ในเครื่องแล้วไม่ผ่าน ("เสียงแตก/เพี้ยน")
+ *
+ * ใช้ `gpt-4o-mini-tts` ไม่ใช่ `tts-1` ที่เจ้าของเอ่ยถึงตอนแรก เพราะตัวนี้ตัวเดียว
+ * ที่ "สั่งสไตล์การพูดด้วยข้อความ" ได้ (พารามิเตอร์ instructions) — ซึ่งจำเป็นมากในเคสนี้
+ * เพราะเจ้าของอยากได้จังหวะแบบคลิปต้นแบบ ไม่ใช่แค่เสียงอ่านเฉย ๆ
+ * `tts-1` อ่านอย่างเดียว ปรับโทนไม่ได้เลย
+ *
+ * ข้อควรรู้จากเอกสารทางการ: "Voices are currently optimized for English"
+ * เสียงทั้ง 13 ตัวปรับมาเพื่ออังกฤษ ภาษาไทยรองรับแต่สำเนียงต้องฟังของจริงก่อนตัดสิน
+ * → มี scripts/vex-openai-voice-pick.mjs ไว้คัดเสียงเทียบกับคลิปต้นแบบ
+ *
+ * เสียง Arbor ที่เจ้าของอยากได้ **ไม่มีใน API** (เป็นเสียงเฉพาะแอป ChatGPT)
+ * จึงต้องหาตัวที่ใกล้ที่สุดจาก 13 ตัวนี้แทน
+ */
+export const OPENAI_VOICES = [
+  "alloy", "ash", "ballad", "coral", "echo", "fable",
+  "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar",
+] as const;
+
+export const DEFAULT_OPENAI_TTS_MODEL = "gpt-4o-mini-tts";
+
+/**
+ * คำสั่งโทนเสียง — ถอดจากคลิปต้นแบบที่เจ้าของส่งมา (วัดได้ว่าเงียบ 40-45% หยุดเฉลี่ย 0.66-0.68 วิ)
+ * แก้ผ่านค่าตั้งค่า kiki_tts_instructions ได้โดยไม่ต้องแตะโค้ด
+ */
+export const DEFAULT_OPENAI_INSTRUCTIONS = [
+  "Speak Thai naturally, like a close friend chatting casually — not a narrator, not customer service.",
+  "Pace: unhurried and relaxed. Leave real pauses between sentences, around 0.6-0.7 seconds.",
+  "Roughly 40% of the time should be silence. Never rush from one sentence into the next.",
+  "Tone: warm, low-key, thoughtful. Low energy rather than upbeat. Never enthusiastic or salesy.",
+  "Let filler words like 'อืม', 'เออ', 'อ๋อ' land naturally as thinking sounds, not as words being read.",
+  "Treat '...' as a genuine pause where you stop and breathe.",
+].join(" ");
+
+const callOpenAI = async (text: string, voice: string, model: string): Promise<Buffer | null> => {
+  const key = process.env.OPENAI_API_KEY?.trim();
+  if (!key) return null;
+  const instructions = (await getSetting("kiki_tts_instructions")) || DEFAULT_OPENAI_INSTRUCTIONS;
+  const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      voice,
+      input: text,
+      // opus มาเป็น OGG/Opus อยู่แล้ว = ฟอร์แมตเดียวกับที่ทั้งระบบใช้ ไม่ต้องแปลงซ้ำ
+      response_format: "opus",
+      // tts-1/tts-1-hd ไม่รู้จักพารามิเตอร์นี้ ใส่เฉพาะรุ่นที่รองรับ
+      ...(model.includes("4o") || model.includes("gpt-audio") ? { instructions } : {}),
+    }),
+    signal: AbortSignal.timeout(120_000),
+  }).catch(() => null);
+  if (!res) return null;
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    if (res.status === 429 || /quota|rate|insufficient/i.test(msg)) {
+      void import("./kiki-monitor").then(async (m) => {
+        if (await m.noteQuotaHit("เสียงพูด OpenAI")) {
+          await m.raiseAlert("quota-tts-openai", "warn", `เรียกเสียง OpenAI ไม่ผ่าน (${res.status}) — เช็คยอดเงินในบัญชี`);
+        }
+      }).catch(() => {});
+    }
+    return null;
+  }
+  await noteRequest(model);
+  return Buffer.from(await res.arrayBuffer());
+};
+
+const openaiProvider: Provider = async (text, voice, model) => {
+  const m = model.startsWith("gpt") || model.startsWith("tts") ? model : DEFAULT_OPENAI_TTS_MODEL;
+  const k = await cacheKey(text, voice, m);
+  const hit = await fromCache(k);
+  if (hit) return hit;
+  const buf = await callOpenAI(text, voice, m).catch(() => null);
+  if (buf) await toCache(k, buf);
+  return buf;
+};
+
 const PROVIDERS: Record<string, Provider> = {
   gemini: geminiProvider,
+  openai: openaiProvider,
   // เพิ่มเจ้าใหม่ที่นี่ที่เดียว — ต้องคืน OGG/Opus เสมอ (แปลงเองถ้าเจ้านั้นคืนฟอร์แมตอื่น)
 };
 
@@ -213,8 +295,13 @@ export async function speak(text: string, opts: SpeakOptions = {}): Promise<Buff
     if (!clean) return null;
     const providerName = opts.provider || (await getSetting("kiki_tts_provider")) || "gemini";
     const provider = PROVIDERS[providerName] || geminiProvider;
-    const voice = opts.voice || (await getSetting("kiki_tts_voice")) || DEFAULT_VOICE;
-    const model = opts.model || (await getSetting("kiki_tts_model")) || DEFAULT_GEMINI_TTS_MODEL;
+    // ชื่อเสียงกับชื่อโมเดลของแต่ละเจ้าไม่เหมือนกันเลย — สลับเจ้าแล้วต้องสลับค่าเริ่มต้นตาม
+    // (ไม่งั้นส่ง "Iapetus" ของ Gemini ไปให้ OpenAI แล้วมันตอบ 400 กลับมาเงียบ ๆ)
+    const isOpenAI = providerName === "openai";
+    const voiceKey = isOpenAI ? "kiki_tts_voice_openai" : "kiki_tts_voice";
+    const modelKey = isOpenAI ? "kiki_tts_model_openai" : "kiki_tts_model";
+    const voice = opts.voice || (await getSetting(voiceKey)) || (isOpenAI ? "ash" : DEFAULT_VOICE);
+    const model = opts.model || (await getSetting(modelKey)) || (isOpenAI ? DEFAULT_OPENAI_TTS_MODEL : DEFAULT_GEMINI_TTS_MODEL);
     return await provider(clean, voice, model);
   } catch {
     return null;
