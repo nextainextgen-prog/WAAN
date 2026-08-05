@@ -189,15 +189,17 @@ async function runInBackground(command: string) {
       await queueOut({ target: "discord-voice", topic, text: `เรื่อง${topic}ที่สั่งไว้นะครับ ผมหาไม่ได้ ลองใหม่อีกทีได้ไหม`, priority: 2 });
       return;
     }
-    // เนื้อเต็มลงห้องแชท · เสียงพูดแค่แก่น
+    // เสียงต้องมาก่อนข้อความเสมอ (เจ้าของสั่ง 5 ส.ค.: "ไม่ต้องส่งข้อความมาก่อนแล้วค่อยพูดแบบนี้ไม่เอา")
+    // เขาจอดับอยู่ ข้อความที่มาก่อนเสียงคือเสียงเตือนเปล่า ๆ ที่เขาดูไม่ได้
     void setActivity("✅", `หาเสร็จแล้ว: ${topic}`);
-    await queueOut({ target: "discord-text", topic, text: full, priority: 2 });
     const { askKikiVoice: brief } = await import("@/lib/kiki");
     const say = await brief(
       `[รายงานผลงานที่ฝากไว้] เรื่อง: ${topic}\nผลที่ได้:\n"""${full.replace(/<[^>]+>/g, " ").slice(0, 5000)}"""\n\n` +
         `พูดรายงานให้เจ้าของฟัง ขึ้นต้นด้วยการทวนว่ากำลังพูดเรื่องอะไร แล้วบอกแก่น 1-2 ประโยค`,
     ).catch(() => `เรื่อง${topic}ที่สั่งไว้เสร็จแล้วครับ รายละเอียดลงในห้องแชทให้แล้ว`);
-    await queueOut({ target: "discord-voice", topic, text: say, priority: 2 });
+    // priority สูงกว่า = ท่อหยิบไปพูดก่อน แล้วเนื้อเต็มค่อยตามลงห้องแชท
+    await queueOut({ target: "discord-voice", topic, text: say, priority: 3 });
+    await queueOut({ target: "discord-text", topic, text: full, priority: 2 });
   } catch {
     // canned-ok: เหตุผลเดียวกัน — ต้องบอกตรง ๆ ว่าไม่สำเร็จ
     await queueOut({ target: "discord-voice", topic, text: `เรื่อง${topic}ที่สั่งไว้นะครับ ระบบมีปัญหาระหว่างทาง ลองสั่งใหม่ได้ไหม`, priority: 2 });

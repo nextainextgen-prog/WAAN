@@ -512,10 +512,29 @@ async function renameVoiceChannel(label) {
   }, wait);
 }
 
+// ===== ประตูห้ามแทรก (เจ้าของสั่ง 5 ส.ค. 2026) =====
+//
+// "จังหวะที่ผมพูดอยู่หรือกำลังอยู่ห้ามแทรก ไม่ว่าจะรายงานที่ทำเสร็จแล้ว ค่อยสรุปตอนมันพูด"
+//
+// ท่อรู้อยู่แล้วว่าเจ้าของกำลังพูด (listening มีสมาชิก = receiver กำลังรับเสียงอยู่)
+// แต่ตัววนหยิบงานไม่เคยเอามาใช้เลย — เช็คแค่ "อยู่ในห้องไหม" แล้วพูดทับทันที
+//
+// นับว่า "ยังพูดอยู่" เมื่อ: กำลังรับเสียงอยู่ · หรือมีเศษประโยครอต่อ ·
+// หรือเพิ่งพูดจบไม่ถึง 2 วิ (เผื่อเขาแค่หยุดหายใจกลางความคิด)
+const TALK_GUARD_MS = 2000;
+let lastOwnerSpokeAt = 0;
+
+function ownerIsTalking() {
+  if (listening.size > 0) return true;      // ไมค์เปิดรับอยู่ตอนนี้
+  if (pendingUtter) return true;             // มีเศษประโยคค้างรอต่อ
+  return Date.now() - lastOwnerSpokeAt < TALK_GUARD_MS;
+}
+
 // เศษประโยคที่รอต่อ — คนไทยหยุดกลางประโยคบ่อย ต้องรอดูว่ามีต่อไหมก่อนส่งเข้าสมอง
 let pendingUtter = null; // { paths: [], timer }
 
 function queueUtterance(oggPath) {
+  lastOwnerSpokeAt = Date.now();
   if (pendingUtter?.timer) clearTimeout(pendingUtter.timer);
   if (!pendingUtter) pendingUtter = { paths: [] };
   pendingUtter.paths.push(oggPath);
@@ -554,6 +573,7 @@ function concatOgg(paths) {
 function listenTo(userId, receiver) {
   if (listening.has(userId)) return;
   listening.add(userId);
+  lastOwnerSpokeAt = Date.now(); // เขาเริ่มพูดแล้ว — ตั้งแต่วินาทีนี้ห้ามแทรก
   const started = Date.now();
   const outPath = path.join(os.tmpdir(), `vex-hear-${started}-${Math.floor(Math.random() * 1e6)}.ogg`);
   // ตอน Vex กำลังพูด ให้ตัดประโยคไวขึ้น — คำสั่ง "Vex พอ" ต้องถึงเร็วที่สุด
@@ -609,6 +629,9 @@ async function pollOutbox() {
       try {
         if (it.target === "discord-voice") {
           if (!ownerInVoice) continue; // ออกจากห้องระหว่างทาง = ปล่อยค้างไว้ในกล่อง รอรอบหน้า
+          // เจ้าของกำลังพูด = ห้ามแทรกเด็ดขาด ต่อให้เป็นงานที่เพิ่งทำเสร็จก็รอ
+          // (ปล่อยค้างในกล่อง รอบหน้าอีก 5 วิค่อยมาดูใหม่ ไม่นับเป็น tries ที่ล้มเหลว)
+          if (ownerIsTalking()) continue;
           const spoken = await tts({ text: it.speak, quality: true });
           const ogg = spoken?.ogg || null;
           if (!ogg) {

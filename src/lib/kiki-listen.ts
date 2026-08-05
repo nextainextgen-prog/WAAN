@@ -166,6 +166,22 @@ const COMMAND_HINT =
 const NOT_FOR_US =
   /^(ฮัลโหล|ครับพี่|ค่ะพี่|สวัสดีครับพี่|เดี๋ยวโทรกลับ|วางก่อนนะ|แป๊บนะ)/;
 
+/**
+ * คำรับ/คำน้ำ — ได้ยินแล้วต้อง "เงียบ" ไม่ใช่ตอบ (เจ้าของสั่ง 5 ส.ค. หลังใช้จริง)
+ *
+ * เคสจริงที่พังหนักที่สุด: log วันแรกมี `ได้ยิน: "ครับ" → say` **ติดกัน 5 ครั้ง**
+ * แล้ว Vex ก็ตอบยาวทุกครั้ง — เพราะกฎ "ในสาย + สั้นกว่า 12 ตัวอักษร = ใช่แน่ ๆ"
+ * ทั้งที่ "ครับ" คือเสียงรับของเจ้าของ (หรือเสียง Vex เองย้อนเข้าไมค์) ไม่ใช่คำสั่งสักนิด
+ *
+ * ต้องเป็นทั้งประโยคเท่านั้น — "ครับ ช่วยหาหน่อย" ยังต้องผ่านตามปกติ
+ */
+const BACKCHANNEL =
+  /^[\s]*(ครับ|ครับผม|คับ|ค่ะ|คะ|จ้า|จ้าา|อือ|อืม|เออ|เอ่อ|อ่า|อ๋อ|โอเค|โอเคร|okay|ok|umm|uh huh|hmm|ha|ฮะ|หือ|หา|นะ|น่ะ|แหละ|เนอะ|ใช่|ได้|ก็ได้)[\s ๆ.!?…]*$/i;
+
+export function isBackchannel(text: string): boolean {
+  return BACKCHANNEL.test((text || "").trim());
+}
+
 export type Addressed = "yes" | "no" | "unsure";
 
 /**
@@ -175,9 +191,12 @@ export type Addressed = "yes" | "no" | "unsure";
 export function quickAddressed(text: string, opts: { inSession: boolean }): Addressed {
   const t = (text || "").trim();
   if (t.length < 2) return "no";
+  // คำสั่งหยุด/ถอน/ปิดสาย ต้องมาก่อนทุกอย่าง — "พอ" สั้นก็จริงแต่สำคัญที่สุด
+  if (isStopCommand(t) || isUndoCommand(t) || isCloseCommand(t)) return "yes";
+  // คำรับล้วน ๆ = เงียบ (ต้องเช็คก่อนคำปลุก เพราะ "เออ"/"หา" ชนรูปคำปลุกได้)
+  if (isBackchannel(t)) return "no";
   if (matchWake(t).woke) return "yes";
   if (NOT_FOR_US.test(t)) return "no";
-  if (isStopCommand(t) || isUndoCommand(t) || isCloseCommand(t)) return "yes";
   if (!opts.inSession) {
     // นอกสาย: รับเฉพาะคำเปิด หรือประโยคที่เป็นคำสั่งชัดเจนมาก (เจ้าของเลือก "รอคำเปิดอย่างเดียว")
     return "no";
@@ -185,6 +204,8 @@ export function quickAddressed(text: string, opts: { inSession: boolean }): Addr
   // ในสาย: ประโยคที่มีรูปคำสั่ง/คำถาม = ใช่แน่ ๆ
   if (COMMAND_HINT.test(t)) return "yes";
   // ในสาย ประโยคสั้น ๆ ที่ตอบรับ ("เอา" "ใช่" "ไม่") = ต่อบทสนทนา
+  // เดิมปล่อยผ่านทุกอย่างที่สั้นกว่า 12 ตัว → "ครับ" กลายเป็นคำสั่งแล้ววนตอบไม่จบ
+  // ตอนนี้ตัวคำรับถูกดักไปข้างบนแล้ว เหลือแต่คำสั้นที่มีเนื้อจริง
   if (t.length <= 12) return "yes";
   return "unsure";
 }
@@ -248,7 +269,11 @@ export function looksLikeEcho(heard: string, lastSpoken: string): boolean {
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   const h = norm(heard);
   const s = norm(lastSpoken);
-  if (h.length < 6) return false;
+  if (!h) return false;
+  // คำสั้น ๆ ที่โผล่ในสิ่งที่เราเพิ่งพูด = เสียงตัวเองย้อนเข้าไมค์เกือบแน่นอน
+  // เดิมข้ามทุกอย่างที่สั้นกว่า 6 ตัวอักษร → "ครับ" ที่ Vex เพิ่งพูดเอง
+  // ย้อนกลับเข้ามาแล้วถูกนับเป็นคำสั่งใหม่ วนอยู่อย่างนั้น (เจอจริงใน log 5 รอบติด)
+  if (h.length < 6) return s.includes(h);
   if (s.includes(h)) return true;
   let hit = 0;
   for (let i = 0; i + 6 <= h.length; i += 3) if (s.includes(h.slice(i, i + 6))) hit++;
