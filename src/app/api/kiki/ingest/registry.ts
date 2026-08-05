@@ -24,6 +24,7 @@ import { eyesHandler } from "./handlers/eyes";
 import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandler } from "./handlers/reply";
 import { guiHandler } from "./handlers/gui";
 import { fileFindHandler } from "./handlers/files";
+import { authRunHandler, sessionAuthHandler } from "./handlers/session";
 
 /**
  * ทะเบียนเส้นทางของ Vex — เดินจากบนลงล่าง ตัวไหนคืนคำตอบก่อนก็จบ
@@ -37,6 +38,11 @@ import { fileFindHandler } from "./handlers/files";
  * เพิ่มเส้นทางใหม่ = แทรกในลำดับที่ถูก แล้วเพิ่ม intent ใน INTENT_CATALOG (kiki-router.ts)
  */
 export const HANDLERS: Handler[] = [
+  // กำลังล็อกอินค้างอยู่ — ต้องมาก่อนทุกอย่าง
+  // ข้อความถัดไปมักเป็น OTP ล้วน ๆ ("60539") ถ้าปล่อยผ่านจะไปเข้าเส้นทางอื่น
+  // แล้วโปรเซสค้างรอจนหมดเวลาไปเปล่า ๆ (ตัวมันเช็คเองว่าใช่คำตอบไหม ไม่ใช่ก็ปล่อยผ่าน)
+  authRunHandler,
+
   // "Vex ถอน" — ต้องมาก่อนทุกอย่าง มีเวลาแค่ 30 วินาที
   undoSendHandler,
   // ยืนยัน/แก้ร่างที่อ่านทวนไปแล้ว — ต้องมาก่อนตัวที่สร้างร่างใหม่
@@ -59,6 +65,9 @@ export const HANDLERS: Handler[] = [
 
   // คุมว่าจะเฝ้าข้อความเข้าจากแชทไหน
   eyesHandler,
+
+  // เซสชันของตัวเอง (เช็ค/สั่งล็อกอินใหม่ + ปุ่มจากใบแจ้ง)
+  sessionAuthHandler,
 
   // งานเบื้องหลัง — jobStatus ต้องมาก่อน hermes (ไม่งั้น "งานถึงไหนแล้ว" ถูกตีเป็นสั่งงานใหม่ซ้ำ)
   jobStatusHandler,

@@ -88,3 +88,6 @@ scripts/_*.ts
 # ภาพหลักฐานของ watchdog/ops (สร้างใหม่ทุกครั้ง)
 .run-logs/shots/
 .usage-cache.json
+
+# log การล็อกอิน (มีคำถาม/สถานะชั่วคราว ไม่ควรขึ้น git)
+.vex-auth/

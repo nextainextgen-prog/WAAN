@@ -447,6 +447,50 @@ export async function POST(req: Request) {
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
+  // ===== G1.5) เซสชันของตัวเองหมดอายุ → แจ้งพร้อมปุ่ม "รันเลย" (เจ้าของสั่ง 5 ส.ค.) =====
+  //
+  // ตัดสินจากหลักฐานของตัวเซสชันเองเท่านั้น (ไฟล์เซสชัน · log ที่ต้องขยับ)
+  // ไม่ใช่จากอาการ "ต่อไม่ติด" — วานเคยพลาดตรงนี้แล้วกล่าวหาผิดตัว สั่งงานเจ้าของฟรี ๆ
+  try {
+    const { checkAllSessions, isBroken, shouldAlert, currentRun } = await import("@/lib/vex-ops");
+    if (mainChat && !(await currentRun())) { // กำลังล็อกอินอยู่ = ไม่ต้องแจ้งซ้ำ
+      for (const h of checkAllSessions().filter(isBroken)) {
+        if (!(await shouldAlert(h.key, 120))) continue;
+        const t = await askKiki(
+          `[เซสชันหมดอายุ] "${h.label}" ใช้ไม่ได้แล้ว\nหลักฐานที่ตรวจได้: ${h.detail}\n` +
+            `${h.interactive ? `ถ้าล็อกอินใหม่จะต้องขอ: ${h.askFor}` : `ล็อกอินใหม่ได้เลย (${h.askFor})`}\n\n` +
+            `บอกเจ้าของสั้น ๆ ว่าตัวไหนหมด กระทบอะไร แล้วถามว่าให้จัดการเลยไหม (กดปุ่มด้านล่างได้) ไม่เกิน 3 บรรทัด`,
+        ).catch(() => `เซสชัน "${h.label}" หมดอายุแล้วครับ 🔑 (${h.detail}) ให้ผมล็อกอินใหม่ให้เลยไหม`); // canned-ok: ตัวดักพัง — ใบแจ้งต้องถึงมือเสมอ
+        sends.push({
+          chatId: mainChat, kind: "text", text: t,
+          buttons: [[{ text: "รันเลย", data: `auth:${h.key}` }, { text: "ไว้ก่อน", data: "auth-skip" }]],
+        });
+        await saveKikiChat("assistant", t, "owner", "cron");
+      }
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
+  // ===== G1.6) กำลังล็อกอินอยู่แล้วโปรเซสรออะไรค้าง → ตามถามให้ ไม่ปล่อยค้างเงียบ =====
+  try {
+    const { currentRun, readRunStatus, pendingPrompt, cleanLog, saveRun } = await import("@/lib/vex-ops");
+    const run = await currentRun();
+    if (run && readRunStatus(run.id) === "running") {
+      const prompt = pendingPrompt(run.id);
+      // ถามซ้ำได้ทุก 2 นาที และเฉพาะคำถามที่ยังไม่เคยถาม (กันสแปม)
+      if (prompt && prompt !== run.lastPrompt && Date.now() - run.lastAskedAt > 120_000) {
+        run.lastAskedAt = Date.now();
+        run.lastPrompt = prompt;
+        await saveRun(run);
+        const t = await askKiki(
+          `[กำลังล็อกอินให้เจ้าของ] คำสั่ง ${run.script} ค้างรอให้พิมพ์ตอบว่า: "${prompt}"\n` +
+            `ทวงสั้น ๆ 1-2 บรรทัด ว่ารออะไรอยู่ พิมพ์ตอบในแชทได้เลย`,
+        ).catch(() => `รอตรงนี้อยู่ครับ: ${prompt}\nพิมพ์ตอบมาได้เลย เดี๋ยวผมกรอกให้`); // canned-ok: ตัวดักพัง — ไม่ถามได้ = ล็อกอินค้างตาย
+        sends.push({ chatId: run.chatId || mainChat, kind: "text", text: `${t}\n\n<pre>${cleanLog(run.id, 10).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!))}</pre>`, parseMode: "HTML" });
+        await saveKikiChat("assistant", t, "owner", "cron");
+      }
+    }
+  } catch { /* รอบหน้าลองใหม่ */ }
+
   // ===== G2.5) งานเบื้องหลังยังทำอยู่ → รายงานทุก 3 นาที (เจ้าของสั่ง 4 ส.ค.) =====
   try {
     for (const p of await collectJobPings(now)) {
