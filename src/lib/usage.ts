@@ -47,7 +47,7 @@ function addCost(w: UsageWindow) {
  *  1) อ่านไฟล์รอบเดียว แล้วโยนเข้าทั้ง 3 หน้าต่างพร้อมกัน (จาก 3 รอบ → 1 รอบ)
  *  2) แคชรายไฟล์ด้วย mtime+size — log ที่เขียนเสร็จแล้วไม่มีวันเปลี่ยน
  *     รอบต่อไปจึงอ่านใหม่เฉพาะไฟล์ที่กำลังถูกเขียนอยู่จริง ๆ (ปกติ 1-3 ไฟล์)
- *     เก็บเป็น "ถังรายนาที" ไม่ใช่ยอดรวม เพราะหน้าต่างเลื่อนตามเวลา ยอดรวมใช้ซ้ำไม่ได้
+ *     เก็บเป็น "รายการ event" ไม่ใช่ยอดรวม เพราะหน้าต่างเลื่อนตามเวลา ยอดรวมใช้ซ้ำไม่ได้
  *  3) เปลี่ยนเป็น async I/O ทั้งหมด — ต่อให้ต้องอ่านของหนักจริง เว็บก็ยังหายใจได้
  */
 
@@ -57,6 +57,55 @@ type Ev = { ts: number; in: number; out: number; cache: number };
 type FileEntry = { mtimeMs: number; size: number; events: Ev[] };
 
 const fileCache = new Map<string, FileEntry>();
+
+/**
+ * แคชอยู่ข้ามการรีสตาร์ทได้ — สำคัญกว่าที่คิด
+ *
+ * แคชในหน่วยความจำหายทุกครั้งที่เว็บขึ้นใหม่ และเว็บขึ้นใหม่บ่อยมาก
+ * (watchdog รีสตาร์ทให้เอง · dev reload · เจ้าของสั่งเอง)
+ * ตอนบูตคือช่วงที่เครื่องยุ่งที่สุดพอดี — วัดจริงได้ 30-41 วิ ทั้งที่เครื่องว่างใช้แค่ 6 วิ
+ * → จำผลแยกไฟล์ลงดิสก์ไว้ รีสตาร์ทแล้วหยิบมาใช้ต่อได้เลย
+ *
+ * ไม่ใช่ฐานข้อมูลที่สอง — เป็นแค่ผลลัพธ์ที่คำนวณซ้ำได้ ลบทิ้งเมื่อไหร่ก็แค่ช้าลงรอบเดียว
+ * ความถูกต้องผูกกับ mtime+size ของไฟล์ต้นทาง ไฟล์เปลี่ยนเมื่อไหร่ของเก่าใช้ไม่ได้ทันที
+ */
+const DISK_CACHE = path.join(process.cwd(), ".usage-cache.json");
+type DiskShape = { v: number; claude: Record<string, [number, number, number[][]]>; codex: Record<string, [number, number, number, number[] | null]> };
+const DISK_V = 1;
+let diskLoaded = false;
+let diskDirty = false;
+
+function loadDisk() {
+  if (diskLoaded) return;
+  diskLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(DISK_CACHE, "utf8")) as DiskShape;
+    if (raw?.v !== DISK_V) return;
+    for (const [p, [mtimeMs, size, evs]] of Object.entries(raw.claude || {})) {
+      fileCache.set(p, { mtimeMs, size, events: evs.map(([ts, i, o, c]) => ({ ts, in: i, out: o, cache: c })) });
+    }
+    for (const [p, [mtimeMs, size, lastTs, best]] of Object.entries(raw.codex || {})) {
+      codexCache.set(p, { mtimeMs, size, lastTs, best: best ? { in: best[0], out: best[1], total: best[2] } : null });
+    }
+  } catch {
+    /* ไม่มีไฟล์/ไฟล์เสีย = เริ่มใหม่ ไม่ใช่เรื่องใหญ่ */
+  }
+}
+
+function saveDisk() {
+  if (!diskDirty) return;
+  diskDirty = false;
+  try {
+    const out: DiskShape = { v: DISK_V, claude: {}, codex: {} };
+    for (const [p, e] of fileCache) out.claude[p] = [e.mtimeMs, e.size, e.events.map((x) => [x.ts, x.in, x.out, x.cache])];
+    for (const [p, e] of codexCache) out.codex[p] = [e.mtimeMs, e.size, e.lastTs, e.best ? [e.best.in, e.best.out, e.best.total] : null];
+    // เขียนไฟล์ชั่วคราวแล้วค่อยสลับ — เว็บถูกฆ่ากลางเขียนจะได้ไม่เหลือไฟล์พัง
+    fs.writeFileSync(DISK_CACHE + ".tmp", JSON.stringify(out));
+    fs.renameSync(DISK_CACHE + ".tmp", DISK_CACHE);
+  } catch {
+    /* เขียนไม่ได้ = แค่ช้าลงตอนบูตรอบหน้า ไม่กระทบความถูกต้อง */
+  }
+}
 
 async function walkJsonl(dir: string, sinceMs: number): Promise<{ path: string; mtimeMs: number; size: number }[]> {
   const out: { path: string; mtimeMs: number; size: number }[] = [];
@@ -139,12 +188,14 @@ async function readClaude(nowMs: number): Promise<UsageReport> {
   const weekSince = nowMs - 7 * 86400_000;
   if (!fs.existsSync(base)) return report;
 
+  loadDisk();
   const seen = new Set<string>();
   for (const f of await walkJsonl(base, weekSince)) {
     seen.add(f.path);
     let entry = fileCache.get(f.path);
     // ไฟล์เดิมขนาดเดิม เวลาแก้เดิม = เนื้อในเดิม ไม่ต้องอ่านซ้ำ
     if (!entry || entry.mtimeMs !== f.mtimeMs || entry.size !== f.size) {
+      diskDirty = true;
       let content: string;
       try {
         content = await fs.promises.readFile(f.path, "utf8");
@@ -159,7 +210,7 @@ async function readClaude(nowMs: number): Promise<UsageReport> {
     foldInto(report.today, entry.events, nowMs - 24 * 3600_000);
   }
   // ไฟล์ที่หลุดหน้าต่าง 7 วันไปแล้ว = ปล่อยแคชทิ้ง ไม่งั้นบวมไปเรื่อย ๆ
-  for (const k of fileCache.keys()) if (!seen.has(k) && k.startsWith(base)) fileCache.delete(k);
+  for (const k of fileCache.keys()) if (!seen.has(k) && k.startsWith(base)) { fileCache.delete(k); diskDirty = true; }
 
   return { session: seal(report.session), week: seal(report.week), today: seal(report.today) };
 }
@@ -175,11 +226,13 @@ async function readCodex(nowMs: number): Promise<UsageReport> {
   const weekSince = nowMs - 7 * 86400_000;
   if (!fs.existsSync(base)) return report;
 
+  loadDisk();
   const seen = new Set<string>();
   for (const f of await walkJsonl(base, weekSince)) {
     seen.add(f.path);
     let entry = codexCache.get(f.path);
     if (!entry || entry.mtimeMs !== f.mtimeMs || entry.size !== f.size) {
+      diskDirty = true;
       let content: string;
       try {
         content = await fs.promises.readFile(f.path, "utf8");
@@ -219,7 +272,7 @@ async function readCodex(nowMs: number): Promise<UsageReport> {
       if (!w.firstTs || entry.lastTs < w.firstTs) w.firstTs = entry.lastTs;
     }
   }
-  for (const k of codexCache.keys()) if (!seen.has(k) && k.startsWith(base)) codexCache.delete(k);
+  for (const k of codexCache.keys()) if (!seen.has(k) && k.startsWith(base)) { codexCache.delete(k); diskDirty = true; }
 
   return { session: seal(report.session), week: seal(report.week), today: seal(report.today) };
 }
@@ -232,6 +285,7 @@ export interface ProviderUsage {
 
 export async function readUsage(nowMs: number): Promise<ProviderUsage[]> {
   const [claude, codex] = await Promise.all([readClaude(nowMs), readCodex(nowMs)]);
+  saveDisk();
   return [
     { provider: "claude", label: "Claude", report: claude },
     { provider: "codex", label: "Codex", report: codex },
