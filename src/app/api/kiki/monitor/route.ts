@@ -26,7 +26,12 @@ export async function POST(req: Request) {
   if (!b.voiceConnected) await raiseAlert("voice-down", "warn", "ยังไม่ได้เข้าห้องเสียง — กำลังพยายามต่อใหม่อัตโนมัติ");
 
   // โทเค็นใกล้เต็ม = เรื่องที่ต้องรู้ก่อนโดนตัด ไม่ใช่รู้ตอนใช้ไม่ได้แล้ว
+  // เช็คทุก 10 นาทีพอ — การอ่าน log โทเค็นแพงมาก (1.1 GB) เช็คทุก 30 วิทำให้เว็บล้ม
   try {
+    const { getSetting, setSetting } = await import("@/lib/kiki");
+    const last = Number((await getSetting("vex_token_check_at")) || 0);
+    if (Date.now() - last < 10 * 60_000) return NextResponse.json({ card });
+    await setSetting("vex_token_check_at", String(Date.now()));
     const u = await import("@/lib/usage");
     const now = Date.now();
     for (const p of u.readUsage(now)) {

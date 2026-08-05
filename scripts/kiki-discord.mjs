@@ -681,7 +681,7 @@ client.once(Events.ClientReady, async (c) => {
   if (!OWNER) console.warn("⚠️ ยังไม่ได้ตั้ง DISCORD_OWNER_ID — API จะไม่รู้ว่าใครเป็นเจ้าของ");
   await buildCues();
   await setupMonitorChannels();
-  setInterval(updateMonitor, 30_000);
+  setInterval(updateMonitor, 60_000); // 30 วิถี่เกินไป การ์ดไม่ได้เปลี่ยนเร็วขนาดนั้น
   setTimeout(updateMonitor, 3000);
   // ตั้งตัววนหยิบงานก่อนเข้าห้องเสียง — ถ้าห้องเสียงต่อไม่ได้ ฝั่งข้อความต้องยังทำงานได้ปกติ
   // (เคยพลาด: connectVoice ค้างรอสถานะ Ready 20 วิ แล้วบล็อกไม่ให้ตัววนหยิบงานเริ่มเลย)

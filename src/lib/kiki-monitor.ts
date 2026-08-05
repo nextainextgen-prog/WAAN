@@ -81,7 +81,14 @@ export async function buildCard(input: {
  * ใช้ของเดิมที่น้องวานมีอยู่แล้ว (src/lib/usage.ts อ่านจากไฟล์ log ในเครื่อง) ไม่สร้างตัวใหม่
  * งบต่อหน้าต่างอ่านจาก .env — ไม่ตั้ง = โชว์แค่จำนวน token ไม่โชว์ %
  */
+// อ่านโทเค็นแพงมาก — ต้องไล่ไฟล์ log 1,759 ไฟล์ รวม 1.1 GB
+// การ์ดอัปเดตทุก 30 วิ ถ้าอ่านใหม่ทุกรอบ = เว็บกินแรมจนโดนฆ่า (เกิดจริง 5 ส.ค. เว็บล้มทั้งเช้า
+// วัดได้ /api/kiki/monitor ใช้ 15-24 วินาทีต่อครั้ง) · ตัวเลขโทเค็นไม่ได้เปลี่ยนเร็วขนาดนั้น
+let tokenCache: { lines: string[]; at: number } | null = null;
+const TOKEN_TTL_MS = 5 * 60_000;
+
 async function tokenBlock(): Promise<string[]> {
+  if (tokenCache && Date.now() - tokenCache.at < TOKEN_TTL_MS) return tokenCache.lines;
   try {
     const u = await import("./usage");
     const now = Date.now();
@@ -112,9 +119,10 @@ async function tokenBlock(): Promise<string[]> {
       todayCost += p.report.today.costUsd;
     }
     out.push(`💰 วันนี้รวม ${u.fmtTokens(todayTok)} tokens · ~$${todayCost.toFixed(2)} (~${Math.round(todayCost * 36)} บาท)`);
+    tokenCache = { lines: out, at: Date.now() };
     return out;
   } catch {
-    return ["📊 โทเค็น    อ่านไม่ได้"];
+    return tokenCache?.lines ?? ["📊 โทเค็น    อ่านไม่ได้"];
   }
 }
 
