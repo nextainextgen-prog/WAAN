@@ -136,9 +136,24 @@ export async function POST(req: Request) {
   if (!nowInSession) {
     return NextResponse.json({ action: { do: "ignore", why: "ยังไม่ได้เรียก" }, heard, timing, sessionOpen: await sessionOpen() });
   }
+  // ===== ถามเองแล้วต้องรอฟังคำตอบ (แก้ 5 ส.ค. 2026 หลังเจ้าของเทสรอบสาม) =====
+  //
+  // เคสจริงที่พังหนักที่สุด — log ตรง ๆ:
+  //   Vex: "ค้างรอเบอร์โทรอยู่ครับ พิมพ์เบอร์มาเลย"
+  //   โด้: "ใช้เบอร์นั้นได้เลยครับผม ... 8312458989"
+  //   ระบบ: ข้าม (ไม่แน่ใจว่าพูดกับผม จึงเงียบไว้)   ← ทิ้งคำตอบทิ้ง
+  //   Vex:  ถามเรื่องเบอร์ซ้ำอีก
+  // เจ้าของบ่นว่า "ผมบอกข้อมูลไปแล้วมันยังถามผมอยู่อีก" — เพราะมันไม่เคยได้ยินคำตอบเลย
+  //
+  // ตัวกรอง "พูดกับเราไหม" มีไว้กันเสียงที่เขาคุยกับคนอื่น ซึ่งถูก
+  // แต่ตอนที่ "เราเพิ่งถามเขาไปเอง" ประโยคถัดไปคือคำตอบแทบจะแน่นอน — ห้ามกรองทิ้ง
+  const lastSpokenNow = (await getSetting(LAST_SPOKEN_KEY)) || "";
+  const weJustAsked = /\?|ไหมครับ|มั้ยครับ|ไหม$|มั้ย$|พิมพ์.*มา|บอกมา|ส่งมา|ขอ(เบอร์|รหัส|โค้ด|OTP)/i.test(lastSpokenNow)
+    && Date.now() - Number((await getSetting(LAST_HEARD_KEY)) || 0) < 5 * 60_000;
+
   const quick = quickAddressed(command, { inSession: nowInSession });
-  if (quick === "no") return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard, timing, sessionOpen: await sessionOpen() });
-  if (quick === "unsure") {
+  if (quick === "no" && !weJustAsked) return NextResponse.json({ action: { do: "ignore", why: "ไม่ได้พูดกับผม" }, heard, timing, sessionOpen: await sessionOpen() });
+  if (quick === "unsure" && !weJustAsked) {
     const tAddr = Date.now();
     const convo = await kikiConversation(6).catch(() => "");
     const ok = await addressedToVex(command, convo);
@@ -193,17 +208,26 @@ export async function POST(req: Request) {
   // ตอนนี้ใช้ตัวจัดเส้นทางตัวเดียวกับฝั่งข้อความ = เส้นเสียงเข้าถึงความสามารถครบทั้ง 57 ตัว
   //   เจตนาที่เป็น "การกระทำ" (เปิดเพลง · ส่งแชท · จัดหมวดเงิน · คุมเครื่อง) → ส่งเข้าสมองเดียว
   //   เจตนาที่เป็น "คำถาม/คุย"                                              → ตอบเร็วในเส้นเสียง
+  // ตอบคำถามที่เราเพิ่งถาม = ข้ามการอ่านเจตนา ประหยัด 1.5-2 วินาที
+  // (เขากำลังตอบเรื่องเดิมที่คุยค้างอยู่ ไม่ได้เปลี่ยนเรื่อง)
   const tRoute = Date.now();
-  const route = await routeIntent({ text: effective, convo: await kikiConversation(6).catch(() => "") })
-    .catch(() => ({ intent: "chat", confidence: 0, args: {} }));
-  mark("อ่านเจตนา", tRoute);
+  const route = weJustAsked
+    ? { intent: "chat" as const, confidence: 0, args: {} }
+    : await routeIntent({ text: effective, convo: await kikiConversation(6).catch(() => "") })
+        .catch(() => ({ intent: "chat", confidence: 0, args: {} }));
+  if (!weJustAsked) mark("อ่านเจตนา", tRoute);
 
   // ปลายทางที่ "ลงมือทำ" ต้องผ่านทะเบียนตัวจัดการจริงเท่านั้น เส้นเสียงทำเองไม่ได้
   // (คุยเล่น/ถามความเห็น/ถามข้อมูล ปล่อยให้เส้นเสียงตอบเองเพื่อความเร็ว)
-  const isAction = !READ_ONLY_INTENTS.has(route.intent) && route.confidence >= 0.5;
+  //
+  // **แต่คำตอบต่อคำถามที่เราถามเอง ต้องเข้าทะเบียนเสมอ** — นี่คือจุดที่พลาดรอบก่อน:
+  // ตอนที่ระบบกำลังรออินพุต (เบอร์โทร · OTP · รหัส 2FA) ตัวรับคำตอบอยู่ในทะเบียน
+  // ถ้าลัดไปตอบเองในเส้นเสียง คำตอบจะไม่มีวันถึงโปรเซสที่รออยู่
+  // → เจ้าของบอกเบอร์ไปแล้วมันยังถามซ้ำ เพราะข้อมูลไม่เคยไปถึงที่ที่ต้องใช้
+  const isAction = weJustAsked || (!READ_ONLY_INTENTS.has(route.intent) && route.confidence >= 0.5);
   if (isAction) {
     void setActivity("⚙️", `${route.intent}: ${command.slice(0, 40)}`);
-    return await raceOrDefer(effective, `ทำ ${route.intent}`, heard, timing, t0, () => runThroughBrain(effective));
+    return await raceOrDefer(effective, weJustAsked ? "ที่คุยค้างไว้" : `ทำ ${route.intent}`, heard, timing, t0, () => runThroughBrain(effective));
   }
 
   // ===== คำถาม/คุย: ตอบเร็ว แต่ต้องมีข้อเท็จจริงจริง =====
