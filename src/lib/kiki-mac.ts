@@ -130,7 +130,10 @@ export async function macAgent(task: string): Promise<MacResult> {
     .replace(/[`"]?(\/(?:tmp|private\/tmp|Users)[^\s`"'<>|]+\.(?:png|jpe?g))[`"]?/gi, (full, p) => {
       try {
         const real = fs.realpathSync(p);
-        if (fs.statSync(real).isFile() && (real.startsWith(fs.realpathSync(os.tmpdir())) || real.includes("VexAgent"))) {
+        // 5 ส.ค. 2026: agent เซฟภาพไว้ที่ /tmp (= /private/tmp) แต่ os.tmpdir() บนแมคคือ /var/folders/...
+        // เช็คเดิมเลยตกทุกภาพที่ agent แคปมา → เจ้าของสั่ง "แคปหน้าจอ" แล้วไม่เคยได้ภาพสักครั้ง
+        const allowed = [fs.realpathSync(os.tmpdir()), "/private/tmp", "/tmp"];
+        if (fs.statSync(real).isFile() && (allowed.some((dir) => real.startsWith(dir)) || real.includes("VexAgent"))) {
           if (!imagePaths.includes(real)) imagePaths.push(real);
           return "";
         }

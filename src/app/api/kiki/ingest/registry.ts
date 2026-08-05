@@ -20,6 +20,7 @@ import { linkSaveHandler, researchHandler, docSummaryHandler } from "./handlers/
 import { calendarEditHandler, calendarViewHandler, calendarCreateHandler } from "./handlers/calendar";
 import { chatFallbackHandler } from "./handlers/chat";
 import { jobStatusHandler, autoBackgroundHandler } from "./handlers/jobs";
+import { eyesHandler } from "./handlers/eyes";
 import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandler } from "./handlers/reply";
 import { guiHandler } from "./handlers/gui";
 
@@ -54,6 +55,9 @@ export const HANDLERS: Handler[] = [
   // โซเชียล
   socialStatusHandler,
   socialDraftHandler,
+
+  // คุมว่าจะเฝ้าข้อความเข้าจากแชทไหน
+  eyesHandler,
 
   // งานเบื้องหลัง — jobStatus ต้องมาก่อน hermes (ไม่งั้น "งานถึงไหนแล้ว" ถูกตีเป็นสั่งงานใหม่ซ้ำ)
   jobStatusHandler,

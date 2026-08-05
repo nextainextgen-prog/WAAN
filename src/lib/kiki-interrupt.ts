@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { getSetting, setSetting, askExtractor, vexRulesContext } from "./kiki";
+import { getSetting, setSetting, askExtractor, vexRulesContext, askGeminiJson } from "./kiki";
 
 /**
  * นโยบายขัดจังหวะ (สเปกข้อ 7 — หัวใจของงานนี้ สำคัญกว่าคุณภาพเสียง)
@@ -103,7 +103,33 @@ export async function scoreEvent(ev: IncomingEvent): Promise<Verdict> {
   let urgency = 3;
   let who = 3;
   let topic = ev.text.slice(0, 40);
+
+  // ตัวแจ้งเตือนอัตโนมัติ = ไม่ต้องเปลืองโมเดลให้คะแนน ลงบันทึกเงียบ ๆ พอ
+  // (5 ส.ค. 2026: เหตุการณ์พวกนี้เข้ามาทั้งวัน ถ้าเรียกโมเดลทุกตัว เครื่องตันจน "แชทของเจ้าของ" ไม่ได้คิว)
+  if (/notify|notification|bot\b|แจ้งเตือน|ระบบ|system/i.test(ev.fromName) && !/darling|แฟน|แม่|พ่อ/i.test(ev.fromName)) {
+    return { level: 4, urgency: 1, who: 1, cost, topic: ev.fromName.slice(0, 40), why: "ตัวแจ้งเตือนอัตโนมัติ ลงบันทึกอย่างเดียว" };
+  }
+
+  // ให้คะแนนด้วยตัวเร็วก่อน (ไม่กี่วินาที) — ของเดิมเรียก Claude CLI ทุกเหตุการณ์
+  // ทำให้ /api/kiki/event ใช้เวลา 40-77 วินาทีต่อครั้ง แล้วไปเบียดคิวจนแชทเจ้าของ timeout
+  const fast = await askGeminiJson<{ urgency?: number; who?: number; topic?: string }>(
+    `ให้คะแนนว่าควรรบกวนเจ้าของแค่ไหน ตอบ JSON เท่านั้น: {"urgency":0-10,"who":0-10,"topic":"หัวเรื่องสั้นมาก 2-6 คำ"}
+urgency = ตอบช้าแล้วเสียหายไหม (นัดหมายที่ต้องยืนยันวันนี้/ลูกค้ารอ/เรื่องเงิน = สูง · ทักเล่น/ส่งรูป/สติกเกอร์ = ต่ำ)
+who = คนนี้สำคัญแค่ไหนกับเจ้าของ (แฟน/แม่/ลูกค้า = สูง · กลุ่มใหญ่/คนไม่รู้จัก/บอท = ต่ำ)
+ถ้ามีกฎที่เจ้าของสอนไว้เกี่ยวกับคนนี้หรือกลุ่มนี้ ให้ยึดกฎนั้นเป็นหลัก
+${rules}
+${aliasNote}`,
+    `จาก: ${ev.fromName}${ev.isGroup ? " (กลุ่ม)" : ""}\nช่องทาง: ${ev.source}\nเนื้อหา: """${ev.text.slice(0, 800)}"""`,
+    20_000,
+  ).catch(() => null);
+  if (fast) {
+    urgency = Math.max(0, Math.min(10, Number(fast.urgency) ?? 3));
+    who = Math.max(0, Math.min(10, Number(fast.who) ?? 3));
+    topic = (fast.topic || topic).trim();
+  }
+
   try {
+    if (fast) throw new Error("ได้คะแนนจากตัวเร็วแล้ว"); // ข้ามตัวช้า — กติกาท้ายฟังก์ชันยังทำงานครบเหมือนเดิม
     const raw = await askExtractor(
       `${rules}\n${aliasNote}\n\nเหตุการณ์ที่เพิ่งเข้ามา:\nจาก: ${ev.fromName}${ev.isGroup ? " (กลุ่ม)" : ""}\nช่องทาง: ${ev.source}\nเนื้อหา: """${ev.text.slice(0, 800)}"""`,
       {

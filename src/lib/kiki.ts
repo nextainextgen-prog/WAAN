@@ -927,6 +927,45 @@ ${rules}
   }
 }
 
+/**
+ * สกัดข้อมูลแบบ "เร็ว" ด้วย Gemini flash ตรง ๆ (ไม่ผ่าน Claude CLI ที่ช้ากว่ามาก)
+ * ใช้กับงานที่เจ้าของนั่งรอหน้าจอ เช่น แตกข้อความยาวเป็นข้อเท็จจริงย่อย
+ * คืน null เมื่อใช้ไม่ได้ ให้ผู้เรียกถอยไปใช้ askExtractor แทน
+ */
+export async function askGeminiJson<T = unknown>(system: string, prompt: string, timeoutMs = 45_000): Promise<T | null> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return null;
+  // ลองสองรอบ — ช่วงที่ยิงถี่ (ตัวให้คะแนนเหตุการณ์ + ตัวอ่านเจตนา) เจอโควตาชนเป็นครั้งคราว
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 2500));
+    const out = await geminiJsonOnce<T>(key, system, prompt, timeoutMs);
+    if (out !== null) return out;
+  }
+  return null;
+}
+
+async function geminiJsonOnce<T>(key: string, system: string, prompt: string, timeoutMs: number): Promise<T | null> {
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[]; error?: { message?: string } };
+    if (j.error?.message) return null;
+    const raw = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+    const m = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    return m ? (JSON.parse(m[0]) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ตัวสกัดข้อมูลทุกตัว (เงิน/นัด/หนี้/เมล ฯลฯ) เรียกผ่านนี่: Claude CLI ก่อน → Gemini สำรองเมื่อช้า/ล่ม
 export async function askExtractor(
   prompt: string,

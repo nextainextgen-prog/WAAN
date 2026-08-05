@@ -1,5 +1,5 @@
 import { vexList } from "@/lib/kiki-format";
-import { askKiki, askExtractor, rememberOwnerFact, forgetOwnerFacts, listOwnerFacts, VEX_RULE_CATEGORY, vexLine } from "@/lib/kiki";
+import { askKiki, askExtractor, askGeminiJson, rememberOwnerFact, forgetOwnerFacts, listOwnerFacts, VEX_RULE_CATEGORY, vexLine } from "@/lib/kiki";
 import { vexSay } from "../shared";
 import type { Ctx, Handler } from "../types";
 
@@ -62,6 +62,49 @@ export const rememberHandler: Handler = async (ctx) => {
   const rememberM = text.match(/^\s*(?:จำไว้(?:ว่า|นะ|ด้วย)?|ช่วยจำ(?:ว่า)?|จำด้วยว่า)\s*[:：]?\s*([\s\S]+)/);
   if ((rememberM && rememberM[1].trim().length >= 3) || (is("memory_remember") && (arg("fact") || text).length >= 5)) {
     const fact = (rememberM?.[1]?.trim() || arg("fact") || text).trim();
+
+    // ===== ข้อมูลยาว (โปรไฟล์/การเงิน/เป้าหมาย) — "ฝังไว้เลย" =====
+    // เจ้าของวางข้อมูลตัวเองมาเป็นหน้า ๆ (5 ส.ค. 2026) แล้วระบบพัง 2 ทาง:
+    //   1) เก็บทั้งก้อนเป็น "ข้อเท็จจริงเดียว" → ค้นย้อนหลังไม่เจอ เอาไปใช้ตอบไม่ได้
+    //   2) ไปแต่งคำยืนยันด้วยสมองตัวใหญ่ → ใช้เวลาเกิน 250 วินาที บอทขึ้น "ระบบหลังบ้านไม่ตอบ"
+    // แก้: แตกเป็นข้อเท็จจริงย่อยด้วยตัวสกัดเร็ว แล้วยืนยันด้วยลิสต์ที่ระบบสร้างเอง (ไม่เรียกสมองตัวใหญ่)
+    if (fact.length >= 280) {
+      const parsed = await askGeminiJson<{ facts?: { fact?: string; category?: string }[] }>(
+        `แตกข้อความที่เจ้าของเล่าเกี่ยวกับตัวเอง ออกเป็น "ข้อเท็จจริงย่อย" ที่สมบูรณ์ในตัวเอง สำหรับให้เลขาจำถาวร
+ตอบ JSON เท่านั้น: {"facts":[{"fact":"ประโยคเดียว อ่านแล้วเข้าใจโดยไม่ต้องดูบริบท","category":"ตัวตน|นิสัย|ความชอบ|ไม่ชอบ|เป้าหมาย|การเงิน|สุขภาพ|คนรอบตัว|การทำงาน|ของสำคัญ|ทั่วไป"}]}
+กติกา: เก็บให้ครบทุกประเด็นที่เขาบอก ห้ามสรุปรวบจนตกรายละเอียด ห้ามแต่งเพิ่มจากที่ไม่มี
+ตัวเลข ชื่อ วันที่ ต้องคงไว้เป๊ะ · ไม่เกิน 40 ข้อ · ข้ามคำสั่งที่ไม่ใช่ข้อเท็จจริง เช่น "จำไว้ในสมองมึงเลย"`,
+        fact.slice(0, 12_000),
+      ).catch(() => null);
+
+      // ตัวเร็วไม่ตอบ (โควตาชน/ล่ม) → ใช้ตัวสกัดหลักแทน ไม่ยอมทิ้งข้อมูลเจ้าของ
+      let list = parsed?.facts;
+      if (!list?.length) {
+        const raw = await askExtractor(
+          `แตกข้อความนี้เป็นข้อเท็จจริงย่อยสำหรับให้เลขาจำถาวร ตอบ JSON เท่านั้น: {"facts":[{"fact":"ประโยคเดียว สมบูรณ์ในตัว","category":"ตัวตน|นิสัย|ความชอบ|ไม่ชอบ|เป้าหมาย|การเงิน|สุขภาพ|คนรอบตัว|การทำงาน|ของสำคัญ|ทั่วไป"}]}\nเก็บครบทุกประเด็น ห้ามแต่งเพิ่ม ตัวเลข/ชื่อ/วันที่คงไว้เป๊ะ\n\n${fact.slice(0, 12_000)}`,
+          { timeoutMs: 120_000 },
+        ).catch(() => "");
+        try {
+          list = (JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || "{}") as { facts?: { fact?: string; category?: string }[] }).facts;
+        } catch { list = undefined; }
+      }
+      const items = (list || []).map((f) => ({ fact: String(f.fact || "").trim(), category: String(f.category || "ทั่วไป").trim() })).filter((f) => f.fact.length >= 4);
+      if (items.length) {
+        for (const it of items) await rememberOwnerFact(it.fact, { category: it.category, source: text.slice(0, 300) }).catch(() => {});
+        const byCat = new Map<string, number>();
+        for (const it of items) byCat.set(it.category, (byCat.get(it.category) || 0) + 1);
+        const block = vexList({
+          title: `ฝังเข้าความจำแล้ว ${items.length} เรื่อง`,
+          items: [...byCat].map(([cat, n]) => `${cat} — ${n} เรื่อง`),
+          note: 'ถามย้อนหลังได้ทุกเมื่อ · มีอะไรเพิ่มพิมพ์มาต่อได้เลย · อยากดูทั้งหมดบอก "ขอดูรายการที่จำไว้"',
+        });
+        return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+      }
+      // แตกไม่สำเร็จ = เก็บทั้งก้อนไว้ก่อน ดีกว่าทำข้อมูลเจ้าของหาย แล้วบอกตรง ๆ
+      await rememberOwnerFact(fact.slice(0, 4000), { category: "ทั่วไป", source: text.slice(0, 300) });
+      return reply([{ kind: "text", text: await vexLine("เก็บข้อความทั้งก้อนไว้แล้วครับ แต่แตกเป็นข้อ ๆ ไม่สำเร็จรอบนี้ — ส่งมาใหม่อีกทีผมจะจัดให้เป็นระเบียบกว่านี้"), replyTo: msgId }]);
+    }
+
     const category = /ชอบ/.test(fact) && !/ไม่ชอบ/.test(fact) ? "ความชอบ"
       : /ไม่ชอบ|แพ้|เกลียด|ห้าม/.test(fact) ? "ไม่ชอบ"
       : /สุขภาพ|ยา|หมอ|ออกกำลัง|น้ำหนัก/.test(fact) ? "สุขภาพ"
