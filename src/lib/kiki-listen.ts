@@ -100,7 +100,12 @@ export function isCloseCommand(text: string): boolean {
 // เปิดแล้วคุยยาวไม่ต้องเรียกซ้ำ ปิดเมื่อพูดคำจบหรือเงียบครบ 1 นาที
 const SESSION_KEY = "vex_session_until";
 const SESSION_TOPIC_KEY = "vex_session_topic";
-export const SESSION_IDLE_MS = 60_000; // เจ้าของกำหนดเอง: เงียบ 1 นาที = จบ
+// เจ้าของกำหนด 1 นาทีตอนออกแบบ แต่ใช้จริงแล้วสั้นไป —
+// เขาเปิดห้องค้างทั้งวันและคุยเป็นช่วง ๆ พอคิดงานอยู่แป๊บเดียวสายก็ปิด
+// log จริง: พูดว่า "แล้วไงมันหมดอีกแล้วเหรอ ทำไมมันขึ้นหมดบ่อยจัง" → ข้าม (ยังไม่ได้เรียก)
+// ต้องเรียกใหม่ทุกครั้งที่หยุดคิด = ขัดกับที่เขาสั่งว่า "เรียกรอบแรกแล้วอยู่คุยยาวเลย"
+// 3 นาทีกำลังดี — ยังไม่นานพอให้เสียงคุยกับคนอื่นหลุดเข้ามา (มีตัวกรอง "พูดกับเราไหม" ซ้อนอีกชั้น)
+export const SESSION_IDLE_MS = 3 * 60_000;
 
 export async function openSession(topic = ""): Promise<void> {
   await setSetting(SESSION_KEY, String(Date.now() + SESSION_IDLE_MS));

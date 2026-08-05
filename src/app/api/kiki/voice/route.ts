@@ -149,6 +149,25 @@ export async function POST(req: Request) {
   await touchSession();
   await saveKikiChat("user", command, "owner", "discord-voice");
 
+  // ===== "เอาสิ / รันเลย" หมายถึงอะไร ต้องรู้จากสิ่งที่ตัวเองเพิ่งเสนอไป =====
+  //
+  // เคสจริงที่เจ้าของเจอ 5 ส.ค.: Vex แจ้งว่าเซสชัน Telegram หมดอายุ แล้วถามเองว่า
+  // "ให้ล็อกอินใหม่เลยไหมครับ ถ้าเอา ผมรันคำสั่งให้" → เจ้าของตอบ "โอเค รันให้ผมเลย"
+  // → Vex ไม่รู้เรื่องแล้ว เพราะคำว่า "รันให้เลย" ลอย ๆ ไม่มีบริบทว่ารันอะไร
+  // เจ้าของบ่นตรง ๆ ว่า "พอผมบอกให้รัน แม่งจำไม่ได้ และไม่รู้และทำไม่ได้"
+  //
+  // คำตอบรับสั้น ๆ จึงต้องถูกขยายด้วย "ข้อเสนอล่าสุดของเราเอง" ก่อนส่งเข้าสมอง
+  // ไม่งั้นสมองได้แค่คำว่า "รันเลย" ซึ่งตีความไม่ได้ไม่ว่าจะฉลาดแค่ไหน
+  let effective = command;
+  if (isGoAhead(command) || /^(รัน|ทำ|จัด|เอา|ลุย|โอเค)/.test(command.trim())) {
+    const lastSaid = (await getSetting(LAST_SPOKEN_KEY)) || "";
+    if (lastSaid && /ไหม|มั้ย|จะให้|ให้ผม|ต้องการ|เอาไหม/.test(lastSaid)) {
+      effective =
+        `${command}\n\n[บริบท: นี่คือคำตอบรับต่อสิ่งที่คุณเพิ่งเสนอไปเอง ` +
+        `ซึ่งคือ "${lastSaid.slice(0, 400)}" — ลงมือทำสิ่งนั้นต่อได้เลย ห้ามถามซ้ำว่าหมายถึงอะไร]`;
+    }
+  }
+
   // เคาะประตูไว้แล้วเขาตอบว่าว่าง → เล่าเรื่องที่ค้างไว้เลย ไม่ต้องผ่านสมองซ้ำ
   if (isGoAhead(command)) {
     const pend = await takePendingAnnounce();
@@ -175,7 +194,7 @@ export async function POST(req: Request) {
   //   เจตนาที่เป็น "การกระทำ" (เปิดเพลง · ส่งแชท · จัดหมวดเงิน · คุมเครื่อง) → ส่งเข้าสมองเดียว
   //   เจตนาที่เป็น "คำถาม/คุย"                                              → ตอบเร็วในเส้นเสียง
   const tRoute = Date.now();
-  const route = await routeIntent({ text: command, convo: await kikiConversation(6).catch(() => "") })
+  const route = await routeIntent({ text: effective, convo: await kikiConversation(6).catch(() => "") })
     .catch(() => ({ intent: "chat", confidence: 0, args: {} }));
   mark("อ่านเจตนา", tRoute);
 
@@ -184,7 +203,7 @@ export async function POST(req: Request) {
   const isAction = !READ_ONLY_INTENTS.has(route.intent) && route.confidence >= 0.5;
   if (isAction) {
     void setActivity("⚙️", `${route.intent}: ${command.slice(0, 40)}`);
-    return await raceOrDefer(command, `ทำ ${route.intent}`, heard, timing, t0, () => runThroughBrain(command));
+    return await raceOrDefer(effective, `ทำ ${route.intent}`, heard, timing, t0, () => runThroughBrain(effective));
   }
 
   // ===== คำถาม/คุย: ตอบเร็ว แต่ต้องมีข้อเท็จจริงจริง =====
@@ -197,7 +216,7 @@ export async function POST(req: Request) {
   void setActivity("🧠", `กำลังคิด: ${command.slice(0, 50)}`);
   return await raceOrDefer(command, command.slice(0, 40), heard, timing, t0, async () => {
     const tBrain = Date.now();
-    const out = await askKikiVoice(command, undefined, { withFacts: needsOutside });
+    const out = await askKikiVoice(effective, undefined, { withFacts: needsOutside });
     mark("คิดคำตอบ", tBrain);
     return out;
   });
@@ -246,10 +265,25 @@ async function raceOrDefer(
   }
 
   // ช้าเกินความอดทน → บอกเขาก่อน อย่าให้รอเงียบ ๆ แล้วส่งผลตามทีหลัง
-  // ลงกระดาน "เรื่องที่ค้างอยู่" ด้วย เผื่อเขาถามระหว่างรอว่ากำลังทำอะไรให้
-  void import("@/lib/kiki-jobs").then((j) => j.pushFocus({ kind: "topic", ref: `voice:${Date.now()}`, label: topic })).catch(() => {});
+  //
+  // ===== ต้องเก็บกระดานให้สะอาดด้วย (บั๊กงูกินหาง 5 ส.ค. 2026) =====
+  //
+  // เดิมแค่ push ไม่เคย drop → เกิดวงจรที่ระบบหลอกตัวเอง:
+  //   ถามเรื่องฝน → จดกระดาน "กำลังทำ: เรื่องฝน" → งานวิ่ง → งานเรียกสมองเพื่อตอบ
+  //   → สมองเห็นกระดานว่ามีงานเรื่องฝนค้างอยู่ → ตอบว่า "ยังรอข้อมูลฝนอยู่ครับ"
+  //   ทั้งที่ตัวมันเองคือคนที่ต้องตอบ
+  // เจ้าของได้ยินว่า "รอข้อมูลอยู่" แล้วรอเก้อ ก่อนจะมาสารภาพเองว่าไม่มีอะไรรันเลย
+  // แถมกระดานบวมด้วยรายการซ้ำ (เจอ session_auth ซ้อน 4 อัน)
+  const focusRef = `voice:${Date.now()}`;
+  void import("@/lib/kiki-jobs").then((j) => j.pushFocus({ kind: "topic", ref: focusRef, label: topic })).catch(() => {});
   void (async () => {
-    const spoken = await job;
+    let spoken = "";
+    try {
+      spoken = await job;
+    } finally {
+      // ลบออกจากกระดาน "ก่อน" เรียบเรียงคำตอบเสมอ ไม่งั้นมันอ่านเจอตัวเองอีก
+      await import("@/lib/kiki-jobs").then((j) => j.dropFocus(focusRef)).catch(() => {});
+    }
     const { queueOut } = await import("@/lib/kiki-outbox");
     if (!spoken) {
       // canned-ok: ข้อความบอกว่าทำไม่สำเร็จ ห้ามให้ AI เรียบเรียงจนกลายเป็นเคลมว่าทำได้

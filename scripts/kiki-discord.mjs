@@ -301,6 +301,85 @@ async function speak(oggBuffer) {
 
 player.on("error", (e) => console.error("player error:", e?.message));
 
+/**
+ * ===== พูดแบบสตรีม — ตัวที่ทำให้ "รู้สึกว่าตอบเร็ว" (5 ส.ค. 2026) =====
+ *
+ * โจทย์: เจ้าของอยากได้คำตอบใน 5 วินาที แต่วัดแล้วตัวแปลงเสียงใช้ขั้นต่ำ 5.3 วินาที
+ * แม้ประโยคสั้นที่สุด (พื้นของ API เอง กดต่ำกว่านี้ไม่ได้ ทุกโมเดล ทุกผู้ให้บริการ)
+ * → รอทั้งย่อหน้าเสร็จก่อนค่อยเริ่มพูด = ไม่มีทางถึง 5 วินาทีเลย
+ *
+ * ทางออก: ซอยเป็นประโยค ทำทีละก้อน พูดก้อนแรกทันทีที่ได้
+ * ตัวเลขที่ทำให้มันเวิร์ก — วัดจริงจาก Gemini TTS:
+ *   ประโยคสั้น 48 ตัวอักษร ใช้เวลาทำ 5.7 วิ แต่ "พูดออกมา" ได้ 4-5 วินาที
+ *   แปลว่าระหว่างที่ก้อนแรกกำลังเล่น เรามีเวลาพอทำก้อนถัดไปให้ทันพอดี
+ *   ต่อกันไปเรื่อย ๆ โดยไม่มีช่องว่าง
+ *
+ * ผลที่เจ้าของได้ยิน: เสียงแรกมาถึงใน ~6 วิแทนที่จะเป็น 12-20 วิ
+ * และยิ่งคำตอบยาว ยิ่งประหยัดมาก เพราะก้อนหลัง ๆ ทำเสร็จก่อนถึงคิวเล่นอยู่แล้ว
+ */
+
+/** ซอยข้อความเป็นก้อนที่ "พูดจบในตัว" — ตัดที่จุด/บรรทัด แล้วรวมก้อนสั้นเข้าด้วยกัน */
+function splitForSpeech(text, { first = 90, rest = 180 } = {}) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  // ตัดที่รอยจบประโยคจริง ๆ เท่านั้น — จุดไข่ปลาคือจังหวะหยุด ไม่ใช่จบประโยค อย่าตัดตรงนั้น
+  const parts = clean.split(/(?<=[.!?。])\s+|(?<=ครับ|ค่ะ|นะครับ|เนาะ)\s+/).filter(Boolean);
+  const out = [];
+  let buf = "";
+  for (const p of parts) {
+    const cap = out.length === 0 ? first : rest;
+    if (buf && (buf + " " + p).length > cap) { out.push(buf.trim()); buf = p; }
+    else buf = buf ? `${buf} ${p}` : p;
+  }
+  if (buf.trim()) out.push(buf.trim());
+  // ก้อนสุดท้ายสั้นจิ๋ว = เอาไปต่อท้ายก้อนก่อนหน้า (พูดคำเดียวโดด ๆ ฟังแล้วสะดุด)
+  if (out.length > 1 && out[out.length - 1].length < 15) out[out.length - 2] += " " + out.pop();
+  return out;
+}
+
+let speakSeq = 0; // กันเสียงเก่าที่ยังทำอยู่ตอนถูกแทรก ไม่ให้โผล่มาเล่นทับของใหม่
+
+/**
+ * พูดทั้งคำตอบแบบสตรีม — คืน true ถ้าได้พูดอย่างน้อยหนึ่งก้อน
+ * ทำก้อนถัดไป "ระหว่าง" ก้อนปัจจุบันกำลังเล่น จึงต่อกันแทบไม่มีช่องว่าง
+ */
+async function speakStream(text) {
+  const chunks = splitForSpeech(text);
+  if (!chunks.length) return false;
+  if (chunks.length === 1) {
+    const one = await tts({ text: chunks[0] });
+    return one ? await speak(one.ogg) : false;
+  }
+
+  const mySeq = ++speakSeq;
+  const t0 = Date.now();
+  let spokeAny = false;
+
+  // ทำล่วงหน้า 2 ก้อนพร้อมกัน — ตัวเลขบังคับให้ต้องทำแบบนี้:
+  //   ก้อนแรก 63 ตัวอักษร ทำเสร็จใน 5.2 วิ แต่ "พูดออกมา" ได้แค่ 4.4 วิ
+  //   ส่วนก้อนถัดไปยาวกว่า ใช้เวลาทำ ~9 วิ
+  //   ยิงทีละก้อน = เล่นก้อนแรกจบแล้วต้องยืนรอเงียบ ๆ อีก 4-5 วิ
+  //   ยิงล่วงหน้า 2 ก้อน = ก้อนสองทำเสร็จพอดีตอนก้อนแรกเล่นจบ ต่อกันไม่มีช่องว่าง
+  const LOOKAHEAD = 2;
+  const jobs = new Map();
+  const kick = (i) => { if (i < chunks.length && !jobs.has(i)) jobs.set(i, tts({ text: chunks[i] })); };
+  for (let i = 0; i <= LOOKAHEAD; i++) kick(i);
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (mySeq !== speakSeq) break;           // มีคำตอบใหม่มาแทน = ทิ้งของเก่าทันที
+    if (!connection || !ownerInVoice) break; // ออกจากห้องกลางทาง
+    const cur = await jobs.get(i);
+    jobs.delete(i);
+    kick(i + LOOKAHEAD + 1);                 // เติมคิวล่วงหน้าให้เต็มอยู่เสมอ
+    if (!cur) continue;                      // ก้อนนี้ทำไม่ได้ ข้ามไป อย่าให้ทั้งคำตอบพัง
+    if (i === 0) console.log(`  → เสียงแรกถึงหูใน ${((Date.now() - t0) / 1000).toFixed(1)}s (ซอย ${chunks.length} ก้อน)`);
+    const ok = await speak(cur.ogg);
+    if (ok) spokeAny = true;
+    else if (speaking) break;                // ถูกแทรกกลางคัน
+  }
+  return spokeAny;
+}
+
 // ===== เสียงขาเข้า (เฟส 3) =====
 //
 // ด่านกรองซ้อนกัน 4 ชั้น กันทั้งค่าใช้จ่ายและการแทรกผิดจังหวะ:
@@ -374,36 +453,40 @@ function opusToOgg(opusStream, outPath) {
   });
 }
 
-// สายเปิดอยู่ไหม (ท่อจำจากคำตอบล่าสุดของ API) — ใช้ตัดสินว่าควรตอบรับล่วงหน้าไหม
+// สายเปิดอยู่ไหม (ท่อจำจากคำตอบล่าสุดของ API)
 let sessionKnownOpen = false;
-let lastSpeculativeAck = 0;
+
+// กันพูดประโยคเดิมซ้ำติด ๆ กัน — เจ้าของเจอจริง: "โอเคครับ กำลังหาให้" แล้ว
+// พูด "รับทราบครับ เดี๋ยวไปหาให้" ต่อทันที เพราะเขาพูดต่ออีกประโยคระหว่างที่ยังทำงานอยู่
+const lastBankAt = new Map();
+function bankTooSoon(bank, ms = 15_000) {
+  const t = lastBankAt.get(bank) || 0;
+  if (Date.now() - t < ms) return true;
+  lastBankAt.set(bank, Date.now());
+  return false;
+}
 
 /**
- * ตอบรับ "ทันทีที่พูดจบ" โดยไม่รอถอดเสียง (เจ้าของสั่ง 5 ส.ค.: "ตอบผมรับทราบแบบเรียลไทม์")
+ * ===== เลิกตอบรับล่วงหน้าแล้ว (ปิดถาวร 5 ส.ค. 2026 หลังเจ้าของเทสจริงรอบสอง) =====
  *
- * ปัญหา: กว่าจะรู้ว่าเขาเรียกจริงไหมต้องถอดเสียงก่อน = 3 วินาที ซึ่งช้าเกินกว่าจะรู้สึกว่า "ทันที"
- * ทางออก: เสียงสั้น + ยังไม่ได้อยู่ในสาย = น่าจะเป็นการเรียก → ตอบ "ครับ" เลยจากคลังเสียง
- *         พร้อมกับที่ถอดเสียงกำลังวิ่งอยู่ ถ้าไม่ใช่การเรียกก็แค่พูด "ครับ" ไปครั้งเดียว ไม่เสียหาย
- * เว้นระยะ 20 วิ กันเสียงรบกวนทำให้พูด "ครับ" รัว
+ * ไอเดียเดิม: เสียงสั้น + ยังไม่อยู่ในสาย = น่าจะเป็นการเรียก → พูด "ครับ" เลยไม่ต้องรอถอดเสียง
+ * "ถ้าไม่ใช่การเรียกก็แค่พูดครับไปครั้งเดียว ไม่เสียหาย" ← ตรงนี้คือที่คิดผิด
+ *
+ * ของจริงที่เกิด (จาก log): มันสร้าง "วงจรเสียง" ที่หยุดเองไม่ได้
+ *   พูด "ครับผม" → เสียงออกลำโพงย้อนเข้าไมค์ → ไฟล์เสียงสั้น → เข้าเงื่อนไขอีก
+ *   → พูด "ครับผม" อีก → วนอยู่อย่างนั้น
+ * เจ้าของบ่นตรง ๆ ว่า "พูดขึ้นมาตอนที่เงียบ ๆ ว่าครับผม" และ "ชอบพูดซ้ำ 2 รอบ"
+ *
+ * รากของปัญหาคือมัน **พูดโดยยังไม่รู้ว่าเจ้าของพูดอะไร** ซึ่งขัดกับกติกาข้อ 4 ของโปรเจกต์เอง
+ * (ไม่แน่ใจ = เงียบ ไม่ใช่ = เดา)
+ *
+ * และตอนนี้ไม่จำเป็นแล้ว เพราะมีการพูดแบบสตรีม —
+ * เสียงจริงมาถึงหูใน ~5 วินาที (วัดได้ 17.9 → 5.2) ซึ่งเร็วพอโดยไม่ต้องเดา
  */
-async function speculativeAck(bytes) {
-  if (sessionKnownOpen) return false;               // อยู่ในสายแล้ว ไม่ต้องตอบรับซ้ำ
-  if (bytes > 16_000) return false;                 // ยาวเกิน = เป็นประโยค ไม่ใช่คำเรียก
-  if (Date.now() - lastSpeculativeAck < 20_000) return false;
-  if (!connection || !ownerInVoice || speaking) return false;
-  lastSpeculativeAck = Date.now();
-  const s2 = await tts({ bankKey: "here" }).catch(() => null);
-  if (!s2) return false;
-  await speak(s2.ogg);
-  console.log(`  → ตอบรับทันที "${s2.text}" (${s2.ms}ms)`);
-  return true;
-}
 
 /** ส่งประโยคที่ได้ยินไปให้สมองตัดสิน แล้วทำตามที่มันสั่ง */
 async function handleUtterance(oggPath, bytes = 0) {
   const t0 = Date.now();
-  // ยิงคู่ขนาน: ตอบรับทันทีจากคลังเสียง + ถอดเสียงคิดคำตอบ
-  const ackPromise = speculativeAck(bytes).catch(() => false);
   try {
     const res = await fetch(APP_URL + "/api/kiki/voice", {
       method: "POST",
@@ -431,10 +514,9 @@ async function handleUtterance(oggPath, bytes = 0) {
         break;
 
       case "cue": {
-        // ตอบรับล่วงหน้าไปแล้ว ไม่ต้องพูดซ้ำ
-        if (action.bank === "here" && (await ackPromise)) break;
         // เสียงตอบรับต้องมาถึงหูภายในเสี้ยววินาที — หยิบจากคลังที่อัดไว้แล้ว ไม่เรียกโมเดลอะไรเลย
         if (action.bank) {
+          if (bankTooSoon(action.bank)) { console.log(`  → ข้ามคำรับ "${action.bank}" (เพิ่งพูดไป)`); break; }
           const s2 = await tts({ bankKey: action.bank });
           if (s2) { await speak(s2.ogg); console.log(`  → พูด "${s2.text}" (${s2.via} ${s2.ms}ms)`); }
         } else if (action.cue) {
@@ -448,9 +530,9 @@ async function handleUtterance(oggPath, bytes = 0) {
       }
 
       case "say": {
-        // คำตอบจริง — Kanya ในเครื่องเร็วกว่า Gemini 5 เท่า ใช้ตัวนี้เป็นหลัก
-        const s2 = await tts({ text: action.text });
-        if (s2) { await speak(s2.ogg); console.log(`  → พูด (${s2.via} ${s2.ms}ms): "${action.text.slice(0, 70)}"`); break; }
+        // สตรีม: ซอยเป็นประโยคแล้วพูดก้อนแรกทันที ระหว่างที่ก้อนถัดไปกำลังทำ
+        // (ตัวแปลงเสียงใช้ขั้นต่ำ 5.3 วิเสมอ รอทั้งย่อหน้าจะไม่มีทางถึงเป้า 5 วิ)
+        if (await speakStream(action.text)) { console.log(`  → พูด: "${action.text.slice(0, 70)}"`); break; }
         console.warn("  พูดไม่ได้ → ลงห้องแชทแทน");
         try {
           const ch = await client.channels.fetch(TEXT_CH);
@@ -650,8 +732,16 @@ async function pollOutbox() {
           // เจ้าของกำลังพูด = ห้ามแทรกเด็ดขาด ต่อให้เป็นงานที่เพิ่งทำเสร็จก็รอ
           // (ปล่อยค้างในกล่อง รอบหน้าอีก 5 วิค่อยมาดูใหม่ ไม่นับเป็น tries ที่ล้มเหลว)
           if (ownerIsTalking()) continue;
-          const spoken = await tts({ text: it.speak, quality: true });
-          const ogg = spoken?.ogg || null;
+          // ก้อนสั้นพูดรวดเดียวพอ · ก้อนยาวสตรีมให้เริ่มพูดเร็วขึ้น
+          const long = String(it.speak || "").length > 110;
+          const spoken = long ? { ogg: null } : await tts({ text: it.speak, quality: true });
+          const ogg = long ? null : (spoken?.ogg || null);
+          if (long) {
+            const ok = await speakStream(it.speak);
+            if (ok) { done.push({ id: it.id }); logLine(`${health(Date.now() - tItem)} 📤 พูด "${(it.speak || "").slice(0, 55)}"`); }
+            else done.push({ id: it.id, error: "พูดไม่สำเร็จ" });
+            continue;
+          }
           if (!ogg) {
             // โควตาเสียงหมด/บริการล่ม — ลงห้องแชทแทนแล้วปิดงาน อย่าให้ค้างในกล่องจนถูกทิ้ง
             try {
