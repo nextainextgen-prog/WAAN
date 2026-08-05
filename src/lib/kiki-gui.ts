@@ -70,7 +70,22 @@ export async function frontApp(): Promise<string> {
   }
 }
 
-export async function snap(label: string): Promise<string | null> {
+/**
+ * แคปหน้าจอเป็นหลักฐาน
+ *
+ * ใส่ `app` มาด้วยเมื่อรู้ว่ากำลังทำงานกับแอปไหน — จะแคป "เฉพาะหน้าต่างนั้น" ก่อน
+ * เพราะ `screencapture` แบบเต็มจอเก็บได้แค่ Space ที่แสดงอยู่ ถ้าแอปเป้าหมายอยู่คนละ
+ * เดสก์ท็อป (เจ้าของจัด Warp ไว้อีก Space) จะได้ภาพแอปอื่นมาเป็น "หลักฐาน" ทั้งใบ
+ * → เคยทำให้ระบบฟันธงผิดว่า "ส่งไม่สำเร็จ" ทั้งที่คำสั่งรันจริง (5 ส.ค. 2026)
+ */
+export async function snap(label: string, app?: string): Promise<string | null> {
+  if (app) {
+    try {
+      const { captureWindow } = await import("./kiki-window");
+      const w = await captureWindow(app, label);
+      if (w) return w;
+    } catch { /* หาหน้าต่างไม่ได้ก็ถอยไปแคปทั้งจอ */ }
+  }
   try {
     const p = path.join(os.tmpdir(), `vex-${label}-${Date.now()}.png`);
     await run("screencapture", ["-x", p]);
@@ -180,7 +195,7 @@ export async function typeInApp(opts: {
       await wait(1600);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "error";
-      const s = await snap("target");
+      const s = await snap("target", resolved.app);
       if (s) shots.push({ label: "หน้าจอตอนนี้", path: s });
       return {
         ok: false,
@@ -195,7 +210,7 @@ export async function typeInApp(opts: {
     }
   }
 
-  const before = await snap("before");
+  const before = await snap("before", resolved.app);
   if (before) shots.push({ label: opts.target ? `ก่อนพิมพ์ (อยู่ที่ ${opts.target})` : "ก่อนพิมพ์", path: before });
 
   try {
@@ -229,7 +244,7 @@ export async function typeInApp(opts: {
     };
   }
 
-  const typed = await snap("typed");
+  const typed = await snap("typed", resolved.app);
   if (typed) shots.push({ label: opts.send ? "พิมพ์แล้ว กำลังส่ง" : "พิมพ์ค้างไว้ ยังไม่ส่ง", path: typed });
 
   let sent = false;
@@ -237,7 +252,7 @@ export async function typeInApp(opts: {
   if (opts.send) {
     await pressReturn(opts.sendWith === "cmd-return" ? ["command down"] : []);
     await wait(1800);
-    const after = await snap("sent");
+    const after = await snap("sent", resolved.app);
     if (after) {
       shots.push({ label: "หลังกดส่ง", path: after });
       // ตรวจด้วยตาว่าข้อความขึ้นในห้องจริงไหม — กดปุ่มแล้วไม่ได้แปลว่าส่งสำเร็จ
@@ -302,7 +317,7 @@ export async function showApp(app: string): Promise<{ label: string; path: strin
   try {
     await osa(`tell application "${resolved.app}" to activate`);
     await wait(1600);
-    const s = await snap("proof");
+    const s = await snap("proof", resolved.app);
     return s ? [{ label: `หน้าจอ ${resolved.app} ตอนนี้`, path: s }] : [];
   } catch {
     return [];
@@ -325,12 +340,12 @@ export async function switchTo(app: string, target: string): Promise<GuiResult> 
       await pressReturn();
       await wait(1600);
     }
-    const s = await snap("switch");
+    const s = await snap("switch", resolved.app);
     if (s) shots.push({ label: `เปิด ${target} ใน ${resolved.app} แล้ว`, path: s });
     return { ok: true, app: resolved.app, target, sent: false, shots };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "error";
-    const s = await snap("switchfail");
+    const s = await snap("switchfail", resolved.app);
     if (s) shots.push({ label: "หน้าจอตอนนี้", path: s });
     return {
       ok: false,
@@ -359,7 +374,7 @@ export async function runInWarp(command: string, opts: { tab?: string; waitMs?: 
       await wait(1200);
       await pressKey("t", ["command down"]); // Cmd+T = แท็บใหม่
       await wait(1500);
-      const s = await snap("warpnewtab");
+      const s = await snap("warpnewtab", "Warp");
       if (s) shots.push({ label: "เปิดแท็บใหม่ (ไม่แตะแท็บที่ทำงานค้างอยู่)", path: s });
     } catch {
       // เปิดแท็บใหม่ไม่ได้ = ห้ามพิมพ์ลงแท็บเดิม เสี่ยงไปกวนเซสชันที่รันอยู่
@@ -373,7 +388,7 @@ export async function runInWarp(command: string, opts: { tab?: string; waitMs?: 
   r.shots.unshift(...shots);
   if (!r.ok) return r;
   await wait(opts.waitMs ?? 4000); // รอคำสั่งทำงานก่อนแคปผล
-  const s = await snap("warpresult");
+  const s = await snap("warpresult", "Warp");
   if (s) r.shots.push({ label: "ผลหลังรันคำสั่ง", path: s });
   return r;
 }
