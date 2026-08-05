@@ -273,7 +273,8 @@ export async function saveKikiChat(
   if (!c) return null;
   const row = await db.kikiChat.create({ data: { role, content: c.slice(0, 6000), scope, channel } });
   // index เข้าคลังความจำ (ค้นย้อนหลังได้ทุกข้อความ) — ทำเบื้องหลัง ไม่ถ่วงการตอบ
-  if (scope === "owner") {
+  // ยกเว้นเหตุการณ์เฝ้าระวัง: มีวันละหลายร้อย ถ้า index ด้วยจะกลบความจำจริงจนค้นอะไรก็เจอแต่แชทคนอื่น
+  if (scope === "owner" && channel !== "event") {
     void import("./kiki-memory")
       .then((m) => m.indexChatMessage(row.id, role, c))
       .catch(() => {});
@@ -299,8 +300,13 @@ function channelTag(channel?: string | null): string {
 // เฉพาะ scope owner — แชทกลุ่มเทรนเนอร์ของอั๋น (scope aun) ห้ามรั่วเข้าบริบทเจ้าของ และกลับกัน
 // 4 ส.ค. 2026: ขยายหน้าต่างจาก 18×500 → 40×1200 (เจ้าของบ่นว่าความจำสั้น) + คุมเพดานรวมกันโปรมป์บวม
 export async function kikiConversation(limit = 40): Promise<string> {
-  const rows = await db.kikiChat.findMany({ where: { scope: "owner" }, orderBy: { createdAt: "desc" }, take: limit });
-  if (!rows.length) return "";
+  // ห้ามเอา "เหตุการณ์เฝ้าระวัง" มาปนบทสนทนา (5 ส.ค. 2026: ตัวเฝ้ายิงเข้ามารัว
+  // จนหน้าต่างความจำ 40 แถวเป็นเหตุการณ์ไป 35 แถว = Vex ตอบมั่วเพราะอ่านแต่แชทคนอื่น)
+  const rows = await db.kikiChat.findMany({
+    where: { scope: "owner", NOT: { channel: "event" } },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
   const picked: string[] = [];
   let used = 0;
   for (const r of rows) {
@@ -310,7 +316,24 @@ export async function kikiConversation(limit = 40): Promise<string> {
     used += line.length;
     picked.push(line);
   }
-  return `=== บทสนทนาล่าสุด (ต่อบริบทจากเรื่องเดิม อย่าทำเหมือนไม่เคยคุย) ===\n${picked.reverse().join("\n")}`;
+  const convo = picked.length
+    ? `=== บทสนทนาล่าสุดกับเจ้าของ (ต่อบริบทจากเรื่องเดิม อย่าทำเหมือนไม่เคยคุย) ===\n${picked.reverse().join("\n")}`
+    : "";
+
+  // เหตุการณ์ให้แยกบล็อกและคุมจำนวน — ไว้ตอบ "เมื่อกี้ใครทักมาบ้าง" ได้ แต่ไม่กลบบทสนทนา
+  const events = await db.kikiChat
+    .findMany({ where: { scope: "owner", channel: "event" }, orderBy: { createdAt: "desc" }, take: 8 })
+    .catch(() => []);
+  if (!events.length) return convo;
+  const evLines = events
+    .reverse()
+    .map((e) => `- ${e.createdAt.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })} ${e.content.replace(/^\[เหตุการณ์เข้า · ระดับ \d\]\s*/, "").replace(/\s+/g, " ").slice(0, 160)}`);
+  return [
+    convo,
+    `=== เหตุการณ์ที่เข้ามาล่าสุด (คนอื่นทัก/ระบบแจ้ง — ไม่ใช่คำพูดของเจ้าของ ห้ามตอบราวกับเจ้าของเป็นคนพูด และห้ามหยิบมาตอบถ้าเขาไม่ได้ถามถึง) ===\n${evLines.join("\n")}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 // ===== ความจำเรื่องเจ้าของ (OwnerFact) =====

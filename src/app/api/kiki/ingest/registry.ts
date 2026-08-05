@@ -8,7 +8,7 @@ import {
   financeRecordHandler,
 } from "./handlers/finance";
 import { socialStatusHandler, socialDraftHandler } from "./handlers/social";
-import { hermesHandler, voiceAnnounceHandler, voiceModeHandler, devConfirmHandler, selfDevHandler, macHandler, voicePickHandler } from "./handlers/system";
+import { hermesHandler, sayVoiceHandler, voiceAnnounceHandler, voiceModeHandler, devConfirmHandler, selfDevHandler, macHandler, voicePickHandler } from "./handlers/system";
 import {
   dmConfirmHandler, groupConfirmHandler, createGroupHandler, listChatsHandler, aliasHandler,
   groupPostHandler, dmHandler, chatSummaryHandler,
@@ -74,6 +74,8 @@ export const HANDLERS: Handler[] = [
   financeQueryHandler,
 
   // เสียง (voiceAnnounce = พูดขึ้นมาเอง · voiceMode = ตอบเป็นเสียง — คนละเรื่องกัน)
+  // พูดประโยคที่สั่ง (say_voice) ต้องมาก่อนตั้งค่าโหมดเสียง — ไม่งั้นโดนตีเป็น "เปิดโหมดเสียง"
+  sayVoiceHandler,
   voiceAnnounceHandler,
   voiceModeHandler,
 

@@ -32,8 +32,11 @@ export const guiHandler: Handler = async (ctx) => {
   // (เทสจริง: กดคีย์ใส่หน้าต่าง Discord แล้วโฟกัสหลุด ข้อความไม่เข้าช่องพิมพ์)
   // แล้วค่อยแคปหน้าจอ Discord แนบเป็นหลักฐานตามที่เจ้าของสั่ง
   if (/discord/i.test(appName) && !is("gui_switch") && message) {
-    const { discordApiReady, sendToChannel } = await import("@/lib/kiki-discord-api");
+    const { discordApiReady, sendToChannel, resolveChannel } = await import("@/lib/kiki-discord-api");
     if (discordApiReady()) {
+      // ปลายทางต้องเป็น "ห้องใน Discord" จริง ๆ เท่านั้น
+      // เคยพลาด 5 ส.ค.: เจ้าของยืนยันจะตอบแฟน ระบบดันเอาชื่อคนไปหาเป็นห้อง Discord แล้วตอบว่าหาห้องไม่เจอ
+      if (target && !(await resolveChannel(target).catch(() => null))) return null;
       const sent = await sendToChannel(target || process.env.DISCORD_TEXT_CH_ID || "", message);
       const shots: { label: string; path: string }[] = [];
       if (sent.ok) {
@@ -71,6 +74,9 @@ export const guiHandler: Handler = async (ctx) => {
       return reply([{ kind: "text", text: await vexLine("บอกข้อความที่จะให้พิมพ์มาด้วยครับ"), replyTo: msgId }]);
     }
     if (!appName) {
+      // ไม่รู้ว่าแอปไหน + ไม่มีคำสั่งพิมพ์ชัดเจน = น่าจะอ่านเจตนาผิด ปล่อยให้เส้นทางอื่นรับไป
+      // (ดีกว่าถามกลับมั่ว ๆ ตอนเจ้าของแค่พิมพ์ว่า "ยืนยัน")
+      if (!/พิมพ์|เขียน|ส่งข้อความ|ตอบใน|คีย์|ก็อป/.test(`${ctx.text} ${ctx.replyText}`)) return null;
       return reply([{ kind: "text", text: await vexLine("บอกด้วยครับว่าให้พิมพ์ในแอปไหน เช่น Discord, Warp, LINE"), replyTo: msgId }]);
     }
     // คำสั่งใน Warp = กดส่งเสมอ (มันคือคำสั่ง) · แอปแชท = ส่งเมื่อสั่งให้ส่ง

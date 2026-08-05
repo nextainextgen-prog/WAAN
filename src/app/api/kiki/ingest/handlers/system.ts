@@ -54,6 +54,26 @@ export const voiceAnnounceHandler: Handler = async (ctx) => {
   }]);
 };
 
+/**
+ * "พูดว่า ..." — พูดประโยคเดียวออกมาเป็นเสียง ไม่ใช่ตั้งค่าโหมด
+ * เคสจริง 4 ส.ค. 2026: เจ้าของสั่ง 'ให้พูดว่า "ผมไม่ได้พูดครับ อั๋นพูดเอง" ส่งมาเป็นเสียง'
+ * → ระบบไปเปิดโหมดตอบเสียงซ้ำสองรอบ ไม่ได้พูดประโยคที่สั่งสักที
+ */
+export const sayVoiceHandler: Handler = async (ctx) => {
+  const { text, msgId, is, arg, reply } = ctx;
+  if (!is("say_voice")) return null;
+  const say = (arg("say") || arg("text") || arg("message") || "").trim();
+  if (!say) {
+    return reply([{ kind: "text", text: await vexLine("บอกประโยคที่จะให้ผมพูดมาด้วยครับ"), replyTo: msgId }]);
+  }
+  const ogg = await ttsOgg(say).catch(() => null);
+  if (!ogg) {
+    return reply([{ kind: "text", text: await vexLine(`ทำไฟล์เสียงไม่สำเร็จรอบนี้ครับ ข้อความที่จะพูดคือ: ${say}`), replyTo: msgId }]);
+  }
+  // ส่งเสียงอย่างเดียวตามที่สั่ง ไม่ต้องมีข้อความอธิบายมากวน
+  return reply([{ kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg", replyTo: msgId }]);
+};
+
 export const voiceModeHandler: Handler = async (ctx) => {
   const { text, msgId, is, arg, reply } = ctx;
   // ===== โหมดตอบเสียงตลอด =====
