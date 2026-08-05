@@ -188,10 +188,16 @@ export async function POST(req: Request) {
   }
 
   // ===== คำถาม/คุย: ตอบเร็ว แต่ต้องมีข้อเท็จจริงจริง =====
+  //
+  // ออกไปค้นข้างนอกเฉพาะตอนที่ต้องใช้ของสดจริง ๆ
+  // เรื่องในระบบ (งานค้าง เงิน นัด ความจำ) ถูกฉีดเข้าบริบทให้อยู่แล้วตั้งแต่ต้น
+  // ไปเรียกชั้นหาข้อมูลซ้ำ = เสียเวลาฟรี ๆ แล้วตกไปทาง "ขอเวลาแป๊บ" ทั้งที่ตอบได้เลย
+  // (เจอจริงตอนเทสรวม: ถาม "งานค้างมีกี่งาน" ก็ยังไปค้นเว็บ)
+  const needsOutside = route.intent === "web_research" || route.intent === "shopping" || /https?:\/\//.test(command);
   void setActivity("🧠", `กำลังคิด: ${command.slice(0, 50)}`);
   return await raceOrDefer(command, command.slice(0, 40), heard, timing, t0, async () => {
     const tBrain = Date.now();
-    const out = await askKikiVoice(command, undefined, { withFacts: true });
+    const out = await askKikiVoice(command, undefined, { withFacts: needsOutside });
     mark("คิดคำตอบ", tBrain);
     return out;
   });
@@ -209,7 +215,7 @@ export async function POST(req: Request) {
  * ไม่ทัน   → พูด "ขอเวลาแป๊บนะ" ทันทีจากคลังเสียง (0 วินาที) แล้วงานวิ่งต่อเบื้องหลัง
  *            เสร็จเมื่อไหร่หย่อนลงกล่องขาออก ท่อเอาไปพูดตามให้เอง
  */
-const PATIENCE_MS = 3500;
+const PATIENCE_MS = 5000;
 
 async function raceOrDefer(
   command: string,
