@@ -6,7 +6,7 @@ import { setActivity } from "@/lib/kiki-monitor";
 import { routeIntent } from "@/lib/kiki-router";
 import {
   getMode, setMode, MODE_LABEL, matchWake, isStopCommand, isUndoCommand, matchModeCommand,
-  isCloseCommand, quickAddressed, addressedToVex, looksLikeEcho, maybeWakeShort,
+  isCloseCommand, quickAddressed, addressedToVex, looksLikeEcho, maybeWakeShort, isGoAhead, takePendingAnnounce,
   openSession, touchSession, closeSession, sessionOpen,
 } from "@/lib/kiki-listen";
 
@@ -148,6 +148,22 @@ export async function POST(req: Request) {
 
   await touchSession();
   await saveKikiChat("user", command, "owner", "discord-voice");
+
+  // เคาะประตูไว้แล้วเขาตอบว่าว่าง → เล่าเรื่องที่ค้างไว้เลย ไม่ต้องผ่านสมองซ้ำ
+  if (isGoAhead(command)) {
+    const pend = await takePendingAnnounce();
+    if (pend) {
+      // ใช้สมองสายด่วน ไม่ใช่ toSpeech — ตัวนั้นเรียก Claude CLI วัดจริงได้ 26-38 วินาที
+      const say = await askKikiVoice(
+        `[เล่าเรื่องที่เคาะประตูไว้ โด้เพิ่งบอกว่าว่างแล้ว] เรื่อง: ${pend.topic}\n` +
+          `เนื้อความ: ${pend.text.slice(0, 2000)}\n\nทวนหัวเรื่องสั้น ๆ แล้วเล่าแก่น 1-2 ประโยค`,
+      ).catch(() => pend.text.replace(/<[^>]+>/g, " ").slice(0, 400));
+      await setSetting(LAST_SPOKEN_KEY, say);
+      await saveKikiChat("assistant", say, "owner", "discord-voice");
+      timing.รวม = Date.now() - t0;
+      return NextResponse.json({ action: { do: "say", text: say }, heard, timing, sessionOpen: await sessionOpen() });
+    }
+  }
 
   // ===== เลือกทางด้วยเจตนา ไม่ใช่ด้วยคำ (เฟส 2 — 5 ส.ค. 2026) =====
   //

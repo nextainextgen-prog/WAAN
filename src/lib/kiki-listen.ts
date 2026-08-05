@@ -182,6 +182,51 @@ export function isBackchannel(text: string): boolean {
   return BACKCHANNEL.test((text || "").trim());
 }
 
+/**
+ * เรื่องที่เคาะประตูไว้แล้วรอเจ้าของอนุญาตให้เล่า (เจ้าของสั่ง 5 ส.ค. 2026)
+ *
+ * "เวลาพูดขึ้นมาให้ถามก่อนว่ากูว่างมั้ย ... ให้กูตอบก่อนค่อยว่ามา"
+ * เก็บได้ทีละเรื่อง — เคาะซ้อนกันหลายเรื่องแล้วเขาตอบ "ว่ามา" ครั้งเดียวจะงงว่าหมายถึงอันไหน
+ * เรื่องใหม่ทับเรื่องเก่า (เรื่องเก่ายังอยู่ในห้องแชทให้ย้อนดูอยู่แล้ว)
+ */
+const ANNOUNCE_KEY = "vex_pending_announce";
+const ANNOUNCE_TTL_MS = 10 * 60_000; // เคาะไว้แล้วเขาไม่ตอบใน 10 นาที = เลิกถือไว้
+
+export async function setPendingAnnounce(a: { topic: string; text: string }): Promise<void> {
+  await setSetting(ANNOUNCE_KEY, JSON.stringify({ ...a, at: Date.now() }));
+}
+
+export async function takePendingAnnounce(): Promise<{ topic: string; text: string } | null> {
+  try {
+    const raw = await getSetting(ANNOUNCE_KEY);
+    if (!raw) return null;
+    const a = JSON.parse(raw) as { topic: string; text: string; at: number };
+    await setSetting(ANNOUNCE_KEY, "");
+    if (!a?.text || Date.now() - a.at > ANNOUNCE_TTL_MS) return null;
+    return { topic: a.topic || "", text: a.text };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * "ว่ามา / เอาสิ / ว่าง / บอกมา" = อนุญาตให้เล่าเรื่องที่เคาะไว้
+ *
+ * แยกกริยากับหางประโยค เพราะคนพูดผสมกันได้อิสระ —
+ * เทสรอบแรกพลาดเพราะไล่เขียนเป็นวลีเต็มทีละอัน ("ว่ามา" ผ่าน แต่ "ว่ามาเลย" ไม่ผ่าน)
+ */
+const GO_VERB = "ว่า|บอก|พูด|เล่า|เอา|ฟัง";
+const GO_TAIL = "มา|เลย|สิ|ซิ|เถอะ|ต่อ|อยู่|มาเลย|เลยครับ";
+const GO_AHEAD = new RegExp(
+  `^[\\s]*(?:(?:${GO_VERB})(?:\\s*(?:${GO_TAIL}))*|ว่าง|ว่างอยู่|สะดวก|โอเค|ได้|มีอะไร|อะไร(?:เหรอ|หรอ|นะ)?)` +
+    `[\\s ๆครับคะค่ะนะจ้าฮะเลย.!?…]*$`,
+  "i",
+);
+
+export function isGoAhead(text: string): boolean {
+  return GO_AHEAD.test((text || "").trim());
+}
+
 export type Addressed = "yes" | "no" | "unsure";
 
 /**

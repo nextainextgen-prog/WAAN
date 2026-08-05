@@ -87,6 +87,28 @@ export async function routeProactive(opts: {
   // เสียงเฉพาะตอนอยู่ในสายจริง ๆ · ไม่อยู่ = ไม่ต้องเข้าคิวเสียง (ข้อความในห้อง text พอแล้ว
   // ไม่งั้นกลับเข้าห้องมาแล้วโดนถล่มด้วยเสียงย้อนหลังทั้งวัน)
   if (inVoice && opts.speakable !== false) {
+    // ===== ขออนุญาตก่อนเล่า (เจ้าของสั่ง 5 ส.ค. 2026) =====
+    //
+    // "เวลาพูดขึ้นมาให้ถามก่อนว่ากูว่างมั้ย สะดวกมั้ย พอดีมีเรื่องนี้จะแจ้ง
+    //  อะไรก็ว่ามา คือให้กูตอบก่อนค่อยว่ามา กรณีกูอยู่ในสาย"
+    //
+    // เขาอยู่ในสายแปลว่าอาจกำลังคิดงานอยู่ การโพล่งเรื่องใหม่ใส่ = ตัดสมาธิเขา
+    // จึงเคาะประตูก่อนหนึ่งประโยค แล้วเก็บเนื้อเต็มไว้รอจนเขาตอบรับ
+    // (เรื่องด่วนจริง priority >= 3 ข้ามขั้นนี้ — เช่นเซสชันหมดอายุ ระบบล่ม)
+    const urgent = (opts.priority ?? 0) >= 3;
+    if (!urgent) {
+      const { setPendingAnnounce } = await import("./kiki-listen");
+      await setPendingAnnounce({ topic: opts.topic, text: opts.text });
+      await queueOut({
+        target: "discord-voice",
+        topic: opts.topic,
+        // canned-ok: ประโยคเคาะประตู ต้องสั้นและคงรูปเดิม ไม่ให้ AI เรียบเรียงจนกลายเป็นเล่าเรื่องเสียเอง
+        text: `โด้ว่างมั้ยครับ พอดีมีเรื่อง${opts.topic ? `${opts.topic}` : "จะแจ้ง"} จะบอก`,
+        priority: opts.priority,
+      });
+      out.voice = true;
+      return out;
+    }
     await queueOut({ target: "discord-voice", topic: opts.topic, text: opts.text, priority: opts.priority });
     out.voice = true;
   }
