@@ -795,7 +795,11 @@ export async function findPersonalImages(query: string, maxResults = 4): Promise
 
 // ===== สมองของ kiki =====
 
-export async function askKiki(message: string, extraContext?: string): Promise<string> {
+export async function askKiki(
+  message: string,
+  extraContext?: string,
+  opts: { imagePaths?: string[] } = {},
+): Promise<string> {
   const [rules, facts, convo, memory, tasks, focus, caps, profile] = await Promise.all([
     vexRulesContext(),
     ownerFactsContext(),
@@ -813,11 +817,21 @@ export async function askKiki(message: string, extraContext?: string): Promise<s
   const nowLine = `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
   const parts = [KIKI_PERSONA, caps, rules, nowLine, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
   const sys = parts.join("\n\n");
+  // มีรูปแนบ = ต้องเปิดสิทธิ์เครื่องมือ Read ให้ CLI ก่อน
+  // (บั๊ก 6 ส.ค. 2026: บอกโมเดลให้ "เปิดอ่านรูปตาม path" มาตลอด แต่ไม่เคยเปิดสิทธิ์ให้
+  //  ส่งรูปไปกี่ครั้งมันก็อ่านไม่ได้ เจ้าของเลยเจอ "ส่งอะไรไปให้ไม่เคยอ่านเลย")
+  const imgs = (opts.imagePaths || []).filter(Boolean);
   try {
-    return await askClaude(message, { guard: KIKI_GUARD, system: sys, timeoutMs: 150_000 });
+    return await askClaude(message, {
+      guard: KIKI_GUARD,
+      system: sys,
+      timeoutMs: 150_000,
+      ...(imgs.length ? { allowedTools: ["Read"] } : {}),
+    });
   } catch (e) {
     // Claude CLI ค้าง/คิวชน (บัญชีเดียวกับงานอื่น) → สมองสำรอง Gemini ตอบแทน ไม่ปล่อยเจ้าของค้าง
-    const g = await askGeminiChat(`${KIKI_GUARD}\n\n${sys}`, message).catch(() => "");
+    // ฝั่ง Gemini อ่าน path เองไม่ได้ ต้องยัดรูปเข้าไปในข้อความ (inline)
+    const g = await askGeminiChat(`${KIKI_GUARD}\n\n${sys}`, message, imgs).catch(() => "");
     if (g) return g;
     throw e;
   }
@@ -1002,6 +1016,23 @@ export function sanitizeVexText(text: string): { text: string; parseMode?: "HTML
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   const hasMd = /\*\*[^*\n]+\*\*|__[^_\n]+__|^#{1,4}\s+\S/m.test(t);
+
+  // แท็กที่โมเดลเขียนมาเองตรง ๆ (<b> <i> ...) — ถ้าไม่ตั้ง parseMode มันจะโผล่เป็นตัวอักษรในแชท
+  // เจ้าของเจอเอง 6 ส.ค. 2026: "ปรับให้มันเลิกหลุดพิมมาแบบนี้ <></>"
+  const TAG_RE = /<\/?(b|strong|i|em|u|s|code|pre|a)(\s[^>]*)?>/i;
+  if (!hasMd && TAG_RE.test(t)) {
+    // เก็บเฉพาะแท็กที่ Telegram รองรับไว้ก่อน แล้ว escape ที่เหลือ กัน < > อื่นทำข้อความพัง
+    // ตัวคั่นต้องเป็นอักขระที่ไม่มีทางอยู่ในข้อความจริง — ถ้าใช้ตัวเลขเปล่าจะไปชนตัวเลขในเนื้อหา
+    const keep: string[] = [];
+    t = t.replace(/<\/?(b|strong|i|em|u|s|code|pre|a)(\s[^>]*)?>/gi, (m) => {
+      keep.push(m);
+      return `\u0001${keep.length - 1}\u0001`;
+    });
+    t = t.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+    t = t.replace(/\u0001(\d+)\u0001/g, (_, i) => keep[Number(i)] ?? "");
+    return { text: t, parseMode: "HTML" };
+  }
+
   if (!hasMd) return { text: t };
   t = t
     .replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!))
@@ -1009,6 +1040,62 @@ export function sanitizeVexText(text: string): { text: string; parseMode?: "HTML
     .replace(/__([^_\n]+)__/g, "<b>$1</b>")
     .replace(/^#{1,4}\s+(.+)$/gm, "<b>$1</b>");
   return { text: t, parseMode: "HTML" };
+}
+
+/**
+ * บังคับใช้ "กฎที่เจ้าของสอน" กับข้อความขาออกทุกก้อน (6 ส.ค. 2026)
+ *
+ * ปัญหาที่เจ้าของเจอ: "เวลาผมสั่งปรับให้ทำอะไร ช่วงแรกแม่งทำ แต่หลัง ๆ ไม่ทำ"
+ * สาเหตุ: กฎถูกฉีดเข้าโปรมป์ของสมองเท่านั้น — ข้อความที่ระบบสร้างเอง (การ์ดงาน ลิสต์ รายงาน)
+ * ไม่เคยผ่านสมอง กฎอย่าง "ห้ามใช้ตัวเอียง" หรือ "ปิดท้ายด้วย ✅" จึงไม่มีผลกับของพวกนั้นเลย
+ *
+ * ตัวนี้เอากฎมาปรับ "ถ้อยคำ/รูปแบบ" ของข้อความขาออก โดยห้ามแตะข้อเท็จจริงและตัวเลข
+ * ล่ม/เพี้ยน = คืนข้อความเดิม (กันทำของพังมากกว่าเดิม)
+ */
+let styleCache: { at: number; rules: string[] } = { at: 0, rules: [] };
+
+async function styleRules(): Promise<string[]> {
+  if (Date.now() - styleCache.at < 60_000) return styleCache.rules;
+  try {
+    const rows = await db.ownerFact.findMany({ where: { active: true, category: VEX_RULE_CATEGORY }, take: 40 });
+    // เอาเฉพาะกฎที่เกี่ยวกับ "หน้าตาข้อความ" — กฎเรื่องพฤติกรรมอื่นปล่อยให้สมองจัดการเอง
+    const rules = rows
+      .map((r) => r.fact)
+      .filter((f) => /อิโมจิ|ตัวเอียง|ตัวหนา|วงเล็บ|ย่อหน้า|บรรทัด|ปิดท้าย|ขึ้นต้น|จัดข้อความ|รูปแบบ|เรียง|ห้ามใช้|ให้ใส่|เพิ่ม.{0,6}ทุกครั้ง|ทุกครั้งที่/.test(f));
+    styleCache = { at: Date.now(), rules };
+    return rules;
+  } catch {
+    return [];
+  }
+}
+
+export async function applyStyleRules(text: string, opts: { html?: boolean } = {}): Promise<string> {
+  const src = (text || "").trim();
+  if (src.length < 12) return text;
+  const rules = await styleRules();
+  if (!rules.length) return text;
+  const out = await askGeminiJson<{ text?: string }>(
+    `ปรับ "รูปแบบ/ถ้อยคำ" ของข้อความให้ตรงตามกฎที่เจ้าของสอนไว้ ตอบ JSON เท่านั้น: {"text":"ข้อความที่ปรับแล้ว"}
+
+กฎที่ต้องทำตาม:
+${rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
+
+ห้ามเด็ดขาด: เปลี่ยน/เพิ่ม/ลดตัวเลข ชื่อคน ชื่อไฟล์ ลิงก์ วันเวลา · เพิ่มข้อเท็จจริงใหม่ · ตัดเนื้อหาทิ้ง
+${opts.html ? "ข้อความนี้เป็น HTML ของ Telegram — คงโครงสร้างแท็กให้ถูกต้องเสมอ (ถ้ากฎห้ามตัวเอียง ให้เปลี่ยน <i>x</i> เป็น (x) ไม่ใช่ทิ้งแท็กค้าง)" : "ข้อความนี้เป็นข้อความธรรมดา ห้ามใส่แท็ก HTML"}
+ถ้าไม่มีอะไรต้องปรับ ให้ส่งข้อความเดิมกลับมาทั้งดุ้น`,
+    src.slice(0, 6000),
+    20_000,
+  ).catch(() => null);
+  let t = (out?.text || "").trim();
+  // เพี้ยนผิดปกติ (สั้นลงเกินครึ่ง / ยาวขึ้นเท่าตัว) = ไม่เอา ใช้ของเดิมปลอดภัยกว่า
+  if (!t || t.length < src.length * 0.5 || t.length > src.length * 2) return text;
+
+  // ตัวปรับสไตล์ชอบเผลอครอบ <copy> ตามกฎที่เจ้าของสอนไว้ (กฎนั้นมีไว้ให้สมองใช้ตอนเรียบเรียง
+  // ข้อความให้เจ้าของก็อปส่งต่อ ไม่ใช่ครอบทุกอย่าง) — และ Telegram ไม่รู้จักแท็กนี้ ส่งไปแล้วข้อความตกทั้งก้อน
+  if (!/<copy>/.test(src)) t = t.replace(/<\/?copy>/gi, "").trim();
+  // เหลือเฉพาะแท็กที่ Telegram รองรับ — แท็กแปลกปลอมทำให้ส่งไม่ผ่านทั้งข้อความ
+  if (opts.html) t = t.replace(/<\/?(?!\/?(?:b|strong|i|em|u|s|code|pre|a)\b)[a-z][^>]*>/gi, "");
+  return t;
 }
 
 /**

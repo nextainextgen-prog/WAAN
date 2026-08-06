@@ -13,6 +13,14 @@ export interface ClaudeOptions {
   timeoutMs?: number;
   maxBuffer?: number;
   guard?: string; // การ์ดกันหลุดของ persona อื่น (เช่น kiki) — ไม่ระบุ = การ์ดน้องวาน
+  /**
+   * เครื่องมือที่ยอมให้ CLI ใช้ (เช่น ["Read"] ตอนต้องเปิดไฟล์รูป)
+   *
+   * ไม่ใส่ = ไม่มีเครื่องมือเลย ซึ่งเป็นค่าปกติที่ปลอดภัยสุด
+   * **บั๊กที่เจอ 6 ส.ค. 2026:** โหมดคุยบอกโมเดลว่า "เปิดอ่านรูปด้วยเครื่องมือ Read ตาม path"
+   * แต่ไม่เคยเปิดสิทธิ์ให้ → ส่งรูปไปกี่ครั้งก็ไม่เคยอ่าน เจ้าของเลยเจอ "ไม่เคยอ่านแล้วมาพูดกับผมเลย"
+   */
+  allowedTools?: string[];
 }
 
 // โฟลเดอร์ว่างสำหรับรัน claude (ไม่ให้โหลด CLAUDE.md / slash command / IDE ของโปรเจกต์)
@@ -42,6 +50,7 @@ export async function askClaude(prompt: string, opts: ClaudeOptions = {}): Promi
 
   return new Promise((resolve, reject) => {
     const args = ["-p", "--output-format", "text", "--strict-mcp-config"];
+    if (opts.allowedTools?.length) args.push("--allowedTools", opts.allowedTools.join(","));
     const child = spawn(cliPath, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: cleanCwd(),

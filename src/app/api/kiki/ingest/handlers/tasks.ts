@@ -8,11 +8,39 @@ export const tasksHandler: Handler = async (ctx) => {
   const { chatId, text, msgId, is, arg, reply } = ctx;
   // ===== กระดานงาน: จด / ดู / ปิด (เจ้าของสั่ง 4 ส.ค.) =====
   if (is("task_add")) {
-    const title = arg("title") || text.replace(/^(ช่วย)?(จด|โน้ต|ลิสต์|บันทึก)(ไว้)?(ว่า|ให้)?\s*/i, "").slice(0, 200);
+    let title = arg("title") || text.replace(/^(ช่วย)?(จด|โน้ต|ลิสต์|บันทึก)(ไว้)?(ว่า|ให้)?\s*/i, "").slice(0, 200);
+    let detail = arg("detail") || "";
+
+    // ===== เข้าใจ "สิ่งที่จะทำ" ก่อนจด (6 ส.ค. 2026) =====
+    // เจ้าของ reply ภาพแผนงานแล้วพิมพ์ว่า "โน้ตไว้หน่อย ทำต่อว่าง"
+    // → ได้งานชื่อ "ทำต่อว่าง" ซึ่งเปิดมาอ่านอีกทีก็ไม่รู้ว่าคืออะไร
+    // ชื่อสั้น/กำกวม หรือมีบริบทจากข้อความที่ reply ถึง = ต้องเรียบเรียงให้อ่านแล้วเข้าใจในตัว
+    const vague = title.trim().length < 18 || !/[ก-๙a-z]{3,}\s+[ก-๙a-z]/i.test(title.trim());
+    if (vague || ctx.replyText || ctx.replyIsScreenshot) {
+      const { askGeminiJson, kikiConversation } = await import("@/lib/kiki");
+      const convo = await kikiConversation(6).catch(() => "");
+      const j = await askGeminiJson<{ title?: string; detail?: string }>(
+        `เจ้าของสั่งให้จดงาน แต่พูดสั้น ๆ ตามบริบทที่เขากับเลขาคุยกันอยู่
+เขียน "ชื่องาน" ให้อ่านแล้วเข้าใจในตัวโดยไม่ต้องดูบริบท และสรุปบริบทที่จำเป็นลง detail
+ตอบ JSON เท่านั้น: {"title":"ชื่องานที่ชัดเจน ไม่เกิน 90 ตัวอักษร","detail":"บริบท/สิ่งที่ต้องทำจริง ๆ สั้น ๆ (ไม่มีก็เว้นว่าง)"}
+ห้ามแต่งงานใหม่ที่เขาไม่ได้สั่ง ห้ามเปลี่ยนตัวเลข/ชื่อ/วันที่`,
+        [
+          convo,
+          ctx.replyText ? `ข้อความที่เจ้าของ reply ถึง:\n"""${ctx.replyText.slice(0, 1500)}"""` : "",
+          ctx.replyIsScreenshot ? "(เขา reply ภาพหน้าจอที่เลขาแคปมาให้ — บริบทอยู่ในเรื่องที่คุยกันด้านบน)" : "",
+          `คำสั่งล่าสุด: """${text.slice(0, 500)}"""`,
+        ].filter(Boolean).join("\n\n"),
+        20_000,
+      ).catch(() => null);
+      if (j?.title && j.title.trim().length >= 4) {
+        title = j.title.trim().slice(0, 200);
+        if (j.detail?.trim()) detail = j.detail.trim().slice(0, 600);
+      }
+    }
     const dueRaw = arg("due");
     const t = await addTask({
       title,
-      detail: arg("detail") || undefined,
+      detail: detail || undefined,
       kind: (["todo", "idea", "waiting"].includes(arg("kind")) ? arg("kind") : "todo") as "todo" | "idea" | "waiting",
       priority: (["low", "normal", "high"].includes(arg("priority")) ? arg("priority") : "normal") as "low" | "normal" | "high",
       dueDate: dueRaw && /^\d{4}-\d{2}-\d{2}$/.test(dueRaw) ? new Date(`${dueRaw}T09:00:00+07:00`) : null,

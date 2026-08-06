@@ -394,9 +394,13 @@ export async function POST(req: Request) {
           //  2. ซ้ำของเดิม = รอบตามเก็บวิ่งไปเจอตัวจัดการเดิม แล้วได้ลิสต์เดิมมาทั้งก้อน
           //     เจ้าของเห็นคำตอบเดียวกันสองรอบติดกัน
           const e = extra.trim();
-          const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-          const dup = e.length >= 40 && norm(draft).includes(norm(e).slice(0, 80));
-          if (e.length >= 60 && !dup) outSends = [...outSends, { kind: "text" as const, text: e }];
+          // เทียบแบบ "ถอดแท็กก่อน" — ของที่ต่อท้ายมักมีแท็ก <b>/<i> ส่วนต้นฉบับไม่มี (หรือกลับกัน)
+          // ถ้าเทียบทั้งดุ้นจะไม่เจอว่าซ้ำ แล้วเจ้าของได้การ์ดเดิมซ้ำอีกรอบ คราวนี้แท็กโผล่ดิบ ๆ ด้วย
+          const norm = (x: string) => x.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+          const nd = norm(draft);
+          const ne = norm(e);
+          const dup = ne.length >= 25 && (nd.includes(ne.slice(0, 60)) || ne.includes(nd.slice(0, 60)));
+          if (ne.length >= 60 && !dup) outSends = [...outSends, { kind: "text" as const, text: e }];
         }
       } catch { /* ตรวจไม่ได้ = ส่งของเดิม */ }
     }
@@ -433,6 +437,19 @@ export async function POST(req: Request) {
       const { dropRepeats } = await import("@/lib/kiki-review");
       sends = await dropRepeats(sends);
     }
+
+    // บังคับใช้กฎที่เจ้าของสอนกับข้อความขาออกทุกก้อน (รวมการ์ด/ลิสต์ที่ระบบสร้างเอง)
+    // — เดิมกฎมีผลแค่กับข้อความที่สมองแต่ง เจ้าของเลยเจอ "ช่วงแรกทำ หลัง ๆ ไม่ทำ"
+    try {
+      const { applyStyleRules } = await import("@/lib/kiki");
+      sends = await Promise.all(
+        sends.map(async (s) =>
+          s.kind === "text" && s.text
+            ? { ...s, text: await applyStyleRules(s.text, { html: s.parseMode === "HTML" }) }
+            : s,
+        ),
+      );
+    } catch { /* ปรับไม่ได้ = ส่งของเดิม */ }
 
     if (voiceSend) sends.push(voiceSend);
     return ok(sends);

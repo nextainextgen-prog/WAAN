@@ -30,8 +30,20 @@ const LIST_KEY = "kiki_last_task_list"; // เก็บลำดับที่�
 export async function addTask(input: TaskInput) {
   const title = input.title.trim().slice(0, 300);
   if (!title) throw new Error("ไม่มีชื่องาน");
-  // กันซ้ำ: งานเปิดอยู่ชื่อเหมือนกันเป๊ะ = อัปเดตของเดิม
-  const dup = await db.kikiTask.findFirst({ where: { status: "open", title } });
+  // กันซ้ำ — เทียบแบบ "ใกล้เคียง" ไม่ใช่ตรงเป๊ะ
+  // เจ้าของเจอเอง 6 ส.ค. 2026: กระดานมีทั้ง "แก้บั๊กระบบจองห้องประชุม" และ "แก้บัคระบบจองห้องประชุม"
+  // เป็นคนละงาน ทั้งที่เป็นเรื่องเดียวกัน พิมพ์ต่างกันตัวเดียว
+  const openRows = await db.kikiTask.findMany({ where: { status: "open" }, take: 60 });
+  const key = (x: string) =>
+    x.toLowerCase().replace(/[\s"'`ๆฯ.,!?()\-]/g, "").replace(/บั๊?[คก]/g, "บัค");
+  const k = key(title);
+  const dup =
+    openRows.find((t) => key(t.title) === k) ||
+    openRows.find((t) => {
+      const o = key(t.title);
+      const [a, b] = o.length > k.length ? [o, k] : [k, o];
+      return b.length >= 8 && a.includes(b); // อีกอันเป็นส่วนหนึ่งของอีกอัน = เรื่องเดียวกัน
+    });
   if (dup) {
     return db.kikiTask.update({
       where: { id: dup.id },

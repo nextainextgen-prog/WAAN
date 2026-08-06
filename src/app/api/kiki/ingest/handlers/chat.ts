@@ -184,7 +184,11 @@ export const chatFallbackHandler: Handler = async (ctx) => {
     );
   }
 
-  const answer = await askKiki(text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)", ctxParts.join("\n\n") || undefined);
+  const answer = await askKiki(
+    text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)",
+    ctxParts.join("\n\n") || undefined,
+    { imagePaths: imageFiles }, // ต้องส่ง path ไปด้วย ไม่งั้นสมองไม่มีสิทธิ์เปิดรูป (บั๊ก 6 ส.ค.)
+  );
   const outSends: Send[] = [
     ...linkShots.map((s0) => ({ kind: "photo" as const, dataBase64: s0.b64, filename: "page.png", caption: s0.caption })),
     { kind: "text" as const, text: answer, replyTo: msgId },
