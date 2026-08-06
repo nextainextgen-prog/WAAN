@@ -80,4 +80,26 @@ if (orphans.length) {
   console.log(`ผ่าน — เจตนาทั้ง ${catalog.length} ตัวมีตัวรับครบ`);
 }
 
-process.exit(bad || orphans.length ? 1 : 0);
+// ===== ปุ่มที่ส่งออกไปต้องมีตัวรับเสมอ =====
+// เคสจริง 6 ส.ค. 2026: ใบแจ้ง "เซสชันหมดอายุ" ส่งปุ่ม data:"auth:telegram" ออกไป
+// แต่ไม่มีใครแปลงสัญญาณนั้นเป็นคำสั่ง เจ้าของกดแล้วเงียบสนิท ไม่มีอะไรเกิดขึ้น
+const routeSrc = fs.readFileSync("src/app/api/kiki/ingest/route.ts", "utf8");
+const btnSources = [...FILES, "src/app/api/kiki/cron/route.ts"];
+const buttons = new Set();
+for (const f of btnSources) {
+  let src = "";
+  try { src = fs.readFileSync(f, "utf8"); } catch { continue; }
+  for (const m of src.matchAll(/data:\s*[`"']([^`"'${]+)/g)) {
+    const raw = m[1].trim();
+    if (raw) buttons.add(raw);
+  }
+}
+const deadButtons = [...buttons].filter((b) => !routeSrc.includes(b) && !handlerSrc.includes(b));
+if (deadButtons.length) {
+  console.log(`\nปุ่มที่ไม่มีตัวรับ ${deadButtons.length} อัน: ${deadButtons.join(", ")}`);
+  console.log("  → ส่งปุ่มออกไปแล้วเจ้าของกด จะเงียบสนิท ต้องแปลง callbackData เป็นคำสั่งใน ingest/route.ts");
+} else {
+  console.log(`ผ่าน — ปุ่มทั้ง ${buttons.size} แบบมีตัวรับครบ`);
+}
+
+process.exit(bad || orphans.length || deadButtons.length ? 1 : 0);

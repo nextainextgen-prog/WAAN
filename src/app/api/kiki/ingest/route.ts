@@ -69,6 +69,10 @@ export async function POST(req: Request) {
   else if (callbackData === "kiki:dev:no") text = "[ปุ่ม:ยกเลิกพัฒนา]";
   else if (callbackData === "kiki:reset:yes") text = "[ปุ่ม:ล้างบัญชี]";
   else if (callbackData === "kiki:reset:no") text = "[ปุ่ม:ไม่ล้าง]";
+  // ปุ่มจากใบแจ้ง "เซสชันหมดอายุ" — เคยส่งปุ่มออกไปโดยไม่มีตัวรับ กดแล้วเงียบสนิท (เจ้าของเจอเอง 6 ส.ค. 2026)
+  else if (callbackData === "auth-skip") text = "[ปุ่ม:auth-skip]";
+  else if (/^auth:[a-z0-9_-]+$/i.test(callbackData)) text = `[ปุ่ม:${callbackData}]`;
+  else if (callbackData === "auth-stop") text = "[ปุ่ม:หยุดล็อกอิน]";
   // ปุ่มโซเชียล: กดส่งจริง / ทิ้งร่าง
   if (callbackData === "kiki:social:send" || callbackData === "kiki:social:no") {
     const box = await getPendingFor<{ url: string; text: string; what: string }>("kiki_pending_social", channel);
