@@ -676,17 +676,12 @@ ${nags.join("\n")}`);
           sends.push({ chatId: mainChat, kind: "text", text: t });
           await saveKikiChat("assistant", t);
         }
-        // 3) Vex รีวิวตัวเอง → เสนอกฎใหม่
-        const chats = await db.kikiChat.findMany({ where: { createdAt: { gte: new Date(now.getTime() - 7 * 86400_000) } }, orderBy: { createdAt: "asc" }, take: 200 });
-        if (chats.length >= 10) {
-          const log = chats.map((c) => `${c.role === "user" ? "เจ้าของ" : "Vex"}: ${c.content.replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
-          const t = await askKiki(
-            `[รีวิวตัวเองรายสัปดาห์] อ่านบทสนทนา 7 วันล่าสุดของตัวเอง: หาว่าโดนเจ้าของด่า/แก้เรื่องอะไร ทำอะไรพลาด แล้วเสนอ "กฎใหม่ 2-3 ข้อ" ที่จะทำให้ไม่พลาดซ้ำ (สั้น ทำได้จริง) ปิดท้ายบอกเจ้าของว่าถ้าเห็นด้วยข้อไหน พิมพ์ "สอนว่า <กฎ>" มาได้เลยจะจำถาวร\n\nบทสนทนา:\n${log.slice(0, 12000)}`,
-          ).catch(() => "");
-          if (t) {
-            sends.push({ chatId: mainChat, kind: "text", text: t });
-            await saveKikiChat("assistant", t);
-          }
+        // 3) Vex รีวิวตัวเอง → เสนอกฎใหม่ (จิตใจเฟส 6: มีตัวเลขพลาดซ้ำเทียบสัปดาห์ก่อนเสมอ)
+        const { weeklySelfReview } = await import("@/lib/kiki-reflect");
+        const t = await weeklySelfReview(now).catch(() => "");
+        if (t) {
+          sends.push({ chatId: mainChat, kind: "text", text: t });
+          await saveKikiChat("assistant", t);
         }
       }
     }
@@ -714,6 +709,9 @@ ${nags.join("\n")}`);
     if (now.getHours() >= 23 && (await getSetting("kiki_last_rollup")) !== today) {
       await setSetting("kiki_last_rollup", today);
       await rollupRecentDays().catch(() => []);
+      // ไตร่ตรองรอบวัน (จิตใจเฟส 6) — ทบทวนเงียบ ๆ เก็บเป็นความจำ ไม่ส่งหาเจ้าของ
+      const { dailyReflect } = await import("@/lib/kiki-reflect");
+      await dailyReflect(now).catch(() => null);
     }
   } catch { /* พรุ่งนี้ค่อยสรุป */ }
 
