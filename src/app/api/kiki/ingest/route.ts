@@ -243,7 +243,12 @@ export async function POST(req: Request) {
     // เพราะตัวจัดการทำ .slice(0, 3900) แล้วส่วนที่เหลือหายไปเงียบ ๆ ไม่มีใครรู้ว่าตกอะไรไป
     // กฎ 3 บับเบิลยอมให้เกินได้ตรงนี้ — ข้อมูลหายแย่กว่าบับเบิลเยอะ
     const LIMIT = 3800;
-    return out.flatMap((b) => {
+    //
+    // **ห้าม return ตรงนี้** — ผลต้องไหลต่อไปที่ `cleaned` ข้างล่าง ซึ่งเป็นที่ที่
+    // ใส่ปุ่ม · แปลง markdown เป็น HTML · ผูก chatId/replyTo
+    // (6 ส.ค. 2026: ตอนแก้เรื่องข้อความถูกตัด เผลอใส่ return ตรงนี้ แล้ว **ปุ่มหายทั้งระบบ**
+    //  เจ้าของสั่งล้างบัญชีแล้ววนอยู่ 3 รอบเพราะไม่มีปุ่มให้กด)
+    const split = out.flatMap((b) => {
       if (!b.text || b.text.length <= LIMIT) return [b];
       const chunks: string[] = [];
       let buf = "";
@@ -260,7 +265,7 @@ export async function POST(req: Request) {
       if (buf) chunks.push(buf);
       return chunks.map((text) => ({ ...b, text }));
     });
-    const cleaned = out
+    const cleaned = split
       .filter((x) => x.parseMode || (x.text || "").trim())
       .map((x) => {
         // ตาข่ายมืออาชีพ: markdown ที่ AI เผลอเขียน (** ## ---) ต้องไม่หลุดถึงแชทดิบ ๆ

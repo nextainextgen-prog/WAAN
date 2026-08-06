@@ -21,11 +21,22 @@ const PENDING = "kiki_pending_reset";
 export const financeResetHandler: Handler = async (ctx) => {
   const { text, msgId, is, channel, reply } = ctx;
 
-  // กดปุ่มยืนยัน / ยกเลิก
-  if (text === "[ปุ่ม:ล้างบัญชี]" || text === "[ปุ่ม:ไม่ล้าง]") {
-    const raw = await getSetting(PENDING);
+  // ===== ยืนยันได้ทั้ง "กดปุ่ม" และ "พิมพ์ตอบ" =====
+  // เจ้าของพิมพ์ "ลบเลยครับผม" แล้ว "ยืนยัน" แล้วระบบก็ยังโชว์การ์ดเดิมวนอยู่ 3 รอบ
+  // เพราะรับเฉพาะปุ่ม (ซึ่งตอนนั้นปุ่มก็หายไปด้วยจากบั๊กตัวซอยบับเบิล)
+  // regex ตรงนี้ใช้ได้ตามกติกาข้อ 1 — "คำยืนยัน" อยู่ในข้อยกเว้นที่ระบุไว้ชัด
+  const raw0 = await getSetting(PENDING);
+  let pending: { scope?: "month" | "all"; at?: number } | null = null;
+  try { pending = raw0 ? (JSON.parse(raw0) as { scope?: "month" | "all"; at?: number }) : null; } catch { pending = null; }
+  if (pending && Date.now() - (pending.at || 0) > 15 * 60_000) { await setSetting(PENDING, ""); pending = null; }
+
+  const saidYes = /^\s*(ยืนยัน|ลบเลย|ล้างเลย|เอาเลย|จัดเลย|ตกลง|ใช่|ok|โอเค)/i.test(text) || text === "[ปุ่ม:ล้างบัญชี]";
+  const saidNo = /^\s*(ไม่|ยกเลิก|หยุด|อย่า|ไว้ก่อน)/.test(text) || text === "[ปุ่ม:ไม่ล้าง]";
+
+  if (pending && (saidYes || saidNo)) {
+    const raw = raw0;
     await setSetting(PENDING, "");
-    if (text === "[ปุ่ม:ไม่ล้าง]") {
+    if (saidNo) {
       return reply([{ kind: "text", text: await vexLine("ไม่ล้างแล้วครับ ข้อมูลอยู่ครบเหมือนเดิม"), replyTo: msgId }]);
     }
     let scope: "month" | "all" = "all";
@@ -43,6 +54,7 @@ export const financeResetHandler: Handler = async (ctx) => {
 
   // ขอบเขต: เดือนนี้ หรือทั้งหมด — ให้ตัวอ่านเจตนาบอกมา ไม่ใช่เดาจากคำ
   const scope: "month" | "all" = ctx.arg("scope") === "month" || /เดือนนี้/.test(text) ? "month" : "all";
+  void pending;
   const now = new Date();
   const where = scope === "month"
     ? { occurredAt: { gte: new Date(now.getFullYear(), now.getMonth(), 1), lt: new Date(now.getFullYear(), now.getMonth() + 1, 1) } }
