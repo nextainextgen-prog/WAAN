@@ -34,9 +34,9 @@ export function vexList(opts: {
     const o: VexItem = typeof it === "string" ? { main: it } : it;
     const lead = o.lead ?? (opts.numbered ? `${i + 1}.` : "·");
     const head = `${lead} ${esc(o.main)}`;
-    return o.sub ? `${head}\n    <i>${esc(o.sub)}</i>` : head;
+    return o.sub ? `${head}\n    (${esc(o.sub)})` : head;
   });
-  const body = items.length ? items.join("\n") : `<i>${esc(opts.empty || "ไม่มีรายการ")}</i>`;
+  const body = items.length ? items.join("\n") : `(${esc(opts.empty || "ไม่มีรายการ")})`;
   const parts = [`<b>${esc(opts.title)}</b>`, "", body];
   if (opts.note) parts.push("", esc(opts.note));
   return { text: parts.join("\n"), parseMode: "HTML" };
@@ -53,7 +53,9 @@ export function vexList(opts: {
  *
  * ของใหม่
  *  - หัวข้อมีไอคอนนำ (สัญลักษณ์ล้วน ไม่ใช่หน้าคน — กติกาเดิมของเจ้าของ)
- *  - `sub` ต่อท้ายหัวข้อเป็นตัวเอียง ใช้ใส่ยอดรวม/จำนวนรายการ แยกจากชื่อหัวข้อ
+ *  - `sub` ต่อท้ายหัวข้อใส่ในวงเล็บ ใช้ใส่ยอดรวม/จำนวนรายการ แยกจากชื่อหัวข้อ
+ *    (เจ้าของสั่ง 6 ส.ค. 2026: "เลิกใช้ <i> ใช้วงเล็บธรรมดาแทน" — ทำที่ต้นทางเลย
+ *     ไม่พึ่ง applyStyleRules แปลงให้ทีหลัง เพราะมันทำบ้างไม่ทำบ้าง ผลไม่คงเส้นคงวา)
  *  - รายการที่มี "ค่า" (ราคา/เวลา) จัดให้ค่าอยู่ท้ายบรรทัดเสมอ อ่านไล่ลงมาได้
  *  - `accent` = บรรทัดที่ต้องสะดุดตา (เตือน/ตัวเลขติดลบ) ทำเป็นตัวหนา
  *  - เส้นคั่นบาง ๆ ก่อนบรรทัดสรุปปิดท้าย
@@ -71,6 +73,7 @@ export interface VexRow {
   value?: string;  // ค่าที่จะไปอยู่ท้ายบรรทัด (ราคา/เวลา/สถานะ)
   lead?: string;   // ตัวนำหน้าแทน "·"
   bold?: boolean;
+  sub?: string;    // บรรทัดย่อยใต้รายการ (ข้อมูลที่ยังขาด/หมายเหตุ) — ย่อหน้าเข้าไป ใส่วงเล็บ
 }
 
 export function vexSections(opts: {
@@ -83,17 +86,18 @@ export function vexSections(opts: {
 }): VexBlock {
   const head = `${opts.titleIcon ? `${opts.titleIcon} ` : ""}<b>${esc(opts.title)}</b>`;
   const parts: string[] = [head];
-  if (opts.subtitle) parts.push(`<i>${esc(opts.subtitle)}</i>`);
+  if (opts.subtitle) parts.push(`(${esc(opts.subtitle)})`);
 
   for (const s of opts.sections) {
     if (!s.lines.length) continue;
-    const label = `${s.icon ? `${s.icon} ` : ""}<b>${esc(s.head)}</b>${s.sub ? ` <i>${esc(s.sub)}</i>` : ""}`;
+    const label = `${s.icon ? `${s.icon} ` : ""}<b>${esc(s.head)}</b>${s.sub ? ` (${esc(s.sub)})` : ""}`;
     parts.push("", label);
     for (const it of s.lines) {
       const r: VexRow = typeof it === "string" ? { main: it } : it;
       const lead = r.lead ?? "·";
       const body = r.bold || s.accent ? `<b>${esc(r.main)}</b>` : esc(r.main);
       parts.push(r.value ? `${lead} ${body} — ${esc(r.value)}` : `${lead} ${body}`);
+      if (r.sub) parts.push(`   (${esc(r.sub)})`);
     }
   }
 

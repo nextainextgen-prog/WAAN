@@ -408,7 +408,8 @@ model RecurringBill {
   id         String    @id @default(cuid())
   createdAt  DateTime  @default(now())
   label      String                       // ค่าเน็ต / Netflix / AIA
-  amount     Float
+  amount     Float                        // ยอดปกติ (ถ้าเป็นช่วง = ขอบล่าง)
+  amountMax  Float?                       // "ค่าเน็ต 700 บางที 1,000" → 700 กับ 1,000 · null = ยอดคงที่
   dayOfMonth Int                          // ตัดทุกวันที่เท่าไหร่
   type       String    @default("expense") // expense | income (เงินเดือนเข้า)
   source     String    @default("manual")  // manual | auto
@@ -470,7 +471,38 @@ model Debt {
   totalAmount       Float?               // ยอดตั้งต้นทั้งก้อน (ไว้โชว์ผ่อนไปแล้วกี่ %)
   remindedInstallmentYm String?          // เตือนงวดของเดือนไหนไปแล้ว (YYYY-MM กันเตือนซ้ำ)
 
+  // --- ขยาย 6 ส.ค. 2026: บัตรกับสินเชื่อผ่อนปิดคิดคนละสูตร เก็บช่องเดียวไม่พอ ---
+  kind           String?                 // revolving (บัตร/วงเงินหมุนเวียน) | installment (ผ่อนปิด) | personal (ยืมคน)
+  creditLimit    Float?                  // วงเงินที่ได้รับ (เฉพาะ revolving)
+  availableCredit Float?                 // วงเงินคงเหลือตอนนี้ → คำนวณ % ที่ใช้ไป
+  interestRate   Float?                  // ดอกเบี้ย %/ปี → พยากรณ์ "จ่ายขั้นต่ำอีกกี่เดือนหมด"
+  termsTotal     Int?                    // ผ่อนทั้งหมดกี่งวด (จอคอม = 9)
+  termsPaid      Int?                    // จ่ายไปแล้วกี่งวด (จอคอม = 3)
+  amountKnown    Boolean  @default(true) // false = ยังไม่รู้ยอดคงเหลือจริง (ลงไว้ก่อนเพราะรู้ค่างวด) ห้ามเอาไปรวมยอดแบบมั่นใจ
+
+  payments  DebtPayment[]
+
   @@index([settledAt])
+}
+
+// งวดที่ต้องจ่ายรายเดือนของหนี้แต่ละก้อน — ของเดิมเขียนทับ Debt.amount ทิ้ง
+// ทำให้ตอบไม่ได้เลยว่า "เดือนนี้จ่ายค่าหนี้อะไรไปแล้วบ้าง เหลือเท่าไหร่ กี่ %"
+model DebtPayment {
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  debtId    String
+  debt      Debt      @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  ym        String                        // รอบเดือน YYYY-MM
+  dueDay    Int                           // ครบกำหนดวันที่เท่าไหร่
+  amountDue Float                         // ต้องจ่ายเท่าไหร่รอบนี้
+  amountPaid Float?                       // จ่ายจริงเท่าไหร่ (จ่ายเกินขั้นต่ำได้)
+  paidAt    DateTime?
+  status    String    @default("pending") // pending | paid | late | skipped
+  note      String?
+  txnId     String?                       // ผูกกับ FinanceTxn ที่เป็นสลิปใบนั้น
+
+  @@unique([debtId, ym])
+  @@index([ym, status])
 }
 
 // งานที่เจ้าของฝาก Hermes ทำ (agent งานยาว) — รันเบื้องหลัง เสร็จแล้ว cron ส่งผลเข้าแชท
