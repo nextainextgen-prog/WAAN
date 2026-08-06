@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { MAC_RE, quickMac, macAgent } from "@/lib/kiki-mac";
-import { askExtractor, setSetting, kikiConversation, getSetting, ttsOgg, vexLine, pendingElsewhereNote } from "@/lib/kiki";
+import { askExtractor, setSetting, kikiConversation, getSetting, ttsOgg, vexLine, pendingElsewhereNote, askKiki } from "@/lib/kiki";
 import type { Ctx, Handler } from "../types";
 import { ok, type Send } from "../types";
 
@@ -169,7 +169,25 @@ export const selfDevHandler: Handler = async (ctx) => {
         if (j?.confident && j.spec) spec = j.spec.trim();
       } catch { /* ถามกลับข้างล่าง */ }
       if (!spec) {
-        return reply([{ kind: "text", text: await vexLine(`ได้ครับ ผมพัฒนาตัวเองได้จริง — แต่ขอสเปกชัด ๆ หน่อยว่าให้เพิ่มอะไร\n\nพิมพ์: พัฒนา: <สิ่งที่อยากได้>`), replyTo: msgId }]);
+        // ===== เสนอก่อน อย่าถามเปล่า (D3 · แก้ 6 ส.ค. 2026) =====
+        // เคสจริงที่พัง: เจ้าของพิมพ์สเปกยาวมาเต็ม ๆ พร้อมถามความเห็น
+        // แต่ตัวสกัดบอก "ไม่มั่นใจ" → ตอบว่า *"ช่วยระบุสเปกให้ชัดเจนหน่อยครับ"*
+        // = โยนงานกลับให้เจ้าของทั้งที่เขาเพิ่งบอกไปแล้ว
+        // ตอนนี้: อ่านสถานะตัวเองจริง แล้วเสนอสเปกที่ทำได้เลย 3 ข้อให้เขาเลือก
+        const { selfStatus } = await import("@/lib/kiki-agent");
+        const proposal = await askKiki(
+          `[เจ้าของสั่งให้พัฒนาตัวเอง แต่ระบบสกัดสเปกชัด ๆ ไม่ได้] เขาพูดว่า: """${text.slice(0, 600)}"""` +
+            `${replyText ? `\n(reply ถึง: """${replyText.slice(0, 600)}""")` : ""}\n\n` +
+            `=== สถานะจริงของคุณ ===\n${await selfStatus().catch(() => "")}\n\n` +
+            `ห้ามถามกลับเปล่า ๆ ว่า "อยากได้อะไร" — ให้เสนอสเปกที่ลงมือได้จริง 3 ข้อจากของที่ยังขาดจริง\n` +
+            `แต่ละข้อ: ชื่อสั้น + ทำอะไร + แก้ปัญหาอะไรให้โด้\n` +
+            `ปิดท้าย: ข้อที่แนะนำที่สุดพร้อมเหตุผล แล้วบอกว่าตอบเลขข้อมา หรือพิมพ์ "พัฒนา: ..." เองก็ได้`,
+        ).catch(() => null);
+        return reply([{
+          kind: "text",
+          text: proposal || (await vexLine(`ผมพัฒนาตัวเองได้จริง แต่รอบนี้จับไม่ได้ว่าจะให้เพิ่มอะไร — พิมพ์ "พัฒนา: <สิ่งที่อยากได้>" มาได้เลย`)),
+          replyTo: msgId,
+        }]);
       }
     }
     await setPendingDev(spec, channel);

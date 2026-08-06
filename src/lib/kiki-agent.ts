@@ -28,6 +28,44 @@ export interface AgentTool {
 const clip = (s: string, n = 6000) => (s.length > n ? `${s.slice(0, n)}\n…(ตัดที่ ${n} ตัวอักษร)` : s);
 
 /**
+ * Vex รู้จักตัวเอง (6 ส.ค. 2026 — เจ้าของ: "มันไม่รู้จักการพัฒนาตัวเอง")
+ *
+ * เจ้าของส่งบทความมาแล้วสั่งว่า "เสนอไอเดียพัฒนาของ Vex" แต่มันเสนอไม่ได้
+ * เพราะไม่รู้เลยว่าตัวเองมีอะไรอยู่แล้ว ขาดอะไร และเพิ่งแก้อะไรไป
+ * → ไอเดียที่ออกมาจะเป็นของทั่วไปที่ไม่เกี่ยวกับตัวมันจริง ๆ
+ *
+ * อ่านจากของจริง 3 แหล่ง: แคตตาล็อกความสามารถ · แผนพัฒนาที่จดค้างไว้ · git log
+ */
+export async function selfStatus(): Promise<string> {
+  const parts: string[] = [];
+  try {
+    const { capabilityLines } = await import("./kiki-router");
+    parts.push(`[ความสามารถที่มีอยู่แล้วตอนนี้]\n${capabilityLines()}`);
+  } catch { /* ข้าม */ }
+
+  // แผนพัฒนา: หยิบเฉพาะบรรทัดที่บอกว่ายังค้าง — ไฟล์ยาวมาก ยัดทั้งไฟล์ไม่ไหว
+  try {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const root = process.env.CHANGOH_ROOT?.trim() || process.cwd();
+    const doc = await fs.readFile(path.join(root, "docs/vex-roadmap-2026-08.md"), "utf8");
+    const pending = doc.split("\n").filter((l) => /ยังค้าง|ยังไม่ได้ทำ|ยังไม่ได้เทส|ยังไม่รองรับ|รอเจ้าของ|ยังไม่เริ่ม|หนี้ที่ฝากไว้/.test(l));
+    if (pending.length) parts.push(`[งานที่จดไว้ว่ายังค้าง]\n${pending.slice(-25).join("\n")}`);
+  } catch { /* ไม่มีไฟล์ก็ข้าม */ }
+
+  try {
+    const { execFile } = await import("node:child_process");
+    const log = await new Promise<string>((resolve) => {
+      execFile("git", ["log", "--oneline", "-15"], { cwd: process.env.CHANGOH_ROOT?.trim() || process.cwd(), timeout: 10_000 },
+        (err, out) => resolve(err ? "" : out.toString()));
+    });
+    if (log) parts.push(`[15 อย่างล่าสุดที่เพิ่งแก้/เพิ่มไป]\n${log}`);
+  } catch { /* ข้าม */ }
+
+  return clip(parts.join("\n\n"), 9000) || "อ่านสถานะตัวเองไม่ได้ตอนนี้";
+}
+
+/**
  * เครื่องมือทั้งหมด — อ่านอย่างเดียว
  * ทุกตัวคืน "ข้อความที่อ่านรู้เรื่อง" ไม่ใช่ JSON ดิบ เพราะปลายทางคือสมองที่ต้องเอาไปคิดต่อ
  */
@@ -111,6 +149,12 @@ export function agentTools(): AgentTool[] {
         const { ownerFactsContext } = await import("./kiki");
         return clip((await ownerFactsContext()) || "ยังไม่มีข้อมูลที่จำไว้");
       },
+    },
+    {
+      name: "read_self_status",
+      description: "ดูสถานะของ Vex เอง: ความสามารถที่มีตอนนี้ · งานที่ยังค้างในแผนพัฒนา · สิ่งที่เพิ่งแก้ไปล่าสุด — ใช้ทุกครั้งที่เจ้าของถามถึง 'พัฒนา Vex' หรือขอไอเดียปรับปรุงตัวมันเอง",
+      params: {},
+      run: async () => selfStatus(),
     },
     {
       name: "read_owner_profile",

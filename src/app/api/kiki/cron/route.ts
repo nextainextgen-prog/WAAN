@@ -11,7 +11,7 @@ import { pollBankEmails } from "@/lib/kiki-gmail";
 import { collectHermesDeliveries, collectJobPings, markDelivered } from "@/lib/kiki-hermes";
 import { tasksToNag, markNagged } from "@/lib/kiki-tasks";
 import { rollupRecentDays } from "@/lib/kiki-memory";
-import { vexSections, vexList } from "@/lib/kiki-format";
+import { vexSections, vexList, type VexSection, type VexRow } from "@/lib/kiki-format";
 import { askClaude } from "@/lib/claude";
 import { KIKI_GUARD, KIKI_PERSONA } from "@/lib/kiki";
 import { db } from "@/lib/db";
@@ -211,69 +211,88 @@ export async function POST(req: Request) {
         if (png) sends.push({ chatId: mainChat, kind: "photo", dataBase64: png, filename: "agenda.png" });
       }
 
-      // 4 ส.ค. 2026: เขียนใหม่เป็น "หัวข้อ + บรรทัดละรายการ" (เจ้าของด่าว่าของเดิมยัดติดกันอ่านไม่ออก)
-      const sections: { head: string; lines: string[] }[] = [];
+      // 6 ส.ค. 2026: จัดใหม่อีกรอบ (เจ้าของ: "รายงานดูเฉย ๆ มาก ให้เพิ่มองค์ประกอบ/จัดเรียงใหม่ + อิโมจิมืออาชีพ")
+      // หลักที่ใช้: หัวข้อมีไอคอนนำ · ยอดรวมแยกเป็น sub ของหัวข้อ · ค่าตัวเลขชิดท้ายบรรทัดให้ไล่สายตาได้
+      // เรียงตาม "ต้องรู้ก่อน" ไม่ใช่ตามหมวด: นัด → เงินคงเหลือ → กำหนดจ่าย → งานค้าง → รายละเอียดเมื่อวาน
+      const sections: VexSection[] = [];
 
       sections.push({
+        icon: todayRows.length ? "🗓" : "🌤",
         head: "นัดวันนี้",
+        sub: todayRows.length ? `${todayRows.length} นัด` : undefined,
         lines: todayRows.length
-          ? todayRows.map((e) => `${e.timeText || "ทั้งวัน"} — ${e.title}${e.location ? ` ที่${e.location}` : ""}`)
-          : ["ไม่มีนัด"],
+          ? todayRows.map((e) => ({ lead: e.timeText ? `${e.timeText} น.` : "ทั้งวัน", main: `${e.title}${e.location ? ` ที่${e.location}` : ""}` }))
+          : ["ว่างทั้งวัน"],
       });
+
+      // สถานะเงินขึ้นก่อนรายการรายตัว — ตอนเช้าต้องรู้ "เหลือเท่าไหร่" ก่อนรู้ "เมื่อวานใช้อะไร"
+      const moneyLines: VexRow[] = [];
+      if (snap.totalBudget !== null && snap.safePerDay !== null) {
+        moneyLines.push({ main: "งบเดือนนี้เหลือ", value: `${fmtBaht(Math.max(0, snap.totalBudget - snap.monthExpense))} ฿` });
+        moneyLines.push({ main: "ใช้ได้วันละ", value: `${fmtBaht(Math.floor(snap.safePerDay))} ฿` });
+      }
+      const net = snap.monthIncome - snap.monthExpense;
+      moneyLines.push({ main: net < 0 ? "เดือนนี้ติดลบ" : "เดือนนี้เหลือสุทธิ", value: `${fmtBaht(Math.abs(net))} ฿`, bold: net < 0 });
+      if (cash) {
+        const warn = cash.lines[cash.lines.length - 1];
+        if (warn?.startsWith("⚠️")) moneyLines.push({ main: warn.replace(/^⚠️\s*/, ""), lead: "⚠️", bold: true });
+        else moneyLines.push({ main: "คาดการณ์ 30 วัน", value: `เหลือราว ${fmtBaht(Math.round(cash.endBalance))} ฿` });
+      }
+      if (moneyLines.length) sections.push({ icon: net < 0 ? "📉" : "📈", head: "สถานะเงิน", lines: moneyLines });
+
+      const dueSoon = dueDebts.filter((d) => (d.dueDate && d.dueDate.getTime() - now.getTime() < 3 * 86400_000) || (d.installmentDay && Math.abs(d.installmentDay - now.getDate()) <= 2));
+      const dueLines: VexRow[] = [
+        ...dueSoon.map((d) => ({ main: `หนี้ ${d.person}`, value: `${fmtBaht(d.installmentAmount || d.amount)} ฿` })),
+        ...bills.map((b) => ({ main: b.label, value: `${fmtBaht(b.amount)} ฿ · ${b.inDays === 0 ? "ตัดวันนี้" : `อีก ${b.inDays} วัน`}` })),
+      ];
+      if (dueLines.length) sections.push({ icon: "⏰", head: "ใกล้ถึงกำหนดจ่าย", sub: `${dueLines.length} รายการ`, lines: dueLines, accent: true });
 
       const yExpense = yRows.filter((r) => r.type === "expense");
       sections.push({
-        head: `เมื่อวานใช้ไป ${fmtBaht(ySpent)} ฿ (${yExpense.length} รายการ)`,
-        lines: yExpense.length ? yExpense.slice(-8).map((r) => `${r.note || r.category} — ${fmtBaht(r.amount)} ฿`) : ["ไม่มีรายการ"],
+        icon: "💸",
+        head: "เมื่อวานใช้ไป",
+        sub: `${fmtBaht(ySpent)} ฿ · ${yExpense.length} รายการ`,
+        lines: yExpense.length
+          ? yExpense.slice(-8).map((r) => ({ main: r.note || r.category, value: `${fmtBaht(r.amount)} ฿` }))
+          : ["ไม่มีรายการ"],
       });
-
-      const moneyLines: string[] = [];
-      if (snap.totalBudget !== null && snap.safePerDay !== null) {
-        moneyLines.push(`งบเดือนนี้เหลือ ${fmtBaht(Math.max(0, snap.totalBudget - snap.monthExpense))} ฿`);
-        moneyLines.push(`ใช้ได้วันละ ${fmtBaht(Math.floor(snap.safePerDay))} ฿`);
-      }
-      if (cash) {
-        const warn = cash.lines[cash.lines.length - 1];
-        moneyLines.push(warn?.startsWith("⚠️") ? warn : `คาดการณ์ 30 วัน เหลือประมาณ ${fmtBaht(Math.round(cash.endBalance))} ฿`);
-      }
-      if (moneyLines.length) sections.push({ head: "สถานะเงิน", lines: moneyLines });
-
-      const dueSoon = dueDebts.filter((d) => (d.dueDate && d.dueDate.getTime() - now.getTime() < 3 * 86400_000) || (d.installmentDay && Math.abs(d.installmentDay - now.getDate()) <= 2));
-      const dueLines = [
-        ...dueSoon.map((d) => `หนี้ ${d.person} — ${fmtBaht(d.installmentAmount || d.amount)} ฿`),
-        ...bills.map((b) => `${b.label} — ${fmtBaht(b.amount)} ฿ (${b.inDays === 0 ? "ตัดวันนี้" : `อีก ${b.inDays} วัน`})`),
-      ];
-      if (dueLines.length) sections.push({ head: "ใกล้ถึงกำหนดจ่าย", lines: dueLines });
 
       // งานค้างในกระดาน (ระบบใหม่ 4 ส.ค.) — ทวงเช้าละครั้ง
       const nagTasks = await tasksToNag(now).catch(() => []);
       if (nagTasks.length) {
         await markNagged(nagTasks.map((t) => t.id)).catch(() => {});
         sections.push({
-          head: `งานค้างในกระดาน (${nagTasks.length})`,
+          icon: "📌",
+          head: "งานค้างในกระดาน",
+          sub: `${nagTasks.length} งาน`,
           lines: nagTasks.slice(0, 10).map((t) => {
             const days = Math.floor((now.getTime() - t.createdAt.getTime()) / 86400_000);
-            return `${t.title}${days >= 1 ? ` (ค้างมา ${days} วัน)` : ""}`;
+            return { main: t.title, value: days >= 1 ? `ค้างมา ${days} วัน` : undefined };
           }),
         });
       }
 
       if (pendingRows.length) {
         sections.push({
-          head: `เงินออกที่ยังไม่รู้ว่าค่าอะไร (${pendingRows.length} รายการ · ${fmtBaht(pendingRows.reduce((s, r) => s + r.amount, 0))} ฿)`,
-          lines: ['ตอบทีเดียวได้เลย เช่น "1 ค่าข้าว 2 ค่าน้ำมัน" หรือขอลิสต์เต็มได้ตลอด'],
+          icon: "❓",
+          head: "เงินออกที่ยังไม่รู้ว่าค่าอะไร",
+          sub: `${pendingRows.length} รายการ · ${fmtBaht(pendingRows.reduce((s, r) => s + r.amount, 0))} ฿`,
+          lines: [{ main: 'ตอบทีเดียวได้เลย เช่น "1 ค่าข้าว 2 ค่าน้ำมัน" หรือขอลิสต์เต็มได้ตลอด', lead: "→" }],
         });
       }
 
-      const flat = sections.map((s) => `${s.head}: ${s.lines.join(" / ")}`).join("\n");
+      const rowText = (l: string | VexRow) => (typeof l === "string" ? l : `${l.main}${l.value ? ` ${l.value}` : ""}`);
+      const flat = sections.map((s) => `${s.head}${s.sub ? ` (${s.sub})` : ""}: ${s.lines.map(rowText).join(" / ")}`).join("\n");
       const comment = await askKiki(
         `[ปิดท้ายบรีฟเช้า] จากข้อมูลบรีฟด้านล่าง เขียน "1 บรรทัดเดียว" ที่มีประโยชน์ที่สุดกับการตัดสินใจวันนี้ (เตือน/ชี้จุดเสี่ยง/สิ่งควรทำ) ห้ามทักทาย ห้ามชมลอย ๆ:\n${flat}`,
       ).catch(() => "");
       const block = vexSections({
+        titleIcon: "☀️",
         title: "บรีฟเช้า",
         subtitle: now.toLocaleDateString("th-TH-u-ca-gregory", { weekday: "long", day: "numeric", month: "long", year: "numeric" }),
         sections,
         footer: comment ? comment.split("\n")[0].trim() : undefined,
+        footerIcon: "🎯",
       });
       sends.push({ chatId: mainChat, kind: "text", text: block.text, parseMode: block.parseMode });
       await saveKikiChat("assistant", `บรีฟเช้า\n${flat}`);

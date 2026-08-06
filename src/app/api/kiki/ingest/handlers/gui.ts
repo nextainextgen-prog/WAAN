@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { vexLine } from "@/lib/kiki";
+import { vexLine, askKiki } from "@/lib/kiki";
 import type { Handler, Send } from "../types";
 
 /**
@@ -96,6 +96,24 @@ export const guiHandler: Handler = async (ctx) => {
         caption: shot.label,
       });
     } catch { /* ภาพหาย ข้าม */ }
+  }
+
+  // ===== สั่งให้ "ไปดู" = ต้องเล่าได้ว่าบนจอมีอะไร (6 ส.ค. 2026) =====
+  // เจ้าของถาม "ไปดูแท็บนั้นหน่อย มีอัปเดทมั้ย" แล้วได้แค่ภาพกับคำว่า "สลับให้แล้ว" = ไม่ตอบคำถาม
+  // เขาถามว่า "มีอัปเดทมั้ย" ต้องอ่านจอแล้วตอบ
+  if (is("gui_switch") && r.ok && r.shots.length) {
+    const shot = r.shots[r.shots.length - 1].path;
+    const seen = await askKiki(
+      `[เจ้าของสั่งให้ไปดูหน้าจอแล้วรายงาน] เขาพูดว่า: """${ctx.text.slice(0, 300)}"""\n` +
+        `ระบบเปิด ${r.app}${r.target ? ` ไปที่ "${r.target}"` : ""} แล้วแคปหน้าจอมาให้ที่ path นี้: ${shot}\n\n` +
+        `เปิดภาพอ่านด้วยเครื่องมือ Read แล้วเล่าว่าบนจอมีอะไร โดยตอบ "คำถามที่เขาถาม" เป็นหลัก\n` +
+        `ถ้าถามว่ามีอัปเดทมั้ย = ดูว่ามีอะไรคืบหน้า/จบแล้ว/ค้างอยู่ตรงไหน แล้วตอบตรง ๆ\n` +
+        `อ่านไม่ออกให้บอกตรง ๆ ห้ามเดาว่าจอมีอะไร`,
+    ).catch(() => "");
+    if (seen) {
+      sends.push({ kind: "text", text: seen, replyTo: msgId });
+      return reply(sends);
+    }
   }
 
   // รายงานตามหลักฐานจริงเท่านั้น — "กดปุ่มส่งแล้ว" ไม่เท่ากับ "ข้อความขึ้นในห้องแล้ว"

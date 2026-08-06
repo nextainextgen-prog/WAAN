@@ -42,20 +42,62 @@ export function vexList(opts: {
   return { text: parts.join("\n"), parseMode: "HTML" };
 }
 
-/** หลายหัวข้อในข้อความเดียว (บรีฟเช้า/รายงาน) — เว้นบรรทัดระหว่างหัวข้อเสมอ */
+/**
+ * หลายหัวข้อในข้อความเดียว (บรีฟเช้า/รายงาน)
+ *
+ * ออกแบบใหม่ 6 ส.ค. 2026 — เจ้าของบอกว่า "รายงานต่าง ๆ มันดูเฉย ๆ มาก
+ * ให้เพิ่มองค์ประกอบหรือการจัดเรียงใหม่ เพิ่มอิโมจิให้มืออาชีพแนวนี้ 📤 🚀"
+ *
+ * ของเดิม: หัวข้อตัวหนาล้วน + ทุกบรรทัดขึ้นต้นด้วย "·" เหมือนกันหมด
+ * → กวาดตาแล้วแยกไม่ออกว่าอันไหนสำคัญ อันไหนแค่รายการ
+ *
+ * ของใหม่
+ *  - หัวข้อมีไอคอนนำ (สัญลักษณ์ล้วน ไม่ใช่หน้าคน — กติกาเดิมของเจ้าของ)
+ *  - `sub` ต่อท้ายหัวข้อเป็นตัวเอียง ใช้ใส่ยอดรวม/จำนวนรายการ แยกจากชื่อหัวข้อ
+ *  - รายการที่มี "ค่า" (ราคา/เวลา) จัดให้ค่าอยู่ท้ายบรรทัดเสมอ อ่านไล่ลงมาได้
+ *  - `accent` = บรรทัดที่ต้องสะดุดตา (เตือน/ตัวเลขติดลบ) ทำเป็นตัวหนา
+ *  - เส้นคั่นบาง ๆ ก่อนบรรทัดสรุปปิดท้าย
+ */
+export interface VexSection {
+  head: string;
+  lines: (string | VexRow)[];
+  icon?: string;   // ไอคอนนำหัวข้อ
+  sub?: string;    // ข้อมูลประกอบหัวข้อ (ยอดรวม/จำนวน)
+  accent?: boolean; // ทั้งหัวข้อนี้คือเรื่องที่ต้องสะดุดตา
+}
+
+export interface VexRow {
+  main: string;
+  value?: string;  // ค่าที่จะไปอยู่ท้ายบรรทัด (ราคา/เวลา/สถานะ)
+  lead?: string;   // ตัวนำหน้าแทน "·"
+  bold?: boolean;
+}
+
 export function vexSections(opts: {
   title: string;
+  titleIcon?: string;
   subtitle?: string;
-  sections: { head: string; lines: string[] }[];
+  sections: VexSection[];
   footer?: string;
+  footerIcon?: string;
 }): VexBlock {
-  const parts: string[] = [`<b>${esc(opts.title)}</b>`];
-  if (opts.subtitle) parts.push(esc(opts.subtitle));
+  const head = `${opts.titleIcon ? `${opts.titleIcon} ` : ""}<b>${esc(opts.title)}</b>`;
+  const parts: string[] = [head];
+  if (opts.subtitle) parts.push(`<i>${esc(opts.subtitle)}</i>`);
+
   for (const s of opts.sections) {
     if (!s.lines.length) continue;
-    parts.push("", `<b>${esc(s.head)}</b>`, ...s.lines.map((l) => `· ${esc(l)}`));
+    const label = `${s.icon ? `${s.icon} ` : ""}<b>${esc(s.head)}</b>${s.sub ? ` <i>${esc(s.sub)}</i>` : ""}`;
+    parts.push("", label);
+    for (const it of s.lines) {
+      const r: VexRow = typeof it === "string" ? { main: it } : it;
+      const lead = r.lead ?? "·";
+      const body = r.bold || s.accent ? `<b>${esc(r.main)}</b>` : esc(r.main);
+      parts.push(r.value ? `${lead} ${body} — ${esc(r.value)}` : `${lead} ${body}`);
+    }
   }
-  if (opts.footer) parts.push("", esc(opts.footer));
+
+  if (opts.footer) parts.push("", "─────────", `${opts.footerIcon ? `${opts.footerIcon} ` : ""}${esc(opts.footer)}`);
   return { text: parts.join("\n"), parseMode: "HTML" };
 }
 

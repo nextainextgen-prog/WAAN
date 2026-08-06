@@ -25,6 +25,8 @@ import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandle
 import { guiHandler } from "./handlers/gui";
 import { fileFindHandler } from "./handlers/files";
 import { authRunHandler, sessionAuthHandler } from "./handlers/session";
+import { baselineHandler } from "./handlers/baseline";
+import { selfReflectHandler } from "./handlers/reflect";
 
 /**
  * ทะเบียนเส้นทางของ Vex — เดินจากบนลงล่าง ตัวไหนคืนคำตอบก่อนก็จบ
@@ -55,6 +57,14 @@ export const HANDLERS: Handler[] = [
   // กระดานงาน + ความจำบทสนทนา
   tasksHandler,
   memoryRecallHandler,
+
+  // Vex ประเมินตัวเอง — ต้องมาก่อน selfDev และก่อนเส้นทางเงิน
+  // "คิดว่าตัวเองไม่เก่งอะไร" เคยไปโผล่การ์ดการเงิน และเคยถูกตอบว่า "ขอสเปกชัด ๆ"
+  selfReflectHandler,
+
+  // ฐานการเงินหลัก 4 อย่าง — ต้องมาก่อนทุกเส้นทางเงิน
+  // "เงินเข้าเดือนละ 45000" คือตัวเลขประจำ ไม่ใช่รายรับครั้งเดียวที่ต้องบันทึกเป็นรายการ
+  baselineHandler,
 
   // ที่ปรึกษาการเงิน (ต้องมาก่อนเส้นทางเงินตัวอื่น — ข้อความยาวมีหลายตัวเลข)
   financeAdviceHandler,
