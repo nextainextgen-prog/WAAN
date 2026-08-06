@@ -27,6 +27,7 @@ import { fileFindHandler } from "./handlers/files";
 import { authRunHandler, sessionAuthHandler } from "./handlers/session";
 import { baselineHandler } from "./handlers/baseline";
 import { selfReflectHandler } from "./handlers/reflect";
+import { financeResetHandler, financeSplitHandler } from "./handlers/reset";
 
 /**
  * ทะเบียนเส้นทางของ Vex — เดินจากบนลงล่าง ตัวไหนคืนคำตอบก่อนก็จบ
@@ -83,7 +84,9 @@ export const HANDLERS: Handler[] = [
   jobStatusHandler,
   hermesHandler,
 
-  // การเงิน
+  // การเงิน — ล้างบัญชี/แยกหนี้ ต้องมาก่อน editFinance (ไม่งั้น "ลบออกให้หมด" ไปเข้าตัวที่แก้รายตัว)
+  financeResetHandler,
+  financeSplitHandler,
   financeDeleteLastHandler,
   financeEditHandler,
   budgetHandler,

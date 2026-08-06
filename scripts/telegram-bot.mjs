@@ -921,11 +921,20 @@ function deckIdForReply(chatId, replyMsgId, replyText) {
   return null;
 }
 
+// เพดานเวลารอคำตอบจากหลังบ้าน — กัน "เงียบหายไปเลย"
+// เคสจริง 6 ส.ค. 2026: เว็บเพิ่ง restart ยัง compile อยู่ → ingest ใช้เวลา 5.1 นาที
+// ระหว่างนั้นไม่มี timeout เลย บอทค้างรอเงียบ ๆ เจ้าของนึกว่าวานหายไป
+// มี timeout แล้วอย่างน้อยจะได้บอกว่า "ไม่สำเร็จ ลองใหม่" ดีกว่าเงียบ
+const INGEST_TIMEOUT_MS = 150_000;
+
 async function postIngest(chatId, text, from, isGroup, replyTo, replyText, mentions, imageFiles, threadId, chatTitle, addressed) {
   const res = await fetch(APP_URL + "/api/telegram/ingest", {
     method: "POST", headers: { "Content-Type": "application/json", "x-internal-token": INTERNAL },
+    signal: AbortSignal.timeout(INGEST_TIMEOUT_MS),
     body: JSON.stringify({ chatId: String(chatId), text, fromId: String(from?.id || ""), fromName: from?.name || "", fromUsername: from?.username || "", isGroup: !!isGroup, threadId: threadId ? String(threadId) : "", chatTitle: chatTitle || "", replyTo: replyTo || null, replyText: replyText || "", mentions: mentions || [], imageFiles: imageFiles || [], addressed: !!addressed }),
   });
+  // 404/500 = หน้า HTML ไม่ใช่ JSON — โยน error ให้ตัวเรียกแจ้งเจ้าของ แทนที่จะพังตอน parse
+  if (!res.ok) throw new Error(`ingest ${res.status}`);
   return res.json();
 }
 

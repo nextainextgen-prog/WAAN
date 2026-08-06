@@ -981,3 +981,91 @@ export function healthCardHtml(h: HealthSnapshot): string {
     <div class="foot">${esc(h.now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "short", timeStyle: "short" }))} · Vex</div>
   </body></html>`;
 }
+
+// ===== ล้างบัญชีเพื่อเริ่มนับใหม่ + แยกค่าใช้จ่ายกับหนี้ (เจ้าของสั่ง 6 ส.ค. 2026) =====
+//
+// เคสจริงที่พัง: เจ้าของสั่ง "เรื่องเงินเรามาเริ่ม 0 ใหม่ทั้งหมด ล้างออกหมดเลย" **สองรอบ**
+// ระบบตอบว่า "ยังไม่ได้แตะอะไรนะครับ" ทั้งสองครั้ง เพราะ `editFinance()` แก้ได้เฉพาะ
+// รายการที่ระบุชื่อ+ยอดชัดเจนเท่านั้น — **ไม่มีทางล้างทั้งชุดเลยสักทางเดียว**
+// เจ้าของยืนยันซ้ำแล้วก็ยังทำไม่ได้ = ขอยืนยันไปโดยไม่มีปลายทางให้ไปต่อ
+//
+// กติกาที่ยึดตอนทำ: ลบของจริงของเจ้าของ **ต้องสำรองไว้ก่อนเสมอ**
+// จะได้กู้คืนได้ถ้าลบผิด (ไฟล์ JSON ใน .run-logs/finance-backup-*.json)
+
+export interface ResetResult {
+  deleted: number;
+  backupFile: string;
+  scope: string;
+}
+
+/** ลบรายการเงินทั้งชุด — สำรองลงไฟล์ก่อนเสมอ */
+export async function resetFinance(opts: { scope: "month" | "all"; now?: Date } = { scope: "all" }): Promise<ResetResult> {
+  const now = opts.now || new Date();
+  const where = opts.scope === "month"
+    ? { occurredAt: { gte: new Date(now.getFullYear(), now.getMonth(), 1), lt: new Date(now.getFullYear(), now.getMonth() + 1, 1) } }
+    : {};
+  const rows = await db.financeTxn.findMany({ where, orderBy: { occurredAt: "asc" } });
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const dir = path.join(process.env.CHANGOH_ROOT?.trim() || process.cwd(), ".run-logs");
+  await fs.mkdir(dir, { recursive: true }).catch(() => {});
+  const file = path.join(dir, `finance-backup-${now.toISOString().replace(/[:.]/g, "-")}.json`);
+  await fs.writeFile(file, JSON.stringify(rows, null, 2), "utf8");
+  if (rows.length) await db.financeTxn.deleteMany({ where });
+  return { deleted: rows.length, backupFile: file, scope: opts.scope === "month" ? "เดือนนี้" : "ทั้งหมด" };
+}
+
+/** กู้คืนจากไฟล์สำรอง — เผื่อลบผิด */
+export async function restoreFinance(backupFile: string): Promise<number> {
+  const fs = await import("node:fs/promises");
+  const rows = JSON.parse(await fs.readFile(backupFile, "utf8")) as Record<string, unknown>[];
+  let n = 0;
+  for (const r of rows) {
+    const d = r as Record<string, unknown>;
+    await db.financeTxn.create({
+      data: {
+        type: String(d.type || "expense"),
+        amount: Number(d.amount) || 0,
+        category: String(d.category || "อื่นๆ"),
+        note: d.note ? String(d.note) : null,
+        occurredAt: new Date(String(d.occurredAt)),
+        source: d.source ? String(d.source) : undefined,
+      } as never,
+    }).then(() => { n++; }).catch(() => {});
+  }
+  return n;
+}
+
+/**
+ * แยก "ค่าใช้จ่าย" ออกจาก "หนี้" ให้เห็นว่าจ่ายไปแล้วเท่าไหร่ เหลืออีกเท่าไหร่
+ * เจ้าของสั่งไว้ในข้อความเดียวกับที่สั่งล้างข้อมูล แต่ไม่เคยได้รับ
+ */
+export async function spendVsDebt(now = new Date()): Promise<string[]> {
+  const from = new Date(now.getFullYear(), now.getMonth(), 1);
+  const to = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const [txns, debts, bills] = await Promise.all([
+    db.financeTxn.findMany({ where: { occurredAt: { gte: from, lt: to } } }),
+    db.debt.findMany({ where: { settledAt: null } }),
+    db.recurringBill.findMany({ where: { active: true } }),
+  ]);
+  const spent = txns.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const income = txns.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const iOwe = debts.filter((d) => d.direction === "i_owe");
+  const theyOwe = debts.filter((d) => d.direction === "they_owe");
+  const debtLeft = iOwe.reduce((s, d) => s + d.amount, 0);
+  const debtPaid = iOwe.reduce((s, d) => s + Math.max(0, (d.totalAmount || 0) - d.amount), 0);
+  const perMonth = iOwe.reduce((s, d) => s + (d.installmentAmount || 0), 0);
+  const billTotal = bills.filter((b) => b.type !== "income").reduce((s, b) => s + b.amount, 0);
+
+  const out: string[] = [];
+  out.push(`ค่าใช้จ่ายเดือนนี้ — จ่ายไปแล้ว ${fmtBaht(spent)} ฿ · รับเข้า ${fmtBaht(income)} ฿ · สุทธิ ${income - spent < 0 ? "ติดลบ " : "เหลือ "}${fmtBaht(Math.abs(income - spent))} ฿`);
+  out.push(billTotal ? `บิลที่ตัดประจำ — ${bills.length} รายการ รวม ${fmtBaht(billTotal)} ฿/เดือน` : `บิลที่ตัดประจำ — ยังไม่ได้บันทึกไว้เลย`);
+  if (iOwe.length) {
+    out.push(`หนี้ที่ต้องจ่าย — ${iOwe.length} ก้อน เหลือ ${fmtBaht(debtLeft)} ฿${debtPaid ? ` (จ่ายไปแล้ว ${fmtBaht(debtPaid)} ฿)` : ""}${perMonth ? ` · ต้องจ่ายเดือนละ ${fmtBaht(perMonth)} ฿` : ""}`);
+    for (const d of iOwe) out.push(`  · ${d.person} เหลือ ${fmtBaht(d.amount)} ฿${d.installmentAmount ? ` (งวดละ ${fmtBaht(d.installmentAmount)} ฿)` : ""}${d.totalAmount ? ` จากทั้งหมด ${fmtBaht(d.totalAmount)} ฿` : ""}`);
+  } else {
+    out.push(`หนี้ที่ต้องจ่าย — ยังไม่ได้บันทึกไว้เลย`);
+  }
+  if (theyOwe.length) out.push(`คนอื่นติดเรา — ${theyOwe.length} ราย รวม ${fmtBaht(theyOwe.reduce((s, d) => s + d.amount, 0))} ฿`);
+  return out;
+}

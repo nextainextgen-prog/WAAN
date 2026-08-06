@@ -67,6 +67,8 @@ export async function POST(req: Request) {
   else if (callbackData === "kiki:grp:no") text = "[ปุ่ม:ยกเลิกกลุ่ม]";
   else if (callbackData === "kiki:dev:yes") text = "[ปุ่ม:พัฒนาเลย]";
   else if (callbackData === "kiki:dev:no") text = "[ปุ่ม:ยกเลิกพัฒนา]";
+  else if (callbackData === "kiki:reset:yes") text = "[ปุ่ม:ล้างบัญชี]";
+  else if (callbackData === "kiki:reset:no") text = "[ปุ่ม:ไม่ล้าง]";
   // ปุ่มโซเชียล: กดส่งจริง / ทิ้งร่าง
   if (callbackData === "kiki:social:send" || callbackData === "kiki:social:no") {
     const box = await getPendingFor<{ url: string; text: string; what: string }>("kiki_pending_social", channel);
