@@ -141,7 +141,7 @@ export const chatFallbackHandler: Handler = async (ctx) => {
   const answer = await askKiki(text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)", ctxParts.join("\n\n") || undefined);
   const outSends: Send[] = [
     ...linkShots.map((s0) => ({ kind: "photo" as const, dataBase64: s0.b64, filename: "page.png", caption: s0.caption })),
-    { kind: "text" as const, text: answer.slice(0, 3900), replyTo: msgId },
+    { kind: "text" as const, text: answer, replyTo: msgId },
   ];
   // สั่งด้วยข้อความว่า "อ่านให้ฟัง/ตอบเสียง" → อ่านข้อความที่ reply ถึง (หรือคำตอบ) เป็นเสียง
   // (กรณีเจ้าของพูดมาเป็นเสียง reply() แนบเสียงให้อยู่แล้ว ไม่ต้องซ้ำ)

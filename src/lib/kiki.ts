@@ -1288,9 +1288,30 @@ export async function summarizeYoutube(url: string, userNote?: string): Promise<
 
 export { GEMINI_VOICES as TTS_VOICES } from "./tts";
 
-export async function ttsOgg(text: string, voiceOverride?: string, maxChars = 900): Promise<Buffer | null> {
+/**
+ * แปลงคำตอบเป็นเสียง
+ *
+ * **เดิมตัดดื้อ ๆ ที่ 900 ตัวอักษร** (เจ้าของเจอเอง 6 ส.ค. 2026: คำตอบยาว ๆ ได้ยินแค่ท่อนต้น
+ * แล้วเงียบไป — "เวลาส่งเสียงมาก็ต้องพูดให้ละเอียดเลย")
+ * ตอนนี้: ยาวเกินเพดาน = **ย่อเป็นคำพูดที่ครบประเด็น** ไม่ใช่ตัดครึ่งประโยคทิ้ง
+ * ย่อไม่สำเร็จค่อยถอยไปตัด (ยังดีกว่าไม่มีเสียงเลย)
+ */
+export async function ttsOgg(text: string, voiceOverride?: string, maxChars = 2600): Promise<Buffer | null> {
   const { speak } = await import("./tts");
-  return speak(text, { voice: voiceOverride, maxChars });
+  const plain = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (plain.length <= maxChars) return speak(plain, { voice: voiceOverride, maxChars });
+
+  const spoken = await askExtractor(plain.slice(0, 18_000), {
+    system: `เรียบเรียงข้อความนี้ให้ "พูดออกเสียง" ได้ลื่น โดยเก็บสาระให้ครบทุกหัวข้อ
+- เจ้าของกำลังฟังอย่างเดียว มองจอไม่ได้ ต้องเข้าใจครบโดยไม่ต้องเปิดอ่าน
+- คงตัวเลข ราคา วันเวลา ชื่อสถานที่ ไว้ให้ครบ (พูดเป็นคำอ่าน เช่น 1,500 = หนึ่งพันห้าร้อย)
+- ตัดสัญลักษณ์ หัวข้อย่อย มาร์กอัป ลิงก์ยาว ๆ ออก แล้วเล่าเป็นประโยคต่อเนื่องแทน
+- ห้ามเพิ่มข้อมูลที่ไม่มีในต้นฉบับ ห้ามสรุปจนตกหัวข้อ
+- ความยาวไม่เกิน ${maxChars} ตัวอักษร ตอบเฉพาะเนื้อที่จะพูด ไม่ต้องมีคำนำ`,
+    timeoutMs: 90_000,
+  }).catch(() => "");
+
+  return speak(spoken.trim() || plain, { voice: voiceOverride, maxChars });
 }
 
 // ===== Semantic search คลังส่วนตัว (sqlite-vec + bge-m3 — โต๊ะแยกใน thunder-vec.db) =====

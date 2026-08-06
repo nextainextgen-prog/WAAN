@@ -67,7 +67,7 @@ export const memoryRecallHandler: Handler = async (ctx) => {
         "[โหมดนึกย้อน] ตอบจากบทสนทนาเก่าที่ค้นเจอเท่านั้น บอกด้วยว่าคุยกันวันไหน ถ้าไม่เจอจริง ๆ ให้บอกตรง ๆ ว่าหาไม่เจอ ห้ามเดา",
       ].filter(Boolean).join("\n\n"),
     );
-    return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    return reply([{ kind: "text", text: answer, replyTo: msgId }]);
   }
 
   return null;

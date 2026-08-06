@@ -236,6 +236,28 @@ export async function POST(req: Request) {
       const tail = out.splice(2);
       out.push({ kind: "text", text: tail.map((t) => t.text).join("\n\n"), parseMode: tail.some((t) => t.parseMode) ? "HTML" : undefined });
     }
+    // ===== ก้อนที่ยาวเกินเพดาน Telegram ต้อง "ซอย" ไม่ใช่ "ตัดทิ้ง" (6 ส.ค. 2026) =====
+    // เจ้าของเจอเอง: คำตอบยาว ๆ จบกลางประโยค ("1. **ล็อกอิน Telegram ของโด้ใ")
+    // เพราะตัวจัดการทำ .slice(0, 3900) แล้วส่วนที่เหลือหายไปเงียบ ๆ ไม่มีใครรู้ว่าตกอะไรไป
+    // กฎ 3 บับเบิลยอมให้เกินได้ตรงนี้ — ข้อมูลหายแย่กว่าบับเบิลเยอะ
+    const LIMIT = 3800;
+    return out.flatMap((b) => {
+      if (!b.text || b.text.length <= LIMIT) return [b];
+      const chunks: string[] = [];
+      let buf = "";
+      for (const line of b.text.split("\n")) {
+        // บรรทัดเดียวยาวเกินเพดาน (ตารางยาว/ลิงก์ยาว) — จำใจตัดตรงกลาง แต่ไม่ทิ้ง
+        if (line.length > LIMIT) {
+          if (buf) { chunks.push(buf); buf = ""; }
+          for (let i = 0; i < line.length; i += LIMIT) chunks.push(line.slice(i, i + LIMIT));
+          continue;
+        }
+        if (buf.length + line.length + 1 > LIMIT) { chunks.push(buf); buf = line; }
+        else buf = buf ? `${buf}\n${line}` : line;
+      }
+      if (buf) chunks.push(buf);
+      return chunks.map((text) => ({ ...b, text }));
+    });
     const cleaned = out
       .filter((x) => x.parseMode || (x.text || "").trim())
       .map((x) => {

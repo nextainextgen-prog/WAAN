@@ -260,7 +260,7 @@ export const chatSummaryHandler: Handler = async (ctx) => {
     const lines = await readChat(hits[0].id, 80).catch(() => []);
     if (!lines.length) return reply([{ kind: "text", text: await vexLine(`อ่านแชท ${hits[0].name} ไม่ได้/ไม่มีข้อความครับ`), replyTo: msgId }]);
     const sum = await askKiki(`สรุปบทสนทนานี้ให้เจ้าของ (แชทกับ ${hits[0].name}) — เอาสาระ ใครขออะไร ค้างอะไร:\n\n${lines.join("\n").slice(0, 12_000)}`);
-    return reply([{ kind: "text", text: sum.slice(0, 3900), replyTo: msgId }]);
+    return reply([{ kind: "text", text: sum, replyTo: msgId }]);
   }
   if (chatSumM && userbotReady() && !/ฟีด|เฟส|facebook/i.test(text)) {
     const hits = await findPeer(chatSumM[1].trim()).catch(() => []);
@@ -271,7 +271,7 @@ export const chatSummaryHandler: Handler = async (ctx) => {
         `สรุปบทสนทนาในแชท "${hits[0].name}" ให้เจ้าของ: ประเด็นหลัก ใครพูดอะไรสำคัญ มีอะไรต้องทำ/ตอบไหม`,
         `=== ข้อความล่าสุดในแชท (เก่า→ใหม่) ===\n${lines.join("\n").slice(0, 12_000)}`,
       );
-      return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+      return reply([{ kind: "text", text: answer, replyTo: msgId }]);
     }
     if (hits.length > 1) return reply([{ kind: "text", text: `เจอหลายแชท: ${hits.map((h) => h.name).join(" · ")} — ระบุชื่อเต็มอีกทีครับ`, replyTo: msgId }]); // canned-ok: ลิสต์แชทให้เลือก
   }

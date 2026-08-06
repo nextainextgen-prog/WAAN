@@ -50,7 +50,7 @@ export const fitnessHandler: Handler = async (ctx) => {
         recentContext,
       ].filter(Boolean).join("\n\n"),
     );
-    return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    return reply([{ kind: "text", text: answer, replyTo: msgId }]);
   }
 
   return null;

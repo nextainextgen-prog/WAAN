@@ -166,7 +166,7 @@ export const memoryListHandler: Handler = async (ctx) => {
 ห้ามดัมป์เป็นลิสต์เลข ห้ามลอกข้อความในระบบมาทั้งดุ้น ห้ามเอา "กฎของ Vex" (คำสั่งเรื่องวิธีตอบของผมเอง) มาปนกับประวัติเขา
 ปิดท้าย: บอกตรง ๆ ว่ายังไม่รู้อะไรเกี่ยวกับเขาบ้างที่เลขาควรรู้ แล้วถามกลับ 2-3 ข้อที่อยากรู้จริง ๆ`,
     ].join("\n\n"));
-    return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    return reply([{ kind: "text", text: answer, replyTo: msgId }]);
   }
 
   return null;

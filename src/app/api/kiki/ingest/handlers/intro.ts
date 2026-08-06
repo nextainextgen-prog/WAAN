@@ -54,7 +54,7 @@ export const docFilesHandler: Handler = async (ctx) => {
         "[ตอบตามที่เจ้าของถาม ถ้าไม่ได้ถามอะไร ให้สรุปสาระสำคัญของไฟล์แบบใช้งานได้จริง]",
       ].filter(Boolean).join("\n\n"),
     );
-    return reply([{ kind: "text", text: answer.slice(0, 3900), replyTo: msgId }]);
+    return reply([{ kind: "text", text: answer, replyTo: msgId }]);
   }
 
   return null;
