@@ -22,7 +22,7 @@ import { calendarEditHandler, calendarViewHandler, calendarCreateHandler } from 
 import { chatFallbackHandler } from "./handlers/chat";
 import { jobStatusHandler, autoBackgroundHandler } from "./handlers/jobs";
 import { eyesHandler } from "./handlers/eyes";
-import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandler } from "./handlers/reply";
+import { undoSendHandler, confirmReplyHandler, replyToPersonHandler, trustHandler, autonomyPromoteHandler } from "./handlers/reply";
 import { guiHandler } from "./handlers/gui";
 import { fileFindHandler } from "./handlers/files";
 import { authRunHandler, sessionAuthHandler } from "./handlers/session";
@@ -53,6 +53,8 @@ export const HANDLERS: Handler[] = [
   confirmReplyHandler,
   // คำตอบของคำถาม "ความจำใหม่ขัดของเก่า เอาอันไหน" — มีคำถามค้างเท่านั้นถึงรับ ไม่ยึดเทิร์น
   factConflictAnswerHandler,
+  // คำตอบข้อเสนอ "เลื่อนระดับความอิสระ" — มีข้อเสนอค้างเท่านั้นถึงรับ
+  autonomyPromoteHandler,
 
   // ทักครั้งแรก + ไฟล์เอกสาร — ต้องมาก่อนตัวอ่านเจตนา
   introHandler,

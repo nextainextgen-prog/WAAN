@@ -490,12 +490,15 @@ export async function POST(req: Request) {
       }
     } catch { /* ไม่มีงานเงื่อนไขก็ข้าม */ }
 
+    // ทางเร็ว→ช้า (จิตใจเฟส 5): เจตนาที่เคยทำให้เจ้าของตำหนิ ถูกยกเพดานความมั่นใจ
+    // ไม่ถึงเพดาน = ไม่เข้าตัวจัดการเฉพาะทาง ตกไป chat ที่มีเครื่องมือครบ + ด่านตรวจ
+    const slowpath = await import("@/lib/kiki-autonomy").then((a) => a.slowpathMap()).catch(() => ({} as Record<string, number>));
     const ctx: Ctx = {
       chatId, text, fromId, fromName, platform, channel, replyText,
       imageFiles, audioFiles, docFiles, videoFiles, msgId, userChatRowId: userMsgId, callbackData,
       voiceNote, justBound, replyIsScreenshot,
       route,
-      is: (id: string) => route.intent === id && route.confidence >= 0.45,
+      is: (id: string) => route.intent === id && route.confidence >= (slowpath[id] ?? 0.45),
       arg: (k: string) => {
         const v = route.args?.[k];
         return typeof v === "string" && v.trim() ? v.trim() : "";

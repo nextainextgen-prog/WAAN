@@ -109,6 +109,20 @@ mood ประเมินจากข้อความใหม่ล่าส
     severity: ["เบา", "กลาง", "หนัก"].includes(l.severity || "") ? l.severity! : "กลาง",
     scope: (l.scope || "ทั่วไป").slice(0, 60),
   });
+
+  // ทางเร็ว→ช้า (จิตใจเฟส 5): เทิร์นที่เพิ่งพลาดใช้เจตนาไหน ยกเพดานความมั่นใจของเจตนานั้น
+  // ครั้งหน้าเรื่องเดียวกันจะเข้าทางช้า (chat) ที่มีเครื่องมือครบและด่านตรวจ — จนกว่ารอบทบทวนจะปลด
+  try {
+    const lastTurn = await db.vexTurn.findFirst({
+      where: { createdAt: { lt: new Date() } },
+      orderBy: { createdAt: "desc" },
+      skip: 1, // ตัวล่าสุดคือเทิร์นของข้อความตำหนินี้เอง — เอาเทิร์นก่อนหน้า (ตัวที่ทำพลาด)
+    });
+    if (lastTurn?.intent) {
+      const { raiseSlowpath } = await import("./kiki-autonomy");
+      await raiseSlowpath(lastTurn.intent);
+    }
+  } catch { /* ยกไม่ได้ก็ข้าม */ }
 }
 
 /**
