@@ -436,6 +436,20 @@ export async function POST(req: Request) {
     // เจ้าของพูดมา = ตอบเสียงล้วน — แต่คงลิสต์/การ์ดที่จัดรูปแบบไว้ (parseMode) ไม่งั้นข้อมูลหาย
     if (voiceNote && voiceSend) sends = sends.filter((s) => s.kind !== "text" || s.chatId || s.parseMode);
 
+    // ===== ตัดก้อนที่ "เหมือนกันเป๊ะ" ก่อน (7 ส.ค. 2026) =====
+    // การ์ด HTML ซ้ำสองชุด (ปิดงานแล้ว... สองรอบติด) หลุด dropRepeats เพราะตัวนั้นดูเฉพาะข้อความธรรมดา
+    // ซ้ำเป๊ะไม่ต้องใช้สมองตัดสิน — เทียบตรง ๆ ได้เลย (deterministic ไม่มีทางตัดผิด)
+    {
+      const seen = new Set<string>();
+      sends = sends.filter((s2) => {
+        if (s2.kind !== "text" || !s2.text || s2.chatId) return true;
+        const k = `${s2.parseMode || ""}:${s2.text.replace(/\s+/g, " ").trim()}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+
     // ===== ตัดข้อความที่พูดเรื่องเดิมซ้ำ (6 ส.ค. 2026) =====
     //
     // เจ้าของเจอเอง: สอนกฎหนึ่งข้อ แล้วได้คำตอบ 3 บับเบิลที่พูดเรื่องเดียวกัน
@@ -528,10 +542,15 @@ export async function POST(req: Request) {
     let cancelAck: () => void = () => {};
     if (!voiceNote && !callbackData && (text.length >= 40 || ctx.urls.length > 0)) {
       const { armSlowAck } = await import("@/lib/kiki-live");
-      cancelAck = armSlowAck({
-        chatId, platform, channel,
-        doing: ctx.urls.length ? "เปิดอ่านลิงก์กับไล่ข้อมูลจริง" : "ไล่ข้อมูลจริงมาประกอบคำตอบ",
-      });
+      // เนื้อ ack ต้องตรงกับสิ่งที่กำลังทำจริง — "กำลังหาข้อมูล" ใส่คำสั่งจัดกระดาน = ตอบไม่ตรงบริบท (เจ้าของด่ามาแล้ว)
+      const i = route.intent;
+      const doing = ctx.urls.length ? "เปิดอ่านลิงก์กับไล่ข้อมูลจริง"
+        : i.startsWith("task") ? "จัดกระดานงานตามที่สั่ง"
+        : i.startsWith("finance") || i === "debt" || i === "bill" ? "ไล่ตัวเลขเงินจริงทั้งชุด"
+        : i.startsWith("calendar") ? "จัดตารางนัดให้"
+        : i.startsWith("memory") || i === "rule_teach" ? "จัดความจำตามที่บอก"
+        : "ไล่ข้อมูลจริงมาประกอบคำตอบ";
+      cancelAck = armSlowAck({ chatId, platform, channel, doing, replyTo: msgId });
     }
     const origReply = ctx.reply;
     ctx.reply = async (ss: Send[]) => {

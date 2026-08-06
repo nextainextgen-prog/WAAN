@@ -49,6 +49,9 @@ export function armSlowAck(input: {
   channel: string;
   /** สิ่งที่กำลังทำ (ไว้ให้ vexLine แต่งประโยค) เช่น "ไล่หาข้อมูลจริงก่อนตอบ" */
   doing: string;
+  /** ผูก ack กับข้อความต้นทาง — ไม่ผูกแล้วเคยหลงบริบท (ack ของคำถามเก่าไปโผล่ใต้ข้อความใหม่
+   *  เจ้าของบอก "แก้ CRM เสร็จแล้ว" ระบบตอบ "กำลังรวบรวมข้อมูล" = ดูเหมือนตอบไม่ตรงคำถาม) */
+  replyTo?: number | string;
   ackAfterMs?: number;
 }): () => void {
   // ส่งตรงได้เฉพาะ Telegram — ช่องทางอื่นท่อไม่ได้อ่านจาก API นี้ (Discord มี outbox ของตัวเอง)
@@ -60,7 +63,7 @@ export function armSlowAck(input: {
       const line = await vexLine(`กำลัง${input.doing}อยู่ ใช้เวลาหน่อย เดี๋ยวคำตอบเต็มตามมาครับ`, { maxLines: 1 }).catch(
         () => `กำลัง${input.doing}อยู่ครับ เดี๋ยวคำตอบเต็มตามมา`, // canned-ok: ทางถอยตอน vexLine ล่ม — ห้ามปล่อยให้ความเงียบชนะ
       );
-      const sent = await tgDirectSend(input.chatId, line);
+      const sent = await tgDirectSend(input.chatId, line, { replyTo: input.replyTo });
       // บันทึกลงประวัติด้วย — ไม่งั้นเทิร์นถัดไป Vex ไม่รู้ว่าตัวเองเพิ่งบอกว่า "กำลังหา"
       if (sent) await saveKikiChat("assistant", line, "owner", input.channel).catch(() => {});
     })();
