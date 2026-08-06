@@ -1,8 +1,8 @@
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import { classifyPendingTxn, hasPendingTxn } from "@/lib/kiki-gmail";
 import { vexList } from "@/lib/kiki-format";
-import { kikiConversation, vexLine } from "@/lib/kiki";
-import { extractFinance, recordTxns, deleteLastTxn, editFinance, setBudget, fmtBaht, TOTAL_BUDGET_KEY, EXPENSE_CATS, itemizedText, type ItemizedPeriod } from "@/lib/kiki-finance";
+import { kikiConversation, vexLine, askKiki } from "@/lib/kiki";
+import { extractFinance, recordTxns, deleteLastTxn, editFinance, setBudget, fmtBaht, TOTAL_BUDGET_KEY, EXPENSE_CATS, itemizedText, itemizedRange, type ItemizedPeriod } from "@/lib/kiki-finance";
 import { financeCardPng, vexSay, storeSlips, FINANCE_VERB_RE } from "../shared";
 import type { Ctx, Handler } from "../types";
 import { ok, type Send } from "../types";
@@ -207,15 +207,61 @@ export const financeAnalyzeHandler: Handler = async (ctx) => {
 };
 
 export const financeItemizeHandler: Handler = async (ctx) => {
-  const { text, msgId, is, reply } = ctx;
+  const { text, replyText, msgId, is, reply } = ctx;
   // ===== "ซื้อ/ใช้อะไรไปบ้าง" — ลิสต์รายการรายตัว (ตัวเลขจาก DB ตรง ๆ) =====
   if (is("finance_itemize")) {
-    const period: ItemizedPeriod = /เมื่อวาน/.test(text) ? "yesterday"
-      : /สัปดาห์|อาทิตย์(นี้|ที่ผ่าน)/.test(text) ? "week"
-      : /เดือนนี้|ทั้งเดือน/.test(text) ? "month"
-      : "today";
-    const t = await itemizedText(period);
-    return reply([{ kind: "text", text: t, replyTo: msgId }]);
+    // หาว่าเจ้าของหมายถึงช่วงไหน — อ้างเหตุการณ์ได้ ไม่ใช่แค่ 4 คำตายตัว
+    // เคสจริงที่พัง 6 ส.ค.: "วันที่ผมไปดูหนัง ผมไม่ได้ลงค่าอะไรบ้าง" → ตอบ "วันนี้ยังไม่มีรายการเลย"
+    // เพราะช่วงถูกเลือกด้วย regex 4 แบบ อย่างอื่นตกเป็น "วันนี้" ทั้งหมด
+    const { resolveWhen } = await import("@/lib/kiki-when");
+    const when = await resolveWhen(text, new Date(), replyText).catch(() => null);
+
+    if (!when) {
+      // หาไม่เจอ = บอกตรง ๆ ห้ามเดาเป็นวันนี้แล้วตอบว่าไม่มีรายการ (เหมือนที่เคยพัง)
+      return reply([{
+        kind: "text",
+        text: await vexLine("ยังจับไม่ได้ว่าโด้หมายถึงวันไหนครับ บอกวันที่มาตรง ๆ หรือบอกเหตุการณ์ให้ชัดกว่านี้หน่อย เดี๋ยวไล่ให้"),
+        replyTo: msgId,
+      }]);
+    }
+
+    const r = await itemizedRange(when.from, when.to, when.label);
+
+    // "ไม่ได้ลงค่าอะไรบ้าง" = ถามหาของที่ขาด ไม่ใช่ขอลิสต์เฉย ๆ → ต้องคิดให้ ไม่ใช่ดัมป์รายการ
+    const asksMissing = Boolean(ctx.route.args?.missing) || /ไม่ได้ลง|ยังไม่ได้ลง|ตกหล่น|ขาดอะไร|ลืมลง/.test(text);
+    if (asksMissing) {
+      const say = await askKiki(
+        `[เจ้าของถามว่าวันนั้นมีอะไรที่ยังไม่ได้บันทึก] เขาถามว่า: """${text.slice(0, 300)}"""\n` +
+          `ระบบตีความว่าเป็น: ${when.label}${when.sure ? "" : " (ไม่มั่นใจ 100% — บอกเขาด้วยว่าเดามาจากอะไร)"}\n\n` +
+          `รายการที่ "บันทึกไว้แล้ว" ในช่วงนั้น:\n${r.text}\n\n` +
+          `ตอบว่าอะไรที่น่าจะยังไม่ได้ลง โดยดูจากกิจกรรมของวันนั้นว่าปกติต้องมีค่าอะไรตามมาบ้าง\n` +
+          `(เช่น ไปดูหนัง = ค่าตั๋ว ค่าที่จอดรถ ค่าขนม ค่าเดินทาง ค่ากินหลังหนัง)\n` +
+          `เทียบกับที่ลงไว้แล้ว → ชี้ว่าอันไหนหายไป แล้วถามยอดทีเดียวรวบ ไม่ต้องถามทีละอัน\n` +
+          `ตัวเลขที่ลงไว้แล้วต้องยกมาให้ตรงเป๊ะ ห้ามแต่งตัวเลขที่ยังไม่มีขึ้นมาเอง`,
+      ).catch(() => null);
+      if (say) return reply([{ kind: "text", text: say, replyTo: msgId }]);
+    }
+
+    // วันที่ตีความได้ไม่มีรายการเลย แต่วันข้างเคียงมี = ของจริงคาบเกี่ยวข้ามวัน
+    // เคสจริง: นัดดูหนังลงปฏิทินไว้ 31 ก.ค. แต่เงินออกจริงเป็นวันที่ 1 ส.ค. ทั้งหมด
+    // ถ้าตอบแค่ "ไม่มีรายการ" เจ้าของจะคิดว่าระบบลืมบันทึก ทั้งที่แค่คนละวัน
+    if (r.count === 0) {
+      const day = 86400_000;
+      const near = await Promise.all([
+        itemizedRange(new Date(when.from.getTime() - day), when.from, "วันก่อนหน้า"),
+        itemizedRange(when.to, new Date(when.to.getTime() + day), "วันถัดไป"),
+      ]);
+      const hit = near.find((n) => n.count > 0);
+      if (hit) {
+        return reply([{
+          kind: "text",
+          text: `${r.text}\n\nแต่${hit === near[0] ? "วันก่อนหน้า" : "วันถัดไป"}มี ${hit.count} รายการ รวมจ่าย ${fmtBaht(hit.expense)} ฿ — น่าจะเป็นวันที่โด้หมายถึง\n\n${hit.text}`, // canned-ok: ตัวเลขและรายการต้องตรงจากฐานข้อมูล
+          replyTo: msgId,
+        }]);
+      }
+    }
+
+    return reply([{ kind: "text", text: r.text, replyTo: msgId }]);
   }
 
   return null;

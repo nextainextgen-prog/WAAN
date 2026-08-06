@@ -358,7 +358,16 @@ export async function POST(req: Request) {
             outSends = sendsIn.map((s, i) => (i === plainIdx ? { ...s, text: r.revised! } : s));
           }
           // ส่วนที่ตกไป ต่อเป็นก้อนใหม่เสมอ ไม่ยัดรวมกับการ์ด
-          if (extra.trim()) outSends = [...outSends, { kind: "text" as const, text: extra.trim() }];
+          //
+          // ต่อท้ายเฉพาะของที่ "เพิ่มขึ้นจริง" — กันสองอาการที่เจอตอนเทส 6 ส.ค.
+          //  1. สั้นเกินไป = ตัวจัดการย่อยทำไม่ได้แล้วคืนประโยคเดียว ("จับคู่รายการไม่ได้เลยครับ")
+          //     ไปต่อท้ายคำตอบที่ดีอยู่แล้ว กลายเป็นบรรทัดขยะ
+          //  2. ซ้ำของเดิม = รอบตามเก็บวิ่งไปเจอตัวจัดการเดิม แล้วได้ลิสต์เดิมมาทั้งก้อน
+          //     เจ้าของเห็นคำตอบเดียวกันสองรอบติดกัน
+          const e = extra.trim();
+          const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+          const dup = e.length >= 40 && norm(draft).includes(norm(e).slice(0, 80));
+          if (e.length >= 60 && !dup) outSends = [...outSends, { kind: "text" as const, text: e }];
         }
       } catch { /* ตรวจไม่ได้ = ส่งของเดิม */ }
     }

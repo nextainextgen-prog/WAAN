@@ -64,7 +64,10 @@ export async function reviewAnswer(question: string, answer: string, evidence = 
   const t0 = Date.now();
   const nope: ReviewResult = { ok: true, missing: [], overclaims: [], ms: 0 };
   const key = process.env.GEMINI_API_KEY?.trim();
-  if (!key || !question.trim() || answer.trim().length < 40) return nope;
+  // เกณฑ์เดิมข้ามคำตอบสั้นกว่า 40 ตัวอักษร — แล้ว "วันนี้ยังไม่มีรายการเลยครับ" (27 ตัว)
+  // ซึ่งเป็นคำตอบที่ผิดคำถามคนละเรื่อง ก็เลยหลุดด่านไปทั้งสองรอบ
+  // คำตอบสั้นคือจุดที่ "ตอบไม่ตรงคำถาม" บ่อยที่สุด ต้องตรวจ
+  if (!key || !question.trim() || answer.trim().length < 8) return nope;
 
   try {
     const res = await geminiFetch(

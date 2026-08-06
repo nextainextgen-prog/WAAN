@@ -427,6 +427,32 @@ export function financeCardHtml(s: FinanceSnapshot, opts: { justAdded?: TxnRecor
 
 export type ItemizedPeriod = "today" | "yesterday" | "week" | "month";
 
+/**
+ * ลิสต์รายการตามช่วงวันที่ระบุมาตรง ๆ (6 ส.ค. 2026)
+ * แยกจาก `itemizedText` ที่รับได้แค่ 4 ช่วงตายตัว — ตัวนั้นทำให้ "วันที่ผมไปดูหนัง"
+ * ตกเป็น "วันนี้" แล้วตอบว่าไม่มีรายการ ทั้งที่วันนั้นมี 8 รายการ
+ */
+export async function itemizedRange(from: Date, to: Date, label: string): Promise<{ text: string; count: number; expense: number }> {
+  const rows = await db.financeTxn.findMany({ where: { occurredAt: { gte: from, lt: to } }, orderBy: { occurredAt: "asc" } });
+  // ต้องระบุ "ช่วงไหน" ให้ชัดเสมอ — ของเดิมตอบลอย ๆ ว่า "วันนี้ยังไม่มีรายการ"
+  // ทั้งที่เจ้าของถามถึงวันอื่น แล้วเขาไม่มีทางรู้ว่าระบบตีความวันผิด
+  if (!rows.length) return { text: `${label} ไม่มีรายการที่บันทึกไว้เลยครับ`, count: 0, expense: 0 }; // canned-ok: ข้อความว่างเปล่าที่ต้องมีชื่อช่วงกำกับตรงตัว
+  const exp = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+  const inc = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
+  const multiDay = to.getTime() - from.getTime() > 86400_000 + 1000;
+  const lines: string[] = [`รายการ ${label} (${rows.length} รายการ · จ่าย ${fmtBaht(exp)} ฿${inc ? ` · รับ ${fmtBaht(inc)} ฿` : ""})`];
+  let lastDay = "";
+  for (const r of rows) {
+    if (multiDay) {
+      const d = r.occurredAt.toLocaleDateString("th-TH-u-ca-gregory", { weekday: "short", day: "numeric", month: "short" });
+      if (d !== lastDay) { lines.push(`\n${d}`); lastDay = d; }
+    }
+    const time = r.occurredAt.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+    lines.push(`• ${time} ${r.type === "income" ? "+" : "−"}${fmtBaht(r.amount)} ฿ ${r.note || r.category}${r.note ? ` (${r.category})` : ""}`);
+  }
+  return { text: lines.join("\n"), count: rows.length, expense: exp };
+}
+
 export async function itemizedText(period: ItemizedPeriod, now = new Date()): Promise<string> {
   const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   let from: Date, to: Date, label: string;

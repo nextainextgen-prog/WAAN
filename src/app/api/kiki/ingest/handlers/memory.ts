@@ -91,12 +91,15 @@ export const rememberHandler: Handler = async (ctx) => {
       const items = (list || []).map((f) => ({ fact: String(f.fact || "").trim(), category: String(f.category || "ทั่วไป").trim() })).filter((f) => f.fact.length >= 4);
       if (items.length) {
         for (const it of items) await rememberOwnerFact(it.fact, { category: it.category, source: text.slice(0, 300) }).catch(() => {});
+        // สร้างโปรไฟล์ใหม่ทันที (6 ส.ค. 2026) — ไม่งั้นของที่เพิ่งบอกจะยังไม่ถูกเอาไปใช้
+        // จนกว่าแคชเดิมจะหมดอายุ (12 ชม.) เจ้าของบอก "ปรับให้เข้ากับตัวผม" แล้วต้องเปลี่ยนเดี๋ยวนี้
+        void import("@/lib/kiki-profile").then((m) => m.buildProfile()).catch(() => {});
         const byCat = new Map<string, number>();
         for (const it of items) byCat.set(it.category, (byCat.get(it.category) || 0) + 1);
         const block = vexList({
           title: `ฝังเข้าความจำแล้ว ${items.length} เรื่อง`,
           items: [...byCat].map(([cat, n]) => `${cat} — ${n} เรื่อง`),
-          note: 'ถามย้อนหลังได้ทุกเมื่อ · มีอะไรเพิ่มพิมพ์มาต่อได้เลย · อยากดูทั้งหมดบอก "ขอดูรายการที่จำไว้"',
+          note: 'กำลังปรับวิธีตอบให้เข้ากับที่บอกมา · ถามย้อนหลังได้ทุกเมื่อ · อยากดูทั้งหมดบอก "ขอดูรายการที่จำไว้"',
         });
         return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
       }
