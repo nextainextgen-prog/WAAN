@@ -709,6 +709,20 @@ ${nags.join("\n")}`);
     }
   } catch { /* พรุ่งนี้ค่อยสรุป */ }
 
+  // ===== J3) Vex ตรวจการทำงานตัวเองย้อนหลัง 24 ชม. แล้วรายงานเอง (22:00) =====
+  // เจ้าของสั่ง 6 ส.ค. 2026: "ให้ Vex จับบั๊กตัวเองได้ ไม่ต้องรอโด้เจอ"
+  try {
+    if (mainChat && now.getHours() >= 22 && (await getSetting("kiki_last_selfcheck")) !== today) {
+      await setSetting("kiki_last_selfcheck", today);
+      const { selfCheckReport } = await import("@/lib/kiki-turnlog");
+      const r = await selfCheckReport(24);
+      if (r.count) {
+        sends.push({ chatId: mainChat, kind: "text", text: `ตรวจงานตัวเองย้อนหลัง 24 ชั่วโมงแล้วครับ\n\n${r.text}` });
+        await saveKikiChat("assistant", r.text);
+      }
+    }
+  } catch { /* พรุ่งนี้ค่อยตรวจ */ }
+
   // ===== E) สรุปสิ้นเดือน (วันที่ 1 เวลา >= 08:00 สรุปเดือนที่แล้ว) =====
   try {
     const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;

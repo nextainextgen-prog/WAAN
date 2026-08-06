@@ -523,6 +523,26 @@ model KikiTask {
   @@index([status])
 }
 
+// บันทึกทุกเทิร์นของ Vex — ไว้ให้ตัวเองไล่ย้อนหลังว่าเทิร์นไหนตอบไม่ตรง/พัง (เจ้าของสั่ง 6 ส.ค. 2026)
+// "ให้ Vex จับบั๊กตัวเองได้ ไม่ต้องรอโด้เจอ"
+model VexTurn {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  channel    String   @default("telegram")
+  text       String                        // คำสั่งของเจ้าของ (ตัดสั้น)
+  intent     String                        // เจตนาที่ตัวอ่านเลือก
+  confidence Float    @default(0)
+  handler    String?                       // ตัวจัดการที่รับงานจริง
+  ms         Int      @default(0)          // ใช้เวลากี่มิลลิวินาที
+  sends      Int      @default(0)          // ตอบกลับกี่ก้อน
+  error      String?                       // พังตรงไหน
+  flagged    String?                       // ตัวไล่ย้อนหลังทำเครื่องหมายว่าน่าสงสัยเพราะอะไร
+  reviewedAt DateTime?
+
+  @@index([createdAt])
+  @@index([flagged])
+}
+
 // คลังรูป/วิดีโอที่เจ้าของ "สั่งให้เก็บ" (ไม่สั่ง = ไม่เก็บ ตามกติกา 4 ส.ค. 2026)
 model KikiMedia {
   id          String   @id @default(cuid())

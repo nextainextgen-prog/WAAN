@@ -52,6 +52,18 @@ export async function selfStatus(): Promise<string> {
     if (g) parts.push(g);
   } catch { /* ตรวจไม่ได้ก็ข้าม */ }
 
+  // เทิร์นที่ตอบไปแล้วน่าสงสัย (พัง/ช้าผิดปกติ/เจ้าของถามซ้ำ) — ของจริงจากบันทึกการทำงานตัวเอง
+  try {
+    const { findSuspects } = await import("./kiki-turnlog");
+    const sus = await findSuspects(24);
+    if (sus.length) {
+      parts.push(
+        `[เทิร์นที่ตอบไปแล้วน่าจะไม่ดี ${sus.length} ครั้งใน 24 ชม.]\n` +
+          sus.slice(0, 8).map((x) => `- "${x.text}" → ${x.intent} · ${x.why}`).join("\n"),
+      );
+    }
+  } catch { /* ไม่มีบันทึกก็ข้าม */ }
+
   try {
     const { execFile } = await import("node:child_process");
     const log = await new Promise<string>((resolve) => {

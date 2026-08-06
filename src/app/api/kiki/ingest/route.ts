@@ -361,6 +361,7 @@ export async function POST(req: Request) {
     }
   };
 
+  let sentCount = 0;
   const reply = async (sendsIn: Send[]) => {
     // ===== ด่านตรวจก่อนส่ง (6 ส.ค. 2026) =====
     //
@@ -452,6 +453,7 @@ export async function POST(req: Request) {
     } catch { /* ปรับไม่ได้ = ส่งของเดิม */ }
 
     if (voiceSend) sends.push(voiceSend);
+    sentCount = sends.length;
     return ok(sends);
   };
 
@@ -495,14 +497,27 @@ export async function POST(req: Request) {
     ctxRef = ctx;
 
     // เดินทะเบียน — ตัวไหนคืนคำตอบก่อนก็จบ ตัวสุดท้าย (คุยปกติ) รับทุกอย่างที่เหลือเสมอ
+    // บันทึกทุกเทิร์นไว้ให้ Vex ไล่ย้อนหลังเองว่าเทิร์นไหนตอบไม่ตรง/พัง (เจ้าของสั่ง 6 ส.ค. 2026)
+    const turnStart = Date.now();
     for (const handler of HANDLERS) {
       const res = await handler(ctx);
-      if (res) return res;
+      if (res) {
+        void import("@/lib/kiki-turnlog")
+          .then((m) => m.logTurn({
+            channel, text, intent: route.intent, confidence: route.confidence,
+            handler: handler.name || null, ms: Date.now() - turnStart, sends: sentCount,
+          }))
+          .catch(() => {});
+        return res;
+      }
     }
     // ไม่ควรมาถึงตรงนี้ (chatFallback รับหมด) — แต่ถ้ามาถึงจริงต้องไม่เงียบ
     return reply([{ kind: "text", text: await vexLine("ผมยังไม่แน่ใจว่าโด้อยากให้ทำอะไรครับ บอกใหม่อีกทีได้ไหม") }]);
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
+    void import("@/lib/kiki-turnlog")
+      .then((m) => m.logTurn({ channel, text, intent: "error", confidence: 0, ms: 0, sends: 0, error: detail }))
+      .catch(() => {});
     return ok([{ kind: "text", text: `สมองค้างแป๊บครับ ⚠️ (${detail.slice(0, 200)})\nลองพิมพ์ใหม่อีกทีนะครับ` }]); // canned-ok: ตัวดักพังชั้นสุดท้าย — ตอน LLM ล่มต้องยังตอบได้
   }
 }

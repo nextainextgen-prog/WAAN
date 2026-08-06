@@ -186,7 +186,7 @@ async function processMessage(msgs) {
         if (p) audioFiles.push({ path: p, mime: a.mime });
       } catch { /* ข้ามเสียงที่โหลดไม่ได้ */ }
     }
-    for (const f of files.filter((x) => !x.isImage && /\.(pdf|docx|txt|md)$/i.test(x.file_name || "")).slice(0, 3)) {
+    for (const f of files.filter((x) => !x.isImage && /\.(pdf|docx|txt|md|csv|tsv|xlsx?|xlsm|pptx)$/i.test(x.file_name || "")).slice(0, 3)) {
       try {
         const p = await downloadFile(f.file_id, dir, f.file_name);
         if (p) docFiles.push({ path: p, name: f.file_name });
@@ -217,6 +217,23 @@ async function processMessage(msgs) {
   });
   const waits = [0, 5000, 12000];
   let lastErr = null;
+  // งานหนักเงียบยาว 60-100 วิ เจ้าของไม่รู้ว่ายังทำงานอยู่หรือค้างไปแล้ว (เจ้าของสั่งแก้ 6 ส.ค. 2026)
+  // ส่งสัญญาณสั้น ๆ ระหว่างรอ แล้วลบทิ้งเมื่อคำตอบจริงมาถึง — ไม่ให้รกแชท
+  const beats = [];
+  const beatTimers = [
+    setTimeout(async () => {
+      const m = await tg("sendMessage", { chat_id: chatId, text: "กำลังคิดอยู่ครับ ขอเวลาแป๊บ" }).catch(() => null);
+      if (m?.ok) beats.push(m.result.message_id);
+    }, 35000),
+    setTimeout(async () => {
+      const m = await tg("sendMessage", { chat_id: chatId, text: "ยังทำอยู่ครับ เรื่องนี้ใช้เวลาหน่อย" }).catch(() => null);
+      if (m?.ok) beats.push(m.result.message_id);
+    }, 100000),
+  ];
+  const clearBeats = async () => {
+    for (const t of beatTimers) clearTimeout(t);
+    for (const id of beats) await tg("deleteMessage", { chat_id: chatId, message_id: id }).catch(() => {});
+  };
   for (let i = 0; i < waits.length; i++) {
     if (waits[i]) await new Promise((r) => setTimeout(r, waits[i]));
     try {
@@ -232,6 +249,7 @@ async function processMessage(msgs) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
       clearInterval(typing);
+      await clearBeats();
       await deliver(chatId, data.sends || []);
       return;
     } catch (e) {

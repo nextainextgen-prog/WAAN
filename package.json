@@ -41,7 +41,8 @@
     "kiki:discord": "node scripts/kiki-discord.mjs",
     "vex:eyes": "node scripts/vex-eyes.mjs",
     "status:old": "bash scripts/status.sh",
-    "vex:voicepick": "node scripts/vex-openai-voice-pick.mjs"
+    "vex:voicepick": "node scripts/vex-openai-voice-pick.mjs",
+    "kiki:route-test": "tsx --tsconfig tsconfig.json scripts/kiki-route-test.ts"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
