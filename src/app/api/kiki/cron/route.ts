@@ -283,8 +283,16 @@ export async function POST(req: Request) {
 
       const rowText = (l: string | VexRow) => (typeof l === "string" ? l : `${l.main}${l.value ? ` ${l.value}` : ""}`);
       const flat = sections.map((s) => `${s.head}${s.sub ? ` (${s.sub})` : ""}: ${s.lines.map(rowText).join(" / ")}`).join("\n");
+      // B4 (7 ส.ค. 2026): สิ่งที่สังเกตได้จากการไตร่ตรองเมื่อคืน — พูดในบรีฟ ไม่แทรกกลางวัน
+      let reflectNote = "";
+      if ((await getSetting("vex_pattern_speak")) === "1") {
+        const yday = new Date(now.getTime() - 86400_000);
+        const ydayKey = new Date(yday.getTime() + 7 * 3600_000).toISOString().slice(0, 10);
+        const refl = await db.kikiMemory.findFirst({ where: { kind: "reflect", day: ydayKey, scope: "owner" } }).catch(() => null);
+        if (refl) reflectNote = `\n\nบันทึกไตร่ตรองของผมเมื่อคืน (แพทเทิร์นที่สังเกตได้ — หยิบมาพูดเฉพาะข้อที่คุ้มค่าการตัดสินใจวันนี้ ไม่มีก็ข้าม):\n${refl.content.slice(0, 1200)}`;
+      }
       const comment = await askKiki(
-        `[ปิดท้ายบรีฟเช้า] จากข้อมูลบรีฟด้านล่าง เขียน "1 บรรทัดเดียว" ที่มีประโยชน์ที่สุดกับการตัดสินใจวันนี้ (เตือน/ชี้จุดเสี่ยง/สิ่งควรทำ) ห้ามทักทาย ห้ามชมลอย ๆ:\n${flat}`,
+        `[ปิดท้ายบรีฟเช้า] จากข้อมูลบรีฟด้านล่าง เขียน "1 บรรทัดเดียว" ที่มีประโยชน์ที่สุดกับการตัดสินใจวันนี้ (เตือน/ชี้จุดเสี่ยง/สิ่งควรทำ) ห้ามทักทาย ห้ามชมลอย ๆ:\n${flat}${reflectNote}`,
       ).catch(() => "");
       const block = vexSections({
         titleIcon: "☀️",
@@ -530,10 +538,27 @@ export async function POST(req: Request) {
   try {
     if (mainChat && now.getHours() >= 10 && (await getSetting("kiki_last_debt_check")) !== today) {
       await setSetting("kiki_last_debt_check", today);
-      for (const line of await debtDueReminders(now)) {
+      const dueLines2 = await debtDueReminders(now);
+      for (const line of dueLines2) {
         const t = `⏰ ${line}`;
         sends.push({ chatId: mainChat, kind: "text", text: t });
         await saveKikiChat("assistant", t);
+      }
+      // B4 (7 ส.ค. 2026): มีงวดต้องจ่ายวันนี้ + เดือนนี้ติดลบอยู่ = บอกให้เห็นภาพเงินก่อนควัก
+      if (dueLines2.length && (await getSetting("vex_pattern_speak")) === "1") {
+        try {
+          const snap2 = await financeSnapshot(now);
+          const net2 = snap2.monthIncome - snap2.monthExpense;
+          if (net2 < 0) {
+            const warn = await askKiki(
+              `[เตือนเงินตึงตอนมีงวดต้องจ่าย] เดือนนี้รับ ${fmtBaht(snap2.monthIncome)} จ่ายไปแล้ว ${fmtBaht(snap2.monthExpense)} = ติดลบ ${fmtBaht(Math.abs(net2))} บาท และวันนี้มีงวดหนี้ต้องจ่ายอีก (${dueLines2.length} รายการ) — เตือนสั้น 2 บรรทัด: จ่ายงวดห้ามขาด แต่ให้รู้ตัวว่าเงินเดือนนี้ตึงแค่ไหน + ควรเบรกหมวดไหนที่เบรกได้`,
+            ).catch(() => "");
+            if (warn) {
+              sends.push({ chatId: mainChat, kind: "text", text: warn });
+              await saveKikiChat("assistant", warn);
+            }
+          }
+        } catch { /* ไม่มีข้อมูลเงินก็ข้าม */ }
       }
       // บิลตัดในอีก 2 วัน — เตือนล่วงหน้าครั้งเดียวต่อเดือนต่อบิล
       const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -720,11 +745,16 @@ ${nags.join("\n")}`);
   try {
     if (mainChat && now.getHours() >= 22 && (await getSetting("kiki_last_selfcheck")) !== today) {
       await setSetting("kiki_last_selfcheck", today);
-      const { selfCheckReport } = await import("@/lib/kiki-turnlog");
-      const r = await selfCheckReport(24);
-      if (r.count) {
-        sends.push({ chatId: mainChat, kind: "text", text: `ตรวจงานตัวเองย้อนหลัง 24 ชั่วโมงแล้วครับ\n\n${r.text}` });
-        await saveKikiChat("assistant", r.text);
+      // B3 (7 ส.ค. 2026): อาการเดิมซ้ำ ≥3 ครั้ง = ไม่แค่รายงาน แต่ร่างสเปกแก้+ปุ่ม "พัฒนาเลย" ให้กดจบ
+      const { proposeFromSuspects } = await import("@/lib/kiki-selfheal");
+      const proposed = await proposeFromSuspects().catch(() => false);
+      if (!proposed) {
+        const { selfCheckReport } = await import("@/lib/kiki-turnlog");
+        const r = await selfCheckReport(24);
+        if (r.count) {
+          sends.push({ chatId: mainChat, kind: "text", text: `ตรวจงานตัวเองย้อนหลัง 24 ชั่วโมงแล้วครับ\n\n${r.text}` });
+          await saveKikiChat("assistant", r.text);
+        }
       }
     }
   } catch { /* พรุ่งนี้ค่อยตรวจ */ }

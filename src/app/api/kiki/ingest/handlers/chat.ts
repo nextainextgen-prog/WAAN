@@ -72,6 +72,17 @@ const DEEP_STYLE = `[โหมดวิเคราะห์เชิงลึ�
 export const chatFallbackHandler: Handler = async (ctx) => {
   const { chatId, text, replyText, imageFiles, videoFiles, msgId, voiceNote, is, urls, reply } = ctx;
   // ===== คุยปกติ — สมอง Vex เต็มรูปแบบ =====
+
+  // ===== งบบริบทตามน้ำหนักเรื่อง (กลุ่ม A2 — 7 ส.ค. 2026) =====
+  // ข้อความสั้น ไม่มีลิงก์/รูป/reply/deep = คุยเบา ๆ → tier lite: ข้ามชั้นหาข้อมูล + ตัดบริบทก้อนหนัก
+  // (เดิม "ขอบคุณครับ" ก็วิ่ง gatherFacts + ฉีด 12 ก้อน = ช้าหลายสิบวิโดยไม่มีใครได้อะไร)
+  // นี่คืองบ ไม่ใช่การตัดสินเจตนา — เลือกพลาดแค่บริบทบางลง ด่านตรวจ+ตามเก็บยังดักให้เหมือนเดิม
+  const deepArg = ctx.route.args?.deep === true || ctx.arg("deep") === "true";
+  const lite =
+    !deepArg && !urls.length && !imageFiles.length && !videoFiles.length && !replyText &&
+    text.trim().length > 0 && text.trim().length <= 25;
+
+  // (ตัวตอบรับเมื่อช้าย้ายไปอยู่ระดับ route แล้ว — ครอบทุกตัวจัดการ ไม่ใช่แค่ทาง chat)
   const ctxParts: string[] = [];
   if (voiceNote) ctxParts.push(`เจ้าของ "อัดเสียงพูดมา" (ระบบถอดเสียงให้แล้ว ข้อความคือคำพูดจริงของเขา) — ตอบเหมือนคุยกันปกติ`);
   if (replyText) ctxParts.push(`เจ้าของกำลัง reply ข้อความนี้ ให้ตอบอ้างอิงเนื้อหานี้เป็นหลัก:\n"""${replyText.slice(0, 2000)}"""`);
@@ -107,16 +118,19 @@ export const chatFallbackHandler: Handler = async (ctx) => {
 เขียนบรรทัดละตัวเลือก ยาวได้ ไม่ต้องรวบสั้น`,
     );
   }
-  const notes = await retrievePersonalNotes(text).catch(() => "");
+  // lite = คุยเบา ๆ — คลังโน้ต/การเงิน/นัด ไม่เกี่ยวและกินเวลา (สถานะโลกใน askKiki มีนัด+งานย่ออยู่แล้ว)
+  const notes = lite ? "" : await retrievePersonalNotes(text).catch(() => "");
   if (notes) ctxParts.push(`=== คลังความรู้/บันทึกส่วนตัวที่เกี่ยวข้อง (ใช้ตอบได้เลย ถ้าอยู่ในนี้อย่าบอกว่าไม่รู้) ===\n${notes}`);
-  try {
-    const snap = await financeSnapshot();
-    if (snap.txnCount > 0) ctxParts.push(`=== การเงินเดือนนี้ (ย่อ) ===\n${snapshotFacts(snap).join("\n")}`);
-  } catch { /* ไม่มีข้อมูลเงินก็ข้าม */ }
-  try {
-    const ups = await getUpcoming(chatId, 5);
-    if (ups.length) ctxParts.push(`=== นัดที่จะถึง ===\n${ups.map((e) => `• ${thaiDate(e.date)}${e.timeText ? ` ${e.timeText}` : ""} — ${e.title}`).join("\n")}`);
-  } catch { /* ข้าม */ }
+  if (!lite) {
+    try {
+      const snap = await financeSnapshot();
+      if (snap.txnCount > 0) ctxParts.push(`=== การเงินเดือนนี้ (ย่อ) ===\n${snapshotFacts(snap).join("\n")}`);
+    } catch { /* ไม่มีข้อมูลเงินก็ข้าม */ }
+    try {
+      const ups = await getUpcoming(chatId, 5);
+      if (ups.length) ctxParts.push(`=== นัดที่จะถึง ===\n${ups.map((e) => `• ${thaiDate(e.date)}${e.timeText ? ` ${e.timeText}` : ""} — ${e.title}`).join("\n")}`);
+    } catch { /* ข้าม */ }
+  }
 
   // เมื่อคืน Vex ถามไถ่วันนี้ไว้ → ข้อความเล่ายาว ๆ = บันทึกลง journal ให้เลย
   const today0 = new Date().toISOString().slice(0, 10);
@@ -149,7 +163,7 @@ export const chatFallbackHandler: Handler = async (ctx) => {
   // (แยกสองชั้นเพราะเสียง/บุคลิกของ Vex ต้องมาจากสมองหลักเสมอ — กติกาข้อ 2)
   //
   // ข้ามเมื่อ: มีรูป/วิดีโอ (สมองหลักต้องดูภาพเอง) · เจ้าของพูดมาเป็นเสียง (ต้องตอบไว)
-  if (!imageFiles.length && !videoFiles.length && !voiceNote && text.trim().length >= 6) {
+  if (!lite && !imageFiles.length && !videoFiles.length && !voiceNote && text.trim().length >= 6) {
     try {
       const { gatherFacts } = await import("@/lib/kiki-agent");
       // เปิดเครื่องมือลงมือด้วย — คำสั่งหลายเรื่องถูกส่งมาทาง chat ตามกฎข้อ 6 ของ router
@@ -189,8 +203,9 @@ export const chatFallbackHandler: Handler = async (ctx) => {
   const answer = await askKiki(
     text || "(เจ้าของส่งรูปมาโดยไม่มีข้อความ — ดูรูปแล้วตอบตามเนื้อหา)",
     ctxParts.join("\n\n") || undefined,
-    { imagePaths: imageFiles }, // ต้องส่ง path ไปด้วย ไม่งั้นสมองไม่มีสิทธิ์เปิดรูป (บั๊ก 6 ส.ค.)
+    { imagePaths: imageFiles, tier: lite ? "lite" : "full" }, // ต้องส่ง path ไปด้วย ไม่งั้นสมองไม่มีสิทธิ์เปิดรูป (บั๊ก 6 ส.ค.)
   );
+  if (lite) ctx.setFastLane(); // คุยเบา ๆ — ข้ามด่านหลัง (สมองเห็นกฎ/บทเรียนครบแล้วในบริบท)
   const outSends: Send[] = [
     ...linkShots.map((s0) => ({ kind: "photo" as const, dataBase64: s0.b64, filename: "page.png", caption: s0.caption })),
     { kind: "text" as const, text: answer, replyTo: msgId },

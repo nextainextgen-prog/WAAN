@@ -21,13 +21,17 @@ const PLAN_KIND = "finance_plan";
 
 export async function financeAdvice(text: string, extraContext?: string): Promise<AdviceResult> {
   const snap = await financeSnapshot().catch(() => null);
-  const [debts, bills, budgets] = await Promise.all([
+  const [debts, bills, budgets, baseline] = await Promise.all([
     db.debt.findMany({ where: { settledAt: null } }).catch(() => []),
     db.recurringBill.findMany({ where: { active: true } }).catch(() => []),
     db.financeBudget.findMany().catch(() => []),
+    // ฐานการเงินหลัก (รายรับจริง/เงินเก็บ/วงเงิน) — 7 ส.ค. 2026: ที่ปรึกษาเคยตอบ "รายรับ 0"
+    // ทั้งที่ฐานมี 38,000 เพราะดูแต่ FinanceTxn เดือนนี้ที่เพิ่งถูกล้าง
+    import("./kiki-baseline").then((b) => b.baselineContext()).catch(() => ""),
   ]);
 
   const real = [
+    baseline || "",
     snap ? snapshotFacts(snap).join("\n") : "(ยังไม่มีข้อมูลการเงินในระบบ)",
     debts.length
       ? `หนี้/เงินยืมที่ยังไม่ปิด:\n${debts.map((d) => `- ${d.direction === "i_owe" ? "เราติด" : "เขาติดเรา"} ${d.person} ${fmtBaht(d.amount)} ฿${d.installmentAmount ? ` (ผ่อนงวดละ ${fmtBaht(d.installmentAmount)} ฿ ทุกวันที่ ${d.installmentDay ?? "-"})` : ""}`).join("\n")}`

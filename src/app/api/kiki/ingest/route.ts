@@ -294,6 +294,8 @@ export async function POST(req: Request) {
 
   // หลักฐานที่ระบบทำได้จริงรอบนี้ — ใช้ตอนตรวจว่าเคลมเกินไหม
   let evidence = "";
+  // เส้นเบา (A1 — 7 ส.ค. 2026): คุยเล่นสั้น ๆ ข้ามด่านหลังทั้งชุด (ดูเหตุผลที่ Ctx.setFastLane)
+  let fastLane = false;
 
   /**
    * ทำต่อส่วนของคำสั่งที่ตัวจัดการตัวแรกไม่ได้แตะ (6 ส.ค. 2026)
@@ -346,6 +348,7 @@ export async function POST(req: Request) {
           },
           setTriggerNote: () => {},
           setEvidence: () => {},
+          setFastLane: () => {},
         };
         for (const handler of HANDLERS) {
           // ข้ามตัวคุยปกติ — ถ้าตกมาถึงมัน แปลว่าไม่มีใครทำได้จริง ค่อยให้สมองตอบข้างล่าง
@@ -386,7 +389,7 @@ export async function POST(req: Request) {
     // เคยพลาด: ตัวจัดการที่ตอบเป็นการ์ด HTML ทำให้ด่านตรวจข้ามไปทั้งอัน
     // (เคสจริง: "จดไว้ว่าโทรหาช่างแอร์ แล้วบอกด้วยว่าวันนี้มีนัดอะไร" → ได้แต่การ์ดงาน เรื่องนัดหาย)
     const textSends = sendsIn.filter((s) => s.kind === "text" && s.text && !s.chatId);
-    if (textSends.length && !inFollowUp && !voiceNote && text.trim().length >= 8) {
+    if (textSends.length && !fastLane && !inFollowUp && !voiceNote && text.trim().length >= 8) {
       try {
         const { reviewAnswer } = await import("@/lib/kiki-review");
         const draft = textSends.map((s) => s.text!).join("\n\n");
@@ -445,22 +448,28 @@ export async function POST(req: Request) {
     // **ลองนับความคล้ายของตัวอักษรก่อนแล้วใช้ไม่ได้** — วัดจริงกับ 3 บับเบิลที่เจ้าของเจอ
     // ได้ความคล้ายแค่ 16% / 3% / 2% ซึ่งแยกไม่ออกจากข้อความคนละเรื่อง (2-4%)
     // เพราะภาษาไทยพูดเรื่องเดียวกันด้วยคำคนละชุดได้สนิท → ต้องให้สมองตัดสินจากความหมาย
-    if (sends.filter((x) => x.kind === "text" && x.text && !x.chatId && !x.parseMode).length > 1) {
+    if (!fastLane && sends.filter((x) => x.kind === "text" && x.text && !x.chatId && !x.parseMode).length > 1) {
       const { dropRepeats } = await import("@/lib/kiki-review");
       sends = await dropRepeats(sends);
     }
 
     // บังคับใช้กฎที่เจ้าของสอนกับข้อความขาออกทุกก้อน (รวมการ์ด/ลิสต์ที่ระบบสร้างเอง)
     // — เดิมกฎมีผลแค่กับข้อความที่สมองแต่ง เจ้าของเลยเจอ "ช่วงแรกทำ หลัง ๆ ไม่ทำ"
+    // A1 (7 ส.ค. 2026): มัดรวมเหลือสูงสุด 2 คอล (ธรรมดา 1 + HTML 1) — ของเดิมเรียกทีละก้อน 4 บับเบิล = 4 คอลต่อกัน
     try {
-      const { applyStyleRules } = await import("@/lib/kiki");
-      sends = await Promise.all(
-        sends.map(async (s) =>
-          s.kind === "text" && s.text
-            ? { ...s, text: await applyStyleRules(s.text, { html: s.parseMode === "HTML" }) }
-            : s,
-        ),
-      );
+      if (fastLane) throw new Error("fast-lane"); // คำตอบมาจากสมองที่เห็นกฎสไตล์ในบริบทแล้ว
+      const { applyStyleRulesBatch } = await import("@/lib/kiki");
+      const plainIdx: number[] = [];
+      const htmlIdx: number[] = [];
+      sends.forEach((s, i) => {
+        if (s.kind === "text" && s.text) (s.parseMode === "HTML" ? htmlIdx : plainIdx).push(i);
+      });
+      const [plainOut, htmlOut] = await Promise.all([
+        plainIdx.length ? applyStyleRulesBatch(plainIdx.map((i) => sends[i].text!), { html: false }) : Promise.resolve([] as string[]),
+        htmlIdx.length ? applyStyleRulesBatch(htmlIdx.map((i) => sends[i].text!), { html: true }) : Promise.resolve([] as string[]),
+      ]);
+      plainIdx.forEach((si, k) => { if (plainOut[k]) sends[si] = { ...sends[si], text: plainOut[k] }; });
+      htmlIdx.forEach((si, k) => { if (htmlOut[k]) sends[si] = { ...sends[si], text: htmlOut[k] }; });
     } catch { /* ปรับไม่ได้ = ส่งของเดิม */ }
 
     if (voiceSend) sends.push(voiceSend);
@@ -507,9 +516,28 @@ export async function POST(req: Request) {
       reply,
       setTriggerNote: (note: string) => { triggerNote = note; },
       setEvidence: (e: string) => { evidence = e.slice(0, 4000); },
+      setFastLane: () => { fastLane = true; },
     };
 
     ctxRef = ctx;
+
+    // ===== ตอบรับเมื่อช้าจริง (A1 — 7 ส.ค. 2026) — ระดับ route ครอบทุกตัวจัดการ =====
+    // คำถามหนักเคยเงียบ 60-100+ วิ ไม่ว่าเข้าเส้นไหน (chat/ที่ปรึกษาเงิน/ค้นเว็บ)
+    // ตั้งนาฬิกา 8 วิ: reply ยังไม่ถูกเรียก = ส่งเสียงตอบรับตรงถึง Telegram ก่อน · ทัน = เงียบ
+    // (เคยวางไว้ใน chat handler แล้วพลาด — คำถามวิเคราะห์เงินเข้า financeAdvice เลยไม่มี ack)
+    let cancelAck: () => void = () => {};
+    if (!voiceNote && !callbackData && (text.length >= 40 || ctx.urls.length > 0)) {
+      const { armSlowAck } = await import("@/lib/kiki-live");
+      cancelAck = armSlowAck({
+        chatId, platform, channel,
+        doing: ctx.urls.length ? "เปิดอ่านลิงก์กับไล่ข้อมูลจริง" : "ไล่ข้อมูลจริงมาประกอบคำตอบ",
+      });
+    }
+    const origReply = ctx.reply;
+    ctx.reply = async (ss: Send[]) => {
+      cancelAck(); // คำตอบพร้อมแล้ว — ด่านหลัง (ตรวจ/สไตล์) ใช้เวลาต่ออีกไม่นาน ไม่ต้อง ack ซ้อน
+      return origReply(ss);
+    };
 
     // เดินทะเบียน — ตัวไหนคืนคำตอบก่อนก็จบ ตัวสุดท้าย (คุยปกติ) รับทุกอย่างที่เหลือเสมอ
     // บันทึกทุกเทิร์นไว้ให้ Vex ไล่ย้อนหลังเองว่าเทิร์นไหนตอบไม่ตรง/พัง (เจ้าของสั่ง 6 ส.ค. 2026)
@@ -517,6 +545,7 @@ export async function POST(req: Request) {
     for (const handler of HANDLERS) {
       const res = await handler(ctx);
       if (res) {
+        cancelAck();
         void import("@/lib/kiki-turnlog")
           .then((m) => m.logTurn({
             channel, text, intent: route.intent, confidence: route.confidence,
@@ -532,6 +561,11 @@ export async function POST(req: Request) {
     const detail = e instanceof Error ? e.message : String(e);
     void import("@/lib/kiki-turnlog")
       .then((m) => m.logTurn({ channel, text, intent: "error", confidence: 0, ms: 0, sends: 0, error: detail }))
+      .catch(() => {});
+    // วงจรซ่อมตัวเอง (B3 — 7 ส.ค. 2026): เทิร์นพังซ้ำลายเซ็นเดิม = วิเคราะห์+เสนอสเปกแก้พร้อมปุ่มเอง
+    // โด้ไม่ต้องเป็นคนเจอทุกรอบอีก — fire-and-forget ห้ามถ่วงคำตอบ error
+    void import("@/lib/kiki-selfheal")
+      .then((m) => m.reportCrash({ text, intent: "error", error: detail, channel }))
       .catch(() => {});
     return ok([{ kind: "text", text: `สมองค้างแป๊บครับ ⚠️ (${detail.slice(0, 200)})\nลองพิมพ์ใหม่อีกทีนะครับ` }]); // canned-ok: ตัวดักพังชั้นสุดท้าย — ตอน LLM ล่มต้องยังตอบได้
   }

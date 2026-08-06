@@ -90,12 +90,14 @@ export const calendarCreateHandler: Handler = async (ctx) => {
         const sends: Send[] = [];
         const lines: string[] = [];
         const links: string[] = [];
+        const createdList: { id: string; date: Date; timeText: string | null; title: string }[] = [];
         let authFailed = false;
         const dbi = (await import("@/lib/db")).db;
         for (const parsed of parsedList) {
           const ev = await createEvent({ chatId, parsed, createdById: fromId, creatorName: fromName || undefined, agent: "kiki" });
           if (ev.gcalError === "need_auth") authFailed = true;
           const kev: KikiEvent = { id: ev.id, date: ev.date, timeText: ev.timeText, endTime: parsed.endTime || null, title: ev.title, location: parsed.location || null, withWho: parsed.withWho || null, note: parsed.note || null, done: false };
+          createdList.push({ id: ev.id, date: ev.date, timeText: ev.timeText, title: ev.title });
           lines.push(`${ev.title} — ${thaiDate(ev.date)}${ev.timeText ? ` ${ev.timeText}${parsed.endTime ? `–${parsed.endTime}` : ""} น.` : " (ทั้งวัน)"}${parsed.location ? ` ที่${parsed.location}` : ""}`);
           if (ev.gcalLink) links.push(ev.gcalLink);
           try {
@@ -110,10 +112,39 @@ export const calendarCreateHandler: Handler = async (ctx) => {
             sends.push({ kind: "photo", dataBase64: png.toString("base64"), filename: "event.png" });
           } catch { /* ภาพพลาดไม่เป็นไร ข้อความยังครบ */ }
         }
+        // B4 (7 ส.ค. 2026): ลงนัดแล้วเช็คชนทันที — นัดวันเดียวกันห่างกันไม่ถึง 90 นาที = ทักในคำตอบเดิม
+        // (เชิงรุกแบบ in-reply: เจ้าของกำลังคุยอยู่แล้ว ไม่ใช่การพูดแทรก — ไม่ต้องรอสวิตช์)
+        const clashNotes: string[] = [];
+        try {
+          const toMin = (tt: string | null | undefined): number | null => {
+            if (!tt) return null;
+            const m = tt.match(/^(\d{1,2})[:.](\d{2})/);
+            return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+          };
+          for (const created of createdList) {
+            const newMin = toMin(created.timeText);
+            if (newMin === null) continue;
+            const d0 = new Date(created.date.getFullYear(), created.date.getMonth(), created.date.getDate());
+            const sameDay = await dbi.calendarEvent.findMany({
+              where: { agent: "kiki", chatId, done: false, date: { gte: d0, lt: new Date(d0.getTime() + 86400_000) } },
+            });
+            for (const other of sameDay) {
+              if (other.id === created.id) continue; // ตัวมันเอง
+              const oMin = toMin(other.timeText);
+              if (oMin === null) continue;
+              const gap = Math.abs(oMin - newMin);
+              if (gap < 90) {
+                clashNotes.push(`"${created.title}" (${created.timeText}) กับ "${other.title}" (${other.timeText}) ห่างกันแค่ ${gap} นาที`);
+              }
+            }
+          }
+        } catch { /* เช็คไม่ได้ก็ลงนัดตามปกติ */ }
+
         let t = await vexSay(
-          `เพิ่งลงนัดให้เจ้าของ ${parsedList.length} รายการ (การ์ดรายละเอียดส่งไปแล้ว) — ยืนยันสั้นมาก 1-2 บรรทัด + บอกว่าจะเตือนเย็นก่อนวันนัด เช้าวันนัด และก่อนถึงเวลา 1 ชม.`,
-          lines,
-          `ลงนัดแล้วครับ ✅ ${lines.join(" · ")}\nเดี๋ยวผมเตือนเป็นระยะเอง`,
+          `เพิ่งลงนัดให้เจ้าของ ${parsedList.length} รายการ (การ์ดรายละเอียดส่งไปแล้ว) — ยืนยันสั้นมาก 1-2 บรรทัด + บอกว่าจะเตือนเย็นก่อนวันนัด เช้าวันนัด และก่อนถึงเวลา 1 ชม.` +
+            (clashNotes.length ? `\nสำคัญ: นัดใหม่ชนกับนัดเดิม — ${clashNotes.join(" · ")} — ต้องทักให้เห็นชัด ๆ พร้อมเสนอว่าจะเลื่อนตัวไหนดี` : ""),
+          [...lines, ...clashNotes.map((c) => `⚠️ ${c}`)],
+          `ลงนัดแล้วครับ ✅ ${lines.join(" · ")}\n${clashNotes.length ? `⚠️ นัดชนกัน: ${clashNotes.join(" · ")}\n` : ""}เดี๋ยวผมเตือนเป็นระยะเอง`,
         );
         if (authFailed) t += `\n\n⚠️ ลงในระบบแล้ว แต่ Google Calendar ยังไม่เชื่อม — รัน npm run drive:auth แล้วสั่งใหม่นะครับ`;
         let html = escHtml(t);

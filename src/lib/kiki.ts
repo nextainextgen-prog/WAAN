@@ -923,22 +923,29 @@ async function recentOpeners(): Promise<string> {
 export async function askKiki(
   message: string,
   extraContext?: string,
-  opts: { imagePaths?: string[] } = {},
+  opts: { imagePaths?: string[]; tier?: "lite" | "full" } = {},
 ): Promise<string> {
+  // ===== บริบทตามน้ำหนักเรื่อง (กลุ่ม A2 — 7 ส.ค. 2026) =====
+  // ปัญหาข้อ 6 เดิม: พิมพ์ "โอเค" คำเดียวก็โดนฉีดครบ 12 ก้อน — ช้า แพง และบริบทที่ไม่เกี่ยว
+  // คือเสียงรบกวนที่พาโมเดลตอบเฉไปเอง
+  // lite = คุยสั้น/ตอบรับ: ตัด facts ทั้งกอง · recall (embed+vec) · tasks · profile — เหลือของที่จำเป็นจริง
+  // การเลือก tier เป็นเรื่อง "งบบริบท" จากขนาด/ชนิดข้อความ ไม่ใช่การตัดสินเจตนา (กติกา 1 ไม่ห้าม)
+  // เลือกพลาด = บริบทน้อยลงหนึ่งรอบ ซึ่งด่านตรวจ+รอบตามเก็บยังดักให้เหมือนเดิม
+  const lite = opts.tier === "lite";
   const [rules, facts, convo, memory, tasks, focus, caps, profile, lessons] = await Promise.all([
     vexRulesContext(),
-    ownerFactsContext(),
-    kikiConversation(),
+    lite ? Promise.resolve("") : ownerFactsContext(),
+    kikiConversation(lite ? 14 : 40),
     // ความจำระยะยาว: ค้นบทสนทนาเก่าที่เกี่ยวกับข้อความนี้ (เจ้าของบ่นว่า "จำอะไรไม่ได้เลย")
-    import("./kiki-memory").then((m) => m.recallContext(message)).catch(() => ""),
-    import("./kiki-tasks").then((t) => t.tasksContext()).catch(() => ""),
-    // กระดานเรื่องที่กำลังค้างระหว่างกัน — ไว้ตีความคำพูดลอย ๆ ("อันนั้นเอาถูกที่สุดนะ")
+    lite ? Promise.resolve("") : import("./kiki-memory").then((m) => m.recallContext(message)).catch(() => ""),
+    lite ? Promise.resolve("") : import("./kiki-tasks").then((t) => t.tasksContext()).catch(() => ""),
+    // กระดานเรื่องที่กำลังค้างระหว่างกัน — ไว้ตีความคำพูดลอย ๆ ("อันนั้นเอาถูกที่สุดนะ") — เล็ก เก็บไว้ทุก tier
     import("./kiki-jobs").then((j) => j.focusContext()).catch(() => ""),
     import("./kiki-router").then((r) => `=== ความสามารถจริงของระบบ (มีของพวกนี้แน่นอน ห้ามปฏิเสธว่าทำไม่ได้) ===\n${r.capabilityLines()}`).catch(() => ""),
     // โปรไฟล์ที่กลั่นแล้ว — ของดิบอย่างเดียวเอาไปตัดสินใจแทนเจ้าของไม่ได้ (D2, 5 ส.ค. 2026)
-    import("./kiki-profile").then((p) => p.profileContext()).catch(() => ""),
+    lite ? Promise.resolve("") : import("./kiki-profile").then((p) => p.profileContext()).catch(() => ""),
     // บทเรียนจากที่เคยโดนตำหนิ — ฉีดทุกคำตอบ ไม่ใช่เก็บไว้เฉย ๆ (จิตใจเฟส 1, 6 ส.ค. 2026)
-    import("./kiki-lessons").then((l) => l.lessonsContext()).catch(() => ""),
+    import("./kiki-lessons").then((l) => l.lessonsContext(lite ? { heavyOnly: true, maxChars: 600 } : {})).catch(() => ""),
   ]);
   // สถานะโลกก้อนเดียว (จิตใจเฟส 3) — เวลา นัด งานค้าง งานรัน สภาพเจ้าของ อยู่ในนี้หมด
   const world = await import("./kiki-world").then((w) => w.worldState()).catch(() => {
@@ -954,6 +961,15 @@ export async function askKiki(
   // (บั๊ก 6 ส.ค. 2026: บอกโมเดลให้ "เปิดอ่านรูปตาม path" มาตลอด แต่ไม่เคยเปิดสิทธิ์ให้
   //  ส่งรูปไปกี่ครั้งมันก็อ่านไม่ได้ เจ้าของเลยเจอ "ส่งอะไรไปให้ไม่เคยอ่านเลย")
   const imgs = (opts.imagePaths || []).filter(Boolean);
+  // lite = คุยเบา ๆ → สมองไวก่อน (A1 — 7 ส.ค. 2026) วิธีเดียวกับเส้นเสียงที่พิสูจน์มาแล้วว่าบุคลิกไม่หลุด
+  // (วัดจริง: "ขอบคุณมากนะ" ผ่าน CLI = 25 วิ ทั้งที่เนื้อหาไม่ต้องการสมองตัวใหญ่เลย)
+  // flash ล่ม/ตอบว่าง = ตกไป CLI เต็มรูปแบบตามเดิม ไม่มีทางเงียบ
+  if (lite && !imgs.length) {
+    try {
+      const fast = await askGeminiChat(`${KIKI_GUARD}\n\n${sys}`, message);
+      if (fast.trim()) return fast.trim();
+    } catch { /* ตกไปสมองเต็ม */ }
+  }
   try {
     return await askClaude(message, {
       guard: KIKI_GUARD,
@@ -1206,6 +1222,48 @@ async function styleRules(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * ปรับกฎสไตล์ "ทุกก้อนในคอลเดียว" (กลุ่ม A1 — 7 ส.ค. 2026)
+ * ของเดิมเรียกโมเดลทีละ send — คำตอบ 4 บับเบิล = 4 คอลต่อกัน กินเวลาหลายวินาทีฟรี ๆ
+ * มัดรวมด้วยตัวคั่นที่ไม่มีทางโผล่ในข้อความจริง แล้วแตกกลับ — จำนวนไม่ตรง = คืนของเดิมทั้งชุด (ห้ามทำข้อความหาย)
+ */
+const STYLE_SEP = "\n<<<~ก้อน~>>>\n";
+
+export async function applyStyleRulesBatch(texts: string[], opts: { html?: boolean } = {}): Promise<string[]> {
+  const list = texts.map((t) => (t || "").trim());
+  const worth = list.filter((t) => t.length >= 12);
+  if (!worth.length) return texts;
+  const rules = await styleRules();
+  if (!rules.length) return texts;
+  if (list.length === 1) return [await applyStyleRules(list[0], opts)];
+  const out = await askGeminiJson<{ text?: string }>(
+    `ปรับ "รูปแบบ/ถ้อยคำ" ของข้อความหลายก้อนให้ตรงตามกฎที่เจ้าของสอนไว้ ตอบ JSON เท่านั้น: {"text":"ทุกก้อนที่ปรับแล้ว คั่นด้วยตัวคั่นเดิมเป๊ะ"}
+
+กฎที่ต้องทำตาม:
+${rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
+
+ข้อความมี ${list.length} ก้อน คั่นด้วยบรรทัด <<<~ก้อน~>>> — ต้องคืนครบ ${list.length} ก้อน คั่นด้วยตัวคั่นเดิมเป๊ะ ห้ามเพิ่ม/ลด/สลับก้อน
+ห้ามเด็ดขาด: เปลี่ยน/เพิ่ม/ลดตัวเลข ชื่อคน ชื่อไฟล์ ลิงก์ วันเวลา · เพิ่มข้อเท็จจริงใหม่ · ตัดเนื้อหาทิ้ง
+ห้ามตกแต่งเกินกฎ: ห้ามใส่เครื่องหมายคำพูดครอบชื่อรายการที่ต้นฉบับไม่มี
+${opts.html ? "ข้อความเป็น HTML ของ Telegram — คงโครงสร้างแท็กให้ถูกต้อง" : "ห้ามใส่แท็ก HTML"}
+ไม่มีอะไรต้องปรับ = ส่งของเดิมกลับทั้งชุด`,
+    list.join(STYLE_SEP).slice(0, 12_000),
+    25_000,
+  ).catch(() => null);
+  const t = (out?.text || "").trim();
+  if (!t) return texts;
+  const parts = t.split(/\n?<<<~ก้อน~>>>\n?/).map((p) => p.trim());
+  if (parts.length !== list.length) return texts; // แตกกลับไม่ตรง = ของเดิมปลอดภัยกว่า
+  return parts.map((p, i) => {
+    const src = list[i];
+    if (!p || p.length < src.length * 0.5 || p.length > src.length * 2) return texts[i];
+    let v = p;
+    if (!/<copy>/.test(src)) v = v.replace(/<\/?copy>/gi, "").trim();
+    if (opts.html) v = v.replace(/<\/?(?!\/?(?:b|strong|i|em|u|s|code|pre|a)\b)[a-z][^>]*>/gi, "");
+    return v;
+  });
 }
 
 export async function applyStyleRules(text: string, opts: { html?: boolean } = {}): Promise<string> {
