@@ -52,6 +52,19 @@ export async function selfStatus(): Promise<string> {
     if (g) parts.push(g);
   } catch { /* ตรวจไม่ได้ก็ข้าม */ }
 
+  // บทเรียนที่เคยโดนเจ้าของตำหนิ — การประเมินตัวเองที่ไม่รู้ว่าตัวเองเคยพลาดอะไร = ประเมินลม
+  try {
+    const { listLessons } = await import("./kiki-lessons");
+    const lessons = await listLessons();
+    if (lessons.length) {
+      const repeats = lessons.reduce((a, b) => a + b.timesRepeated, 0);
+      parts.push(
+        `[บทเรียนจากที่เจ้าของเคยตำหนิ ${lessons.length} ข้อ · พลาดซ้ำรวม ${repeats} ครั้ง]\n` +
+          lessons.slice(0, 10).map((l) => `- ${l.whatWasWrong}${l.timesRepeated ? ` (ซ้ำ ${l.timesRepeated})` : ""}`).join("\n"),
+      );
+    }
+  } catch { /* ข้าม */ }
+
   // เทิร์นที่ตอบไปแล้วน่าสงสัย (พัง/ช้าผิดปกติ/เจ้าของถามซ้ำ) — ของจริงจากบันทึกการทำงานตัวเอง
   try {
     const { findSuspects } = await import("./kiki-turnlog");

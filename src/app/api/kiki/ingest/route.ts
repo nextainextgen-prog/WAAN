@@ -216,7 +216,13 @@ export async function POST(req: Request) {
     } catch { /* map พังก็สร้างใหม่รอบหน้า */ }
   }
 
-  await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`, "owner", channel);
+  const userMsgId = await saveKikiChat("user", text || `[ส่งรูปมา ${imageFiles.length} รูป]`, "owner", channel);
+
+  // ชั้นบทเรียนเชิงลบ (จิตใจเฟส 1 — 6 ส.ค. 2026): อ่านคู่สนทนาล่าสุดเบื้องหลัง
+  // จับคำตำหนิ/สัญญาณไม่พอใจแบบไม่ชัด + อารมณ์เจ้าของ — fire-and-forget ห้ามถ่วงการตอบ
+  if (text) {
+    void import("@/lib/kiki-lessons").then((m) => m.detectAndRecord(text, userMsgId, channel)).catch(() => {});
+  }
 
   // ซอยข้อความยาวเป็นหลายบับเบิล (เจ้าของสั่ง 31 ก.ค.): ย่อหน้าละข้อความ · <copy>...</copy> = กล่องแตะก็อปก้อนเดียว
   const explodeTextSend = (s: Send): Send[] => {

@@ -48,6 +48,8 @@ export const confirmReplyHandler: Handler = async (ctx) => {
   // แก้ข้อความ: "แก้เป็น..." / "เปลี่ยนเป็น..."
   const editM = text.match(/^\s*(?:แก้|เปลี่ยน|เอาใหม่)(?:เป็น|ว่า)?\s*[:：]?\s*([\s\S]{2,})/);
   if (editM) {
+    // เจ้าของต้องแก้ร่างเอง = สไตล์ที่เราร่างยังไม่ตรง — เก็บ diff เป็นบทเรียน (จิตใจเฟส 1)
+    void import("@/lib/kiki-lessons").then((m) => m.recordStyleLesson(d.message, editM[1].trim(), d.peerName)).catch(() => {});
     const msg = await draftInOwnerStyle(d.peerId, d.peerName, editM[1].trim());
     await setOutgoing({ ...d, message: msg });
     return reply([{ kind: "text", text: `แก้เป็น: "${msg}"\n\nเอาไหมครับ`, replyTo: msgId }]); // canned-ok: ต้องอ่านร่างจริงให้ฟังตรงตัว

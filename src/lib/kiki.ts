@@ -800,7 +800,7 @@ export async function askKiki(
   extraContext?: string,
   opts: { imagePaths?: string[] } = {},
 ): Promise<string> {
-  const [rules, facts, convo, memory, tasks, focus, caps, profile] = await Promise.all([
+  const [rules, facts, convo, memory, tasks, focus, caps, profile, lessons] = await Promise.all([
     vexRulesContext(),
     ownerFactsContext(),
     kikiConversation(),
@@ -812,10 +812,12 @@ export async function askKiki(
     import("./kiki-router").then((r) => `=== ความสามารถจริงของระบบ (มีของพวกนี้แน่นอน ห้ามปฏิเสธว่าทำไม่ได้) ===\n${r.capabilityLines()}`).catch(() => ""),
     // โปรไฟล์ที่กลั่นแล้ว — ของดิบอย่างเดียวเอาไปตัดสินใจแทนเจ้าของไม่ได้ (D2, 5 ส.ค. 2026)
     import("./kiki-profile").then((p) => p.profileContext()).catch(() => ""),
+    // บทเรียนจากที่เคยโดนตำหนิ — ฉีดทุกคำตอบ ไม่ใช่เก็บไว้เฉย ๆ (จิตใจเฟส 1, 6 ส.ค. 2026)
+    import("./kiki-lessons").then((l) => l.lessonsContext()).catch(() => ""),
   ]);
   const now = new Date();
   const nowLine = `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
-  const parts = [KIKI_PERSONA, caps, rules, nowLine, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
+  const parts = [KIKI_PERSONA, caps, rules, lessons, nowLine, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
   const sys = parts.join("\n\n");
   // มีรูปแนบ = ต้องเปิดสิทธิ์เครื่องมือ Read ให้ CLI ก่อน
   // (บั๊ก 6 ส.ค. 2026: บอกโมเดลให้ "เปิดอ่านรูปตาม path" มาตลอด แต่ไม่เคยเปิดสิทธิ์ให้
@@ -933,12 +935,14 @@ export async function askKikiVoice(
   extraContext?: string,
   opts: { withFacts?: boolean } = {},
 ): Promise<string> {
-  const [rules, facts, convo, tasks, focus, gathered] = await Promise.all([
+  const [rules, facts, convo, tasks, focus, lessons, gathered] = await Promise.all([
     vexRulesContext().catch(() => ""),
     ownerFactsContext().catch(() => ""),
     kikiConversation(12).catch(() => ""),   // 12 ข้อความพอ (เต็มรูปแบบใช้ 40 = ช้าโดยเปล่าประโยชน์)
     import("./kiki-tasks").then((t) => t.tasksContext()).catch(() => ""),
     import("./kiki-jobs").then((j) => j.focusContext()).catch(() => ""),
+    // เส้นเสียงเอาเฉพาะบทเรียน "หนัก" (สั้น ไว) — พลาดซ้ำในสายเสียงก็นับเป็นพลาดซ้ำเหมือนกัน
+    import("./kiki-lessons").then((l) => l.lessonsContext({ heavyOnly: true, maxChars: 600 })).catch(() => ""),
     // ===== ไปหาข้อเท็จจริงจริง ๆ ก่อนตอบ (เฟส 2 — 5 ส.ค. 2026) =====
     //
     // นี่คือจุดที่ทำให้เจ้าของบ่นว่า "ถามอะไรก็บอกไม่รู้"
@@ -960,6 +964,7 @@ export async function askKikiVoice(
   const sys = [
     KIKI_PERSONA,
     rules,
+    lessons,
     `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`,
     facts, tasks, focus, convo, extraContext || "",
     gathered

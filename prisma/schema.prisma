@@ -557,6 +557,30 @@ model KikiTask {
 
 // บันทึกทุกเทิร์นของ Vex — ไว้ให้ตัวเองไล่ย้อนหลังว่าเทิร์นไหนตอบไม่ตรง/พัง (เจ้าของสั่ง 6 ส.ค. 2026)
 // "ให้ Vex จับบั๊กตัวเองได้ ไม่ต้องรอโด้เจอ"
+// บทเรียนเชิงลบ — สิ่งที่เจ้าของบอกว่า "ไม่เอา ไม่ถูก ไม่ตรง" ทั้งแบบพูดตรง ๆ และแบบที่ต้องจับเอง
+// (ชั้น 1.5 ของจิตใจ — เจ้าของเน้นสุด 6 ส.ค. 2026: "จำสิ่งที่ผมบอกว่าไม่เอา แล้วเอาไปพัฒนา")
+// การพลาดซ้ำเรื่องเดิมคือความล้มเหลวที่ร้ายแรงที่สุดของระบบนี้ — timesRepeated ต้องถูกนับและรายงาน
+model LessonLearned {
+  id            String    @id @default(cuid())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  trigger       String                       // สถานการณ์ที่ทำให้เกิด (ย่อ)
+  whatIDid      String                       // สิ่งที่ Vex ทำลงไป
+  whatWasWrong  String                       // ผิดตรงไหน
+  correction    String                       // ควรทำแบบไหนแทน
+  evidence      String                       // ข้อความจริงของเจ้าของที่เป็นหลักฐาน
+  evidenceMsgId String?                      // KikiChat.id ของหลักฐาน — ตอบ "รู้มาจากไหน" ได้
+  severity      String    @default("กลาง")   // เบา | กลาง | หนัก (หนัก = อยู่ในบริบทเสมอ ห้ามพลาดซ้ำเด็ดขาด)
+  scope         String    @default("ทั่วไป") // ทั่วไป | เรื่อง:<x> | คน:<x> | ช่องทาง:<x>
+  timesRepeated Int       @default(0)        // พลาดซ้ำกี่ครั้งแล้ว (ซ้ำ = ยกระดับความรุนแรง)
+  lastRepeatAt  DateTime?
+  lastUsedAt    DateTime?                    // ถูกฉีดเข้าบริบทล่าสุดเมื่อไหร่ (ความจำจาง/เด่น)
+  useCount      Int       @default(0)
+  active        Boolean   @default(true)
+
+  @@index([active, severity])
+}
+
 model VexTurn {
   id         String   @id @default(cuid())
   createdAt  DateTime @default(now())

@@ -15,6 +15,7 @@ import {
 } from "./handlers/telegram";
 import { imageSaveHandler, imageFindHandler } from "./handlers/media";
 import { ruleTeachHandler, ruleListHandler, rememberHandler, forgetHandler, memoryListHandler } from "./handlers/memory";
+import { lessonsListHandler, lessonDeleteHandler } from "./handlers/lessons";
 import { wishHandler, debtHandler, recurringHandler, fitnessHandler, diaryHandler } from "./handlers/life";
 import { linkSaveHandler, researchHandler, docSummaryHandler } from "./handlers/research";
 import { calendarEditHandler, calendarViewHandler, calendarCreateHandler } from "./handlers/calendar";
@@ -135,7 +136,10 @@ export const HANDLERS: Handler[] = [
   imageSaveHandler,
   imageFindHandler,
 
-  // กฎที่สอนไว้
+  // กฎที่สอนไว้ + บทเรียนที่เคยโดนตำหนิ
+  // lessonsList ต้องมาก่อน ruleTeach — "มีอะไรที่ผมเคยด่าคุณบ้าง" เป็นคำถาม ไม่ใช่การสอนกฎ
+  lessonsListHandler,
+  lessonDeleteHandler,
   ruleTeachHandler,
   ruleListHandler,
 
