@@ -253,16 +253,126 @@ export async function POST(req: Request) {
   // งานที่ผูกเงื่อนไข ("ถ้าถึง BNI แล้วเตือนผมด้วย") — เติมท้ายคำตอบเส้นทางไหนก็ได้
   let triggerNote = "";
 
+  // หลักฐานที่ระบบทำได้จริงรอบนี้ — ใช้ตอนตรวจว่าเคลมเกินไหม
+  let evidence = "";
+
+  /**
+   * ทำต่อส่วนของคำสั่งที่ตัวจัดการตัวแรกไม่ได้แตะ (6 ส.ค. 2026)
+   *
+   * รากของอาการ "สั่ง 3 อย่างได้คำตอบเรื่องเดียว": ทะเบียนเดินจากบนลงล่าง
+   * ตัวไหนรับก่อนก็จบทันที ที่เหลือหายเงียบโดยไม่มีใครรู้
+   * ตรงนี้คือรอบตามเก็บ — ใช้ลูปเครื่องมือไปหาคำตอบของส่วนที่ตกไป แล้วต่อท้าย
+   *
+   * รอบเดียวเท่านั้น และไม่เรียกทะเบียนซ้ำ (กันวนไม่จบและกันทำงานซ้ำสองรอบ)
+   */
+  let inFollowUp = false; // กันวนซ้อน — รอบตามเก็บต้องไม่ถูกตรวจ/ตามเก็บอีก
+  let ctxRef: Ctx | null = null; // ชี้ไปที่ Ctx จริง (สร้างทีหลัง) ให้รอบตามเก็บยืมของไปใช้
+
+  const runFollowUp = async (missing: string[]): Promise<string> => {
+    if (!missing.length || inFollowUp) return "";
+    inFollowUp = true;
+    try {
+      // เอาส่วนที่ตกไป "เดินทะเบียนใหม่" — ไม่ใช่แค่ไปหาข้อมูลมาเล่า
+      //
+      // เหตุผล: กฎ "คำสั่งหลายเรื่อง = ไปทาง chat" ทำให้คำสั่งที่ต้องลงมือจริง
+      // (จดงาน · ลงนัด · บันทึกเงิน) เลี่ยงตัวจัดการที่ทำได้จริงไปหมด
+      // เคสจริง 6 ส.ค.: "จดไว้ว่าต้องโทรหาช่างแอร์ แล้วบอกด้วยว่าวันนี้มีนัดอะไร"
+      // → ตอบเรื่องนัดให้ แต่งานไม่เคยลงกระดาน แล้วบอกตรง ๆ ว่ายังไม่ได้จด
+      // → รอบตามเก็บจึงต้องเข้าถึงความสามารถชุดเดียวกับเส้นทางปกติ
+      const subText = missing.join(" และ ");
+      const subRoute = await routeIntent({
+        text: subText,
+        replyText: "",
+        convo: await kikiConversation(6).catch(() => ""),
+        hasImages: false,
+        hasDocs: false,
+        replyIsScreenshot: false,
+      }).catch(() => null);
+
+      const captured: string[] = [];
+      if (subRoute) {
+        const subCtx: Ctx = {
+          ...ctxRef!,
+          text: subText,
+          route: subRoute,
+          is: (id: string) => subRoute.intent === id && subRoute.confidence >= 0.45,
+          arg: (k: string) => {
+            const v = subRoute.args?.[k];
+            return typeof v === "string" && v.trim() ? v.trim() : "";
+          },
+          // ตัวจัดการย่อยห้ามส่งของออกเอง — เก็บข้อความไว้ให้ตัวหลักต่อท้าย
+          reply: async (ss: Send[]) => {
+            for (const s of ss) if (s.kind === "text" && s.text && !s.chatId) captured.push(s.text);
+            return ok([]);
+          },
+          setTriggerNote: () => {},
+        };
+        for (const handler of HANDLERS) {
+          // ข้ามตัวคุยปกติ — ถ้าตกมาถึงมัน แปลว่าไม่มีใครทำได้จริง ค่อยให้สมองตอบข้างล่าง
+          if (handler === HANDLERS[HANDLERS.length - 1]) break;
+          const res = await handler(subCtx).catch(() => null);
+          if (res) break;
+        }
+      }
+      if (captured.length) return captured.join("\n\n");
+
+      // ไม่มีตัวจัดการไหนรับ = เป็นคำถามธรรมดา ตอบด้วยสมอง + เครื่องมือ
+      const { gatherFacts } = await import("@/lib/kiki-agent");
+      const g = await gatherFacts(`เจ้าของสั่งมาว่า: """${text.slice(0, 1500)}"""\nส่วนที่ยังไม่ได้ตอบคือ: ${subText}`, "", { allowActions: true }).catch(() => null);
+      const { askKiki } = await import("@/lib/kiki");
+      return await askKiki(
+        `[ตามเก็บส่วนที่ยังไม่ได้ตอบ] เจ้าของสั่ง: """${text.slice(0, 1500)}"""\n` +
+          `ส่วนที่คำตอบก่อนหน้ายังไม่ได้แตะ: ${subText}\n` +
+          (g?.notes ? `\nข้อเท็จจริงที่เพิ่งไปหามาให้:\n${g.notes}\n` : "") +
+          `\nตอบ "เฉพาะส่วนที่ตกไป" อย่างเดียว ห้ามทวนของที่ตอบไปแล้ว\n` +
+          `ตอบไม่ได้จริงเพราะไม่มีข้อมูล ให้บอกตรง ๆ ว่าติดตรงไหน ห้ามเดา`,
+      ).catch(() => "");
+    } finally {
+      inFollowUp = false;
+    }
+  };
+
   const reply = async (sendsIn: Send[]) => {
-    for (const s of sendsIn) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text.replace(/<\/?copy>/g, ""), "owner", channel);
-    const fullText = sendsIn.filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
+    // ===== ด่านตรวจก่อนส่ง (6 ส.ค. 2026) =====
+    //
+    // ตัวเต็มที่เจ้าของใช้เทียบ: ร่าง → ตรวจ → แก้ → ส่ง · ของเดิม: เขียน → ส่ง
+    // ตรวจแค่ 2 อย่าง "ตอบครบไหม" กับ "เคลมเกินหลักฐานไหม" ไม่แตะสำนวน
+    // ล้มเหลว/ช้า = ปล่อยของเดิมผ่าน ห้ามทำให้คำตอบหาย
+    //
+    // ข้ามเมื่อ: เป็นการ์ด/ลิสต์ที่จัดรูปแบบไว้แล้ว · ข้อความข้ามแชท · เจ้าของพูดมาเป็นเสียง (ต้องไว)
+    let outSends = sendsIn;
+    // ตรวจจาก "ข้อความรวมทุกก้อน" ไม่ใช่ก้อนแรกที่เจอ
+    // เคยพลาด: ตัวจัดการที่ตอบเป็นการ์ด HTML ทำให้ด่านตรวจข้ามไปทั้งอัน
+    // (เคสจริง: "จดไว้ว่าโทรหาช่างแอร์ แล้วบอกด้วยว่าวันนี้มีนัดอะไร" → ได้แต่การ์ดงาน เรื่องนัดหาย)
+    const textSends = sendsIn.filter((s) => s.kind === "text" && s.text && !s.chatId);
+    if (textSends.length && !inFollowUp && !voiceNote && text.trim().length >= 8) {
+      try {
+        const { reviewAnswer } = await import("@/lib/kiki-review");
+        const draft = textSends.map((s) => s.text!).join("\n\n");
+        const r = await reviewAnswer(text, draft, evidence);
+        if (!r.ok) {
+          const extra = r.missing.length ? await runFollowUp(r.missing).catch(() => "") : "";
+          // แก้ถ้อยคำได้เฉพาะข้อความธรรมดา — การ์ด/ลิสต์ที่จัดรูปแบบไว้ห้ามแตะ (จะพัง HTML)
+          const plainIdx = sendsIn.findIndex((s) => s.kind === "text" && s.text && !s.chatId && !s.parseMode);
+          if (r.revised && plainIdx >= 0 && textSends.length === 1) {
+            outSends = sendsIn.map((s, i) => (i === plainIdx ? { ...s, text: r.revised! } : s));
+          }
+          // ส่วนที่ตกไป ต่อเป็นก้อนใหม่เสมอ ไม่ยัดรวมกับการ์ด
+          if (extra.trim()) outSends = [...outSends, { kind: "text" as const, text: extra.trim() }];
+        }
+      } catch { /* ตรวจไม่ได้ = ส่งของเดิม */ }
+    }
+    const sendsFinal = outSends;
+
+    for (const s of sendsFinal) if (s.kind === "text" && s.text) await saveKikiChat("assistant", s.text.replace(/<\/?copy>/g, ""), "owner", channel);
+    const fullText = sendsFinal.filter((s) => s.kind === "text" && s.text).map((s) => s.text!).join("\n\n");
     const voiceAlways = (await getSetting("kiki_voice_always")) === "1";
     let voiceSend: Send | null = null;
     if ((voiceNote || voiceAlways) && fullText) {
       const ogg = await ttsOgg(fullText.replace(/<[^>]+>/g, " "));
       if (ogg) voiceSend = { kind: "voice", dataBase64: ogg.toString("base64"), filename: "vex.ogg" };
     }
-    const withTrigger = triggerNote ? [...sendsIn, { kind: "text" as const, text: triggerNote }] : sendsIn;
+    const withTrigger = triggerNote ? [...sendsFinal, { kind: "text" as const, text: triggerNote }] : sendsFinal;
     triggerNote = "";
     let sends = withTrigger.flatMap(explodeTextSend);
     // เจ้าของพูดมา = ตอบเสียง "อย่างเดียว" (ตัดข้อความออก คงการ์ด/ไฟล์/ข้อความข้ามกลุ่มไว้)
@@ -308,6 +418,8 @@ export async function POST(req: Request) {
       reply,
       setTriggerNote: (note: string) => { triggerNote = note; },
     };
+
+    ctxRef = ctx;
 
     // เดินทะเบียน — ตัวไหนคืนคำตอบก่อนก็จบ ตัวสุดท้าย (คุยปกติ) รับทุกอย่างที่เหลือเสมอ
     for (const handler of HANDLERS) {

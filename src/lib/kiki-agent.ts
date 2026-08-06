@@ -10,11 +10,11 @@ import { geminiFetch } from "./gemini-usage";
  *
  * **ที่เพิ่ม**: วางแผน → เรียกเครื่องมือ → เห็นผลจริง → ตัดสินใจต่อ → ตอบ
  *
- * **ขอบเขตที่จงใจจำกัดไว้ (สำคัญ)**
- * เครื่องมือในลูปนี้ **อ่านอย่างเดียวทั้งหมด** ไม่มีตัวไหนเขียน/ส่ง/จ่ายเงิน/ลบ
- * ทางเขียนยังเดินผ่านตัวจัดการเดิมที่มีขั้นยืนยันครบเหมือนเดิมทุกประการ
- * เหตุผล: ลูปที่ตัดสินใจเองได้ + สั่งการได้จริง = พลาดทีเดียวแก้ไม่ได้
- *         ให้มัน "รู้มากขึ้นก่อนตอบ" ปลอดภัยกว่าให้มัน "ทำมากขึ้น"
+ * **ขอบเขต (ปรับ 6 ส.ค. 2026 — เจ้าของสั่งให้ลงมือได้ด้วย)**
+ * เครื่องมืออ่าน = ใช้ได้เสมอ · เครื่องมือลงมือ (`ACT_TOOLS`) = เปิดเฉพาะตอนที่ผู้เรียกอนุญาต
+ * ของที่ยัง **ห้ามอยู่ในลูปเด็ดขาด**: ส่งข้อความแทนเจ้าของ · โพสต์โซเชียล · แก้โค้ดตัวเอง ·
+ * ลบข้อมูล · อะไรก็ตามที่ถอนไม่ได้ — พวกนี้ต้องผ่านขั้นยืนยันของตัวจัดการเดิมเท่านั้น
+ * เหตุผล: พลาดทีเดียวแก้ไม่ได้ ต่างจากการจด/จำ/เก็บลิงก์ ที่ลบทีหลังได้
  */
 
 export interface AgentTool {
@@ -43,15 +43,14 @@ export async function selfStatus(): Promise<string> {
     parts.push(`[ความสามารถที่มีอยู่แล้วตอนนี้]\n${capabilityLines()}`);
   } catch { /* ข้าม */ }
 
-  // แผนพัฒนา: หยิบเฉพาะบรรทัดที่บอกว่ายังค้าง — ไฟล์ยาวมาก ยัดทั้งไฟล์ไม่ไหว
+  // สถานะที่ "ตรวจสดจากของจริง" — เลิก grep บันทึกแล้ว (6 ส.ค. 2026)
+  // เหตุผลอยู่ในหัวไฟล์ kiki-selfcheck.ts: บรรทัด "ยังค้าง" ในบันทึกไม่หายไปตอนงานเสร็จ
+  // ทำให้มันเคยตอบเจ้าของว่าของที่ทำเสร็จแล้ว "ยังทำไม่ได้" อย่างมั่นใจ
   try {
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const root = process.env.CHANGOH_ROOT?.trim() || process.cwd();
-    const doc = await fs.readFile(path.join(root, "docs/vex-roadmap-2026-08.md"), "utf8");
-    const pending = doc.split("\n").filter((l) => /ยังค้าง|ยังไม่ได้ทำ|ยังไม่ได้เทส|ยังไม่รองรับ|รอเจ้าของ|ยังไม่เริ่ม|หนี้ที่ฝากไว้/.test(l));
-    if (pending.length) parts.push(`[งานที่จดไว้ว่ายังค้าง]\n${pending.slice(-25).join("\n")}`);
-  } catch { /* ไม่มีไฟล์ก็ข้าม */ }
+    const { gapsText } = await import("./kiki-selfcheck");
+    const g = await gapsText();
+    if (g) parts.push(g);
+  } catch { /* ตรวจไม่ได้ก็ข้าม */ }
 
   try {
     const { execFile } = await import("node:child_process");
@@ -168,6 +167,78 @@ export function agentTools(): AgentTool[] {
   ];
 }
 
+/**
+ * เครื่องมือที่ "ลงมือทำ" ได้ (6 ส.ค. 2026)
+ *
+ * เดิมลูปมีแต่เครื่องมืออ่าน — ทำวงจร ลอง → เห็นผล → แก้ → ลองใหม่ ไม่ได้เลย
+ * ตันตรงที่ต้องรอเจ้าของมาสั่งซ้ำ ต่างจากตัวเต็มที่ลงมือแล้วตรวจผลเองได้
+ *
+ * กติกาที่บังคับไว้กับทุกตัวในกลุ่มนี้
+ *  1. **ย้อนกลับได้ทั้งหมด** — จด/จำ/เก็บลิงก์ ลบทีหลังได้ ไม่มีตัวไหนส่งของออกนอกหรือจ่ายเงิน
+ *     (ส่งข้อความแทนเจ้าของ · โพสต์โซเชียล · แก้โค้ดตัวเอง ยังต้องผ่านขั้นยืนยันเหมือนเดิม
+ *      ห้ามเอามาไว้ในลูปเด็ดขาด — พลาดทีเดียวถอนไม่ได้)
+ *  2. **ตรวจผลเองก่อนคืน** — ทำแล้วต้องอ่านกลับมาว่าเข้าจริงไหม แล้วคืนหลักฐานไปให้สมอง
+ *     (กติกาข้อ 3: ระบบเป็นคนยืนยัน ไม่ใช่โมเดลเคลมเอง)
+ */
+export const ACT_TOOLS = ["add_task", "remember_fact", "save_link_to_library"];
+
+function actTools(): AgentTool[] {
+  return [
+    {
+      name: "add_task",
+      description: "จดงานเข้ากระดานงานของเจ้าของ ใช้เมื่อระหว่างคุยแล้วเจอสิ่งที่ต้องทำต่อ และเจ้าของสั่งให้จด",
+      params: { title: { type: "string", description: "งานที่ต้องทำ สั้น ชัด" }, detail: { type: "string", description: "รายละเอียดถ้ามี" } },
+      required: ["title"],
+      run: async (a) => {
+        const title = (a.title || "").trim();
+        if (!title) return "ไม่ได้ระบุชื่องาน เลยไม่ได้จด";
+        const { addTask, openTasks } = await import("./kiki-tasks");
+        // เก็บเหตุผลจริงไว้ด้วย — รอบแรกที่เทส มันคืนแค่ "ไม่สำเร็จ" แล้วไล่ต้นตอไม่ได้
+        let err = "";
+        try {
+          await addTask({ title, detail: a.detail || "" });
+        } catch (e) {
+          err = e instanceof Error ? e.message : String(e);
+        }
+        // อ่านกลับมาดูว่าเข้าจริงไหม — ห้ามคืนว่าสำเร็จโดยไม่ตรวจ (กติกาข้อ 3)
+        const back = await openTasks().catch(() => []);
+        const found = back.some((t) => t.title === title);
+        if (found) return `จดแล้วจริง ตรวจกระดานเจอ: "${title}"`;
+        return `จดไม่สำเร็จ: ${err || "เรียกแล้วไม่ error แต่ตรวจกระดานไม่เจอ"} — ห้ามบอกเจ้าของว่าจดแล้ว`;
+      },
+    },
+    {
+      name: "remember_fact",
+      description: "จำข้อเท็จจริงถาวรเกี่ยวกับเจ้าของ ใช้เมื่อเจ้าของบอกข้อมูลตัวเองที่ควรจำไว้ใช้ทีหลัง",
+      params: { fact: { type: "string", description: "ข้อเท็จจริง เขียนให้สมบูรณ์ในตัว" }, category: { type: "string", description: "หมวด เช่น ตัวตน การเงิน ความชอบ" } },
+      required: ["fact"],
+      run: async (a) => {
+        const fact = (a.fact || "").trim();
+        if (!fact) return "ไม่ได้ระบุข้อเท็จจริง เลยไม่ได้จำ";
+        const { rememberOwnerFact, listOwnerFacts } = await import("./kiki");
+        await rememberOwnerFact(fact, { category: a.category || "ทั่วไป", source: "agent" });
+        const back = await listOwnerFacts().catch(() => []);
+        const found = back.some((f) => f.fact === fact);
+        return found ? `จำแล้วจริง ตรวจความจำเจอ: "${fact}"` : `สั่งจำไปแล้วแต่ตรวจไม่เจอ — ห้ามบอกเจ้าของว่าจำแล้ว`;
+      },
+    },
+    {
+      name: "save_link_to_library",
+      description: "เก็บลิงก์เข้าคลังความรู้ส่วนตัว **ใช้เฉพาะตอนเจ้าของสั่งให้เก็บเท่านั้น** ไม่สั่ง = อ่านให้ตอบให้ แต่ห้ามเก็บ",
+      params: { url: { type: "string", description: "ลิงก์ที่จะเก็บ" }, note: { type: "string", description: "โน้ตของเจ้าของ" } },
+      required: ["url"],
+      run: async (a) => {
+        const url = (a.url || "").trim();
+        if (!/^https?:\/\//.test(url)) return "ลิงก์ไม่ถูกต้อง เลยไม่ได้เก็บ";
+        const { saveLinkToPersonal } = await import("./kiki");
+        const r = await saveLinkToPersonal(url, a.note || "").catch((e) => ({ title: "", rel: "", err: e instanceof Error ? e.message : "error" } as { title: string; rel: string; err?: string }));
+        if (!r.rel) return `เก็บไม่สำเร็จ: ${(r as { err?: string }).err || "ไม่ทราบสาเหตุ"} — ห้ามบอกว่าเก็บแล้ว`;
+        return `เก็บเข้าคลังแล้วจริง ไฟล์: ${r.rel} · หัวข้อ: ${r.title}`;
+      },
+    },
+  ];
+}
+
 interface GeminiPart {
   text?: string;
   functionCall?: { name: string; args?: Record<string, string> };
@@ -188,11 +259,11 @@ const BUDGET_MS = 110_000; // เพดานเวลารวม — เว็
  * ตอบโดยใช้เครื่องมือได้หลายรอบ
  * โยน error เมื่อใช้ไม่ได้ (ไม่มีคีย์/ล่ม) → ผู้เรียกต้องถอยไปทางเดิมเสมอ ห้ามปล่อยเงียบ
  */
-export async function runAgent(system: string, question: string): Promise<AgentRun> {
+export async function runAgent(system: string, question: string, opts: { allowActions?: boolean } = {}): Promise<AgentRun> {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new Error("no GEMINI_API_KEY");
 
-  const tools = agentTools();
+  const tools = opts.allowActions ? [...agentTools(), ...actTools()] : agentTools();
   const byName = new Map(tools.map((t) => [t.name, t]));
   const declarations = tools.map((t) => ({
     name: t.name,
@@ -275,6 +346,10 @@ const GATHER_SYSTEM = `คุณคือ "ฝ่ายหาข้อมูล"
 - ตัวเลข ราคา ลิงก์ ชื่อรุ่น วันที่ ต้องยกมาครบเป๊ะ อย่าปัด อย่าย่อ
 - หาไม่เจอ/เปิดไม่ได้ ให้เขียนตรง ๆ ว่าไม่เจอ ห้ามแต่งขึ้นมาเอง
 
+**ถ้าเจ้าของสั่งให้ "จด/จำ/เก็บ" ให้ลงมือด้วยเครื่องมือทันที** แล้วรายงานผลที่เครื่องมือคืนมาตรง ๆ
+(เครื่องมือตรวจให้เองว่าเข้าจริงไหม — คืนว่าไม่สำเร็จก็ต้องรายงานว่าไม่สำเร็จ ห้ามกลบ)
+ไม่ได้สั่งให้เก็บ = ห้ามเก็บ อ่านให้ตอบให้พอ
+
 ถ้าคำถามนี้ตอบได้เลยโดยไม่ต้องใช้เครื่องมือใด ๆ (คุยเล่น ทักทาย ถามความเห็นล้วน ๆ ความรู้ทั่วไปที่ไม่เปลี่ยนตามเวลา)
 ให้ตอบสั้น ๆ แค่คำว่า: ${NO_TOOLS}`;
 
@@ -294,12 +369,12 @@ export interface Gathered {
  *
  * ล้มเหลวเมื่อไหร่ = คืน notes ว่าง แล้วปล่อยให้ตอบแบบเดิม (ห้ามทำให้ทางเดิมพัง)
  */
-export async function gatherFacts(question: string, extraHint = ""): Promise<Gathered> {
+export async function gatherFacts(question: string, extraHint = "", opts: { allowActions?: boolean } = {}): Promise<Gathered> {
   const t0 = Date.now();
   const empty: Gathered = { notes: "", steps: [], ms: 0 };
   if (!question.trim()) return empty;
   try {
-    const r = await runAgent(GATHER_SYSTEM, `${extraHint ? `${extraHint}\n\n` : ""}เจ้าของพูดว่า: """${question.slice(0, 4000)}"""`);
+    const r = await runAgent(GATHER_SYSTEM, `${extraHint ? `${extraHint}\n\n` : ""}เจ้าของพูดว่า: """${question.slice(0, 4000)}"""`, opts);
     const notes = r.answer.trim();
     // ไม่ได้เรียกเครื่องมือเลย = ไม่มีข้อเท็จจริงใหม่ ทิ้งไปเลย อย่าเอาความเห็นของชั้นนี้ไปปนกับคำตอบ
     if (!r.usedTools || notes.includes(NO_TOOLS)) return { ...empty, steps: r.steps, ms: Date.now() - t0 };

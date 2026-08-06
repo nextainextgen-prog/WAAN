@@ -106,7 +106,9 @@ export const chatFallbackHandler: Handler = async (ctx) => {
   if (!imageFiles.length && !videoFiles.length && !voiceNote && text.trim().length >= 6) {
     try {
       const { gatherFacts } = await import("@/lib/kiki-agent");
-      const g = await gatherFacts(text, replyText ? `บริบท: เจ้าของกำลัง reply ข้อความนี้ """${replyText.slice(0, 1000)}"""` : "");
+      // เปิดเครื่องมือลงมือด้วย — คำสั่งหลายเรื่องถูกส่งมาทาง chat ตามกฎข้อ 6 ของ router
+      // ถ้าทางนี้ทำอะไรไม่ได้เลย "จดไว้ด้วย" ที่พ่วงมากับคำถามจะหายทุกครั้ง (เจอจริง 6 ส.ค.)
+      const g = await gatherFacts(text, replyText ? `บริบท: เจ้าของกำลัง reply ข้อความนี้ """${replyText.slice(0, 1000)}"""` : "", { allowActions: true });
       if (g.notes) {
         ctxParts.push(
           `=== ข้อเท็จจริงที่ระบบไปหามาให้สด ๆ ก่อนตอบ (เชื่อถือได้ ใช้ตอบได้เลย) ===\n${g.notes}\n\n` +
