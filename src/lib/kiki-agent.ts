@@ -241,7 +241,11 @@ function actTools(): AgentTool[] {
         const fact = (a.fact || "").trim();
         if (!fact) return "ไม่ได้ระบุข้อเท็จจริง เลยไม่ได้จำ";
         const { rememberOwnerFact, listOwnerFacts } = await import("./kiki");
-        await rememberOwnerFact(fact, { category: a.category || "ทั่วไป", source: "agent" });
+        // ด่านขัดแย้ง (จิตใจเฟส 2): ขัดของเดิม = ไม่ทับเงียบ ๆ — คืนไปให้สมองถามเจ้าของ
+        const r = await rememberOwnerFact(fact, { category: a.category || "ทั่วไป", source: "agent", checkConflict: true });
+        if (!r.saved && r.conflict) {
+          return `ยังไม่ได้จำ — ข้อมูลใหม่ "${fact}" ขัดกับที่จำไว้เดิมว่า "${r.conflict.existingFact}" ต้องถามเจ้าของก่อนว่าเปลี่ยนใจแล้วหรือเราจำผิด ห้ามเขียนทับเอง`;
+        }
         const back = await listOwnerFacts().catch(() => []);
         const found = back.some((f) => f.fact === fact);
         return found ? `จำแล้วจริง ตรวจความจำเจอ: "${fact}"` : `สั่งจำไปแล้วแต่ตรวจไม่เจอ — ห้ามบอกเจ้าของว่าจำแล้ว`;

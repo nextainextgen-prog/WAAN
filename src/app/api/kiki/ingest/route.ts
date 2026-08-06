@@ -345,6 +345,7 @@ export async function POST(req: Request) {
             return ok([]);
           },
           setTriggerNote: () => {},
+          setEvidence: () => {},
         };
         for (const handler of HANDLERS) {
           // ข้ามตัวคุยปกติ — ถ้าตกมาถึงมัน แปลว่าไม่มีใครทำได้จริง ค่อยให้สมองตอบข้างล่าง
@@ -491,7 +492,7 @@ export async function POST(req: Request) {
 
     const ctx: Ctx = {
       chatId, text, fromId, fromName, platform, channel, replyText,
-      imageFiles, audioFiles, docFiles, videoFiles, msgId, callbackData,
+      imageFiles, audioFiles, docFiles, videoFiles, msgId, userChatRowId: userMsgId, callbackData,
       voiceNote, justBound, replyIsScreenshot,
       route,
       is: (id: string) => route.intent === id && route.confidence >= 0.45,
@@ -502,6 +503,7 @@ export async function POST(req: Request) {
       urls: [...extractUrls(text), ...extractUrls(replyText)].slice(0, 3),
       reply,
       setTriggerNote: (note: string) => { triggerNote = note; },
+      setEvidence: (e: string) => { evidence = e.slice(0, 4000); },
     };
 
     ctxRef = ctx;

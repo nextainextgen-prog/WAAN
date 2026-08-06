@@ -352,17 +352,99 @@ export async function kikiConversation(limit = 40): Promise<string> {
 
 // ===== ความจำเรื่องเจ้าของ (OwnerFact) =====
 
-export async function rememberOwnerFact(fact: string, opts: { category?: string; source?: string } = {}): Promise<void> {
+export interface FactConflict {
+  existingId: string;
+  existingFact: string;
+}
+
+export interface RememberResult {
+  saved: boolean;
+  conflict?: FactConflict;
+}
+
+/**
+ * หาว่าข้อเท็จจริงใหม่ "ขัดแย้ง" กับความจำเดิมไหม — โมเดลตัดสินจากความหมาย เรียกครั้งเดียวต่อชุด
+ * (จิตใจเฟส 2 — 6 ส.ค. 2026: ข้อมูลใหม่ขัดของเก่า ห้ามเขียนทับเงียบ ๆ ต้องถามเจ้าของ)
+ *
+ * ขัดแย้ง = เป็นจริงพร้อมกันไม่ได้ (ไม่กินเผ็ด vs ชอบกินเผ็ด) — ไม่ใช่แค่เรื่องเดียวกัน
+ * ไม่แน่ใจ = ไม่ขัด (ถามพร่ำเพรื่อน่ารำคาญกว่า และ fact ใหม่ยังลบทีหลังได้)
+ */
+export async function findFactConflicts(newFacts: string[]): Promise<Map<number, FactConflict>> {
+  const out = new Map<number, FactConflict>();
+  const list = newFacts.map((f) => f.trim()).filter(Boolean);
+  if (!list.length) return out;
+  const existing = await db.ownerFact.findMany({
+    where: { active: true, NOT: { category: VEX_RULE_CATEGORY } },
+    orderBy: { updatedAt: "desc" },
+    take: 120,
+  }).catch(() => []);
+  if (!existing.length) return out;
+  const j = await askGeminiJson<{ conflicts?: { new?: number; old?: number }[] }>(
+    `เทียบ "ข้อมูลใหม่" กับ "ความจำเดิม" ว่าคู่ไหน "ขัดแย้งกันจริง" (เป็นจริงพร้อมกันไม่ได้)
+ตอบ JSON เท่านั้น: {"conflicts":[{"new":<เลขข้อมูลใหม่>,"old":<เลขความจำเดิม>}]}
+ขัดแย้ง = ตรงข้ามกันโดยตรง เช่น "ไม่กินเผ็ด" vs "ชอบกินเผ็ดมาก" · "มอไซค์ผ่อนหมดแล้ว" vs "ยังผ่อนมอไซค์อยู่"
+ไม่นับว่าขัด: เรื่องเดียวกันแต่เพิ่มรายละเอียด · คนละเรื่อง · ตัวเลขที่อัปเดตตามเวลา (น้ำหนัก/ยอดเงิน)
+ไม่แน่ใจ = ไม่ต้องใส่ · ไม่มีเลย = {"conflicts":[]}`,
+    `ข้อมูลใหม่:\n${list.map((f, i) => `${i + 1}. ${f}`).join("\n")}\n\nความจำเดิม:\n${existing.map((e, i) => `${i + 1}. ${e.fact}`).join("\n")}`,
+    25_000,
+  ).catch(() => null);
+  for (const c of j?.conflicts || []) {
+    const ni = (c.new || 0) - 1;
+    const oi = (c.old || 0) - 1;
+    if (ni >= 0 && ni < list.length && oi >= 0 && oi < existing.length && !out.has(ni)) {
+      out.set(ni, { existingId: existing[oi].id, existingFact: existing[oi].fact });
+    }
+  }
+  return out;
+}
+
+export async function rememberOwnerFact(
+  fact: string,
+  opts: {
+    category?: string;
+    source?: string;
+    sourceMsgId?: string | null;
+    sourceChannel?: string | null;
+    kind?: "semantic" | "procedural";
+    /** เปิดด่านตรวจความขัดแย้ง — ขัดเมื่อไหร่ "ไม่บันทึก" แล้วคืน conflict ให้ผู้เรียกไปถามเจ้าของ */
+    checkConflict?: boolean;
+  } = {},
+): Promise<RememberResult> {
   const f = fact.trim();
-  if (!f) return;
+  if (!f) return { saved: false };
   // กันซ้ำ: ถ้ามี fact เดิมเนื้อเดียวกันอยู่แล้ว อัปเดตเวลาแทน
   const dup = await db.ownerFact.findFirst({ where: { fact: f, active: true } });
   if (dup) {
     await db.ownerFact.update({ where: { id: dup.id }, data: { updatedAt: new Date() } });
-    return;
+    return { saved: true };
   }
-  await db.ownerFact.create({ data: { fact: f, category: opts.category || "ทั่วไป", source: opts.source || null } });
+  if (opts.checkConflict) {
+    const conflicts = await findFactConflicts([f]).catch(() => new Map<number, FactConflict>());
+    const c = conflicts.get(0);
+    if (c) return { saved: false, conflict: c };
+  }
+  await db.ownerFact.create({
+    data: {
+      fact: f,
+      category: opts.category || "ทั่วไป",
+      source: opts.source || null,
+      kind: opts.kind || "semantic",
+      sourceMsgId: opts.sourceMsgId || null,
+      sourceChannel: opts.sourceChannel || null,
+    },
+  });
   await syncProfileNote().catch(() => {});
+  return { saved: true };
+}
+
+/** เปลี่ยนความจำเดิมเป็นอันใหม่ (เจ้าของยืนยันแล้วว่าเปลี่ยนใจ) — ปิดของเก่า เก็บของใหม่พร้อมที่มา */
+export async function replaceOwnerFact(
+  existingId: string,
+  newFact: string,
+  opts: { category?: string; source?: string; sourceMsgId?: string | null; sourceChannel?: string | null } = {},
+): Promise<void> {
+  await db.ownerFact.update({ where: { id: existingId }, data: { active: false } }).catch(() => {});
+  await rememberOwnerFact(newFact, { ...opts, checkConflict: false });
 }
 
 export async function forgetOwnerFacts(keyword: string): Promise<number> {
@@ -378,12 +460,36 @@ export async function listOwnerFacts(): Promise<{ category: string; fact: string
   return rows.map((r) => ({ category: r.category, fact: r.fact }));
 }
 
+/**
+ * ความจำจางและเด่น (จิตใจเฟส 2 — 6 ส.ค. 2026)
+ * ที่ใช้บ่อย/เพิ่งใช้ มาก่อน · เกินเพดานแล้วตัวที่ไม่ถูกใช้นานสุดหลุดจากบริบท (= จางจริง ไม่ใช่แค่เรียงใหม่)
+ * ตัวที่ติดโผถูกนับใช้ (bump เบื้องหลัง) — ตัวที่หลุดโผไม่ถูกนับ จึงถอยห่างขึ้นเรื่อย ๆ เอง
+ */
+const FACTS_CAP = 70;        // จำนวนข้อสูงสุดที่เข้าบริบท
+const FACTS_CHAR_CAP = 7000; // เพดานตัวอักษรรวม
+
 export async function ownerFactsContext(): Promise<string> {
   // "กฎของ Vex" แสดงแยกใน vexRulesContext (เป็นคำสั่ง ไม่ใช่ข้อมูลเจ้าของ)
-  const facts = (await listOwnerFacts()).filter((f) => f.category !== "กฎของ Vex");
-  if (!facts.length) return "";
+  const rows = await db.ownerFact.findMany({
+    where: { active: true, NOT: { category: VEX_RULE_CATEGORY } },
+    orderBy: [{ useCount: "desc" }, { lastUsedAt: "desc" }, { createdAt: "desc" }],
+    take: FACTS_CAP,
+  }).catch(() => []);
+  if (!rows.length) return "";
+  const picked: { id: string; fact: string; category: string }[] = [];
+  let used = 0;
+  for (const r of rows) {
+    if (used + r.fact.length > FACTS_CHAR_CAP) break;
+    used += r.fact.length;
+    picked.push(r);
+  }
+  if (!picked.length) return "";
+  // นับว่าเพิ่งถูกใช้ — เบื้องหลัง ไม่ถ่วงการตอบ
+  void db.ownerFact
+    .updateMany({ where: { id: { in: picked.map((p) => p.id) } }, data: { lastUsedAt: new Date(), useCount: { increment: 1 } } })
+    .catch(() => {});
   const byCat = new Map<string, string[]>();
-  for (const f of facts) {
+  for (const f of picked) {
     const arr = byCat.get(f.category) || [];
     arr.push(f.fact);
     byCat.set(f.category, arr);

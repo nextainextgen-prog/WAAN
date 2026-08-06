@@ -368,8 +368,15 @@ model OwnerFact {
   updatedAt DateTime @updatedAt
   category  String   @default("ทั่วไป")  // ความชอบ | ไม่ชอบ | นิสัย | สุขภาพ | คนรอบตัว | ของสำคัญ | ทั่วไป
   fact      String
-  source    String?                       // ข้อความต้นทางที่เจ้าของพิมพ์
+  source    String?                       // ข้อความต้นทางที่เจ้าของพิมพ์ (quote จริง = หลักฐาน)
   active    Boolean  @default(true)
+
+  // --- ความจำ 5 ชนิด + ที่มา + จาง/เด่น (จิตใจเฟส 2 — 6 ส.ค. 2026) ---
+  kind          String    @default("semantic") // semantic (ข้อเท็จจริง) | procedural (วิธีทำ/กฎที่เรียนมา)
+  sourceMsgId   String?                        // KikiChat.id ต้นทาง — ตอบ "รู้เรื่องนี้มาจากไหน" ได้
+  sourceChannel String?                        // telegram | discord | discord-voice | cron
+  lastUsedAt    DateTime?                      // ถูกดึงเข้าบริบทล่าสุดเมื่อไหร่ — ไม่ถูกใช้นาน = ถอยไปหลัง
+  useCount      Int       @default(0)
 
   @@index([active, category])
 }

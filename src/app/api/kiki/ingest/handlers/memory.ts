@@ -1,7 +1,65 @@
 import { vexList } from "@/lib/kiki-format";
-import { askKiki, askExtractor, askGeminiJson, rememberOwnerFact, forgetOwnerFacts, listOwnerFacts, VEX_RULE_CATEGORY, vexLine } from "@/lib/kiki";
+import {
+  askKiki, askExtractor, askGeminiJson, rememberOwnerFact, replaceOwnerFact, findFactConflicts,
+  forgetOwnerFacts, listOwnerFacts, VEX_RULE_CATEGORY, vexLine, getSetting, setSetting,
+} from "@/lib/kiki";
 import { vexSay } from "../shared";
 import type { Ctx, Handler } from "../types";
+
+// ===== ความจำขัดแย้งที่รอเจ้าของเคาะ (จิตใจเฟส 2 — 6 ส.ค. 2026) =====
+// ข้อมูลใหม่ขัดของเก่า ห้ามเขียนทับเงียบ ๆ — เก็บคำถามค้างไว้ 15 นาที รอเจ้าของตอบ
+const CONFLICT_KEY = "vex_fact_conflict";
+const CONFLICT_TTL = 15 * 60_000;
+
+interface PendingConflict {
+  fact: string;
+  category: string;
+  source: string;
+  sourceMsgId?: string | null;
+  sourceChannel?: string | null;
+  existingId: string;
+  existingFact: string;
+  at: number;
+}
+
+async function getPendingConflict(): Promise<PendingConflict | null> {
+  try {
+    const p = JSON.parse((await getSetting(CONFLICT_KEY)) || "null") as PendingConflict | null;
+    if (!p || Date.now() - p.at > CONFLICT_TTL) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ตัวรับคำตอบของคำถามขัดแย้ง — คำยืนยันใช้ regex ได้ตามข้อยกเว้นกติกาข้อ 1
+ * **ห้ามใช้ `\b`** — อักษรไทยเป็น non-word ทั้งหมด `\b` หลังคำไทยไม่ match อะไรเลย
+ * (พลาดจริงตอนเทส 6 ส.ค.: "เปลี่ยนเป็นอันใหม่" ไม่เข้าเพราะ `เปลี่ยน\b` — บั๊กเดิมที่เคยเจอกับ "Vex พอ")
+ * รับเฉพาะข้อความสั้น (≤30 ตัวอักษร) — ประโยคยาวที่บังเอิญมีคำพวกนี้คือคำสั่งใหม่ ไม่ใช่คำตอบ
+ */
+export const factConflictAnswerHandler: Handler = async (ctx) => {
+  const { text, msgId, reply } = ctx;
+  const p = await getPendingConflict();
+  if (!p) return null;
+  const t = text.trim();
+  if (t.length > 30) return null;
+  // ฝั่งปฏิเสธเช็คก่อน — "ไม่เปลี่ยน" มีคำว่า "เปลี่ยน" อยู่ข้างใน
+  if (/(คงเดิม|ของเดิม|อันเดิม|ไม่เปลี่ยน|ไม่ต้อง|ไม่เอา|ไม่ใช่|ยกเลิก)/.test(t)) {
+    await setSetting(CONFLICT_KEY, "");
+    ctx.setEvidence(`ระบบคงความจำเดิมไว้แล้วจริงตามที่เจ้าของเลือก: "${p.existingFact}" — เรื่องนี้จบแล้ว ไม่มีอะไรค้าง`);
+    return reply([{ kind: "text", text: await vexLine(`คงของเดิมไว้ครับ — ยังจำว่า "${p.existingFact}" เหมือนเดิม`), replyTo: msgId }]);
+  }
+  if (/(เปลี่ยน|อันใหม่|ใช้ใหม่|อัปเดต|ทับ)/.test(t)) {
+    await setSetting(CONFLICT_KEY, "");
+    await replaceOwnerFact(p.existingId, p.fact, {
+      category: p.category, source: p.source, sourceMsgId: p.sourceMsgId, sourceChannel: p.sourceChannel,
+    });
+    ctx.setEvidence(`ระบบสลับความจำแล้วจริง: ปิดของเก่า "${p.existingFact}" และบันทึกของใหม่ "${p.fact}" เรียบร้อย — เรื่องนี้จบแล้ว ไม่มีอะไรค้าง`);
+    return reply([{ kind: "text", text: await vexLine(`อัปเดตแล้วครับ — จากนี้จำว่า "${p.fact}" (ของเดิม "${p.existingFact}" เอาออกแล้ว)`), replyTo: msgId }]);
+  }
+  return null; // ไม่ใช่คำตอบของเรื่องนี้ ปล่อยผ่านไปเส้นทางอื่น (ห้ามยึดเทิร์น — บทเรียน 6 ส.ค.)
+};
 
 export const ruleTeachHandler: Handler = async (ctx) => {
   const { text, replyText, msgId, is, reply } = ctx;
@@ -25,7 +83,7 @@ export const ruleTeachHandler: Handler = async (ctx) => {
     if (/^SKIP$/i.test(rule)) {
       return reply([{ kind: "text", text: await vexLine(`ยังไม่ชัดว่าจะให้ผมปรับอะไรครับ บอกอีกทีว่าต่อไปให้ทำแบบไหน เดี๋ยวจำถาวรให้`), replyTo: msgId }]);
     }
-    await rememberOwnerFact(rule, { category: VEX_RULE_CATEGORY, source: text });
+    await rememberOwnerFact(rule, { category: VEX_RULE_CATEGORY, source: text, kind: "procedural", sourceMsgId: ctx.userChatRowId, sourceChannel: ctx.channel });
     const t = await vexSay(
       `เจ้าของเพิ่งสอนกฎใหม่ให้ตัวเอง: "${rule}" — ยืนยันว่ารับมาปรับตัวถาวรแล้ว ตั้งแต่ข้อความหน้าเป็นต้นไป`,
       [`กฎใหม่: ${rule}`],
@@ -90,21 +148,47 @@ export const rememberHandler: Handler = async (ctx) => {
       }
       const items = (list || []).map((f) => ({ fact: String(f.fact || "").trim(), category: String(f.category || "ทั่วไป").trim() })).filter((f) => f.fact.length >= 4);
       if (items.length) {
-        for (const it of items) await rememberOwnerFact(it.fact, { category: it.category, source: text.slice(0, 300) }).catch(() => {});
+        // ด่านขัดแย้ง: เช็คทั้งชุดในคอลเดียว — ข้อที่ขัดของเดิม "ไม่ลง" แล้วถามเจ้าของแทน (ห้ามทับเงียบ)
+        const conflicts = await findFactConflicts(items.map((i) => i.fact)).catch(() => new Map());
+        const conflictLines: string[] = [];
+        for (const [idx, c] of conflicts) {
+          const it = items[idx as number];
+          if (it) conflictLines.push(`"${it.fact}" ขัดกับที่จำไว้ว่า "${(c as { existingFact: string }).existingFact}"`);
+        }
+        const clean = items.filter((_, i) => !conflicts.has(i));
+        for (const it of clean) await rememberOwnerFact(it.fact, { category: it.category, source: text.slice(0, 300), sourceMsgId: ctx.userChatRowId, sourceChannel: ctx.channel }).catch(() => {});
+        // เก็บคำถามขัดแย้งข้อแรกไว้รอเจ้าของเคาะ (ทีละข้อ — ถามรวดเดียวหลายข้อจะตอบไม่ถูกว่าอันไหน)
+        const firstConflict = [...conflicts.entries()][0] as [number, { existingId: string; existingFact: string }] | undefined;
+        if (firstConflict && items[firstConflict[0]]) {
+          const it = items[firstConflict[0]];
+          await setSetting(CONFLICT_KEY, JSON.stringify({
+            fact: it.fact, category: it.category, source: text.slice(0, 300),
+            sourceMsgId: ctx.userChatRowId, sourceChannel: ctx.channel,
+            existingId: firstConflict[1].existingId, existingFact: firstConflict[1].existingFact, at: Date.now(),
+          } satisfies PendingConflict));
+        }
         // สร้างโปรไฟล์ใหม่ทันที (6 ส.ค. 2026) — ไม่งั้นของที่เพิ่งบอกจะยังไม่ถูกเอาไปใช้
         // จนกว่าแคชเดิมจะหมดอายุ (12 ชม.) เจ้าของบอก "ปรับให้เข้ากับตัวผม" แล้วต้องเปลี่ยนเดี๋ยวนี้
         void import("@/lib/kiki-profile").then((m) => m.buildProfile()).catch(() => {});
         const byCat = new Map<string, number>();
-        for (const it of items) byCat.set(it.category, (byCat.get(it.category) || 0) + 1);
+        for (const it of clean) byCat.set(it.category, (byCat.get(it.category) || 0) + 1);
+        // รายงานตามจริง: ลงกี่ข้อจากกี่ข้อ + ข้อที่ขัดของเดิมต้องถาม ไม่ใช่เคลมว่าฝังหมด (กติกาข้อ 3)
         const block = vexList({
-          title: `ฝังเข้าความจำแล้ว ${items.length} เรื่อง`,
+          title: `ฝังเข้าความจำแล้ว ${clean.length}${conflictLines.length ? `/${items.length}` : ""} เรื่อง`,
           items: [...byCat].map(([cat, n]) => `${cat} — ${n} เรื่อง`),
           note: 'กำลังปรับวิธีตอบให้เข้ากับที่บอกมา · ถามย้อนหลังได้ทุกเมื่อ · อยากดูทั้งหมดบอก "ขอดูรายการที่จำไว้"',
         });
-        return reply([{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }]);
+        const sends: import("../types").Send[] = [{ kind: "text", text: block.text, parseMode: block.parseMode, replyTo: msgId }];
+        if (conflictLines.length) {
+          const ask = await vexLine(
+            `มีข้อมูลใหม่ขัดกับที่จำไว้เดิม ยังไม่ได้บันทึกทับ: ${conflictLines[0]} — ถามเจ้าของว่าจะเอาอันใหม่ (ตอบ "เปลี่ยน") หรือคงของเดิม (ตอบ "คงเดิม")`,
+          );
+          sends.push({ kind: "text", text: ask });
+        }
+        return reply(sends);
       }
       // แตกไม่สำเร็จ = เก็บทั้งก้อนไว้ก่อน ดีกว่าทำข้อมูลเจ้าของหาย แล้วบอกตรง ๆ
-      await rememberOwnerFact(fact.slice(0, 4000), { category: "ทั่วไป", source: text.slice(0, 300) });
+      await rememberOwnerFact(fact.slice(0, 4000), { category: "ทั่วไป", source: text.slice(0, 300), sourceMsgId: ctx.userChatRowId, sourceChannel: ctx.channel });
       return reply([{ kind: "text", text: await vexLine("เก็บข้อความทั้งก้อนไว้แล้วครับ แต่แตกเป็นข้อ ๆ ไม่สำเร็จรอบนี้ — ส่งมาใหม่อีกทีผมจะจัดให้เป็นระเบียบกว่านี้"), replyTo: msgId }]);
     }
 
@@ -114,7 +198,20 @@ export const rememberHandler: Handler = async (ctx) => {
       : /แฟน|แม่|พ่อ|พี่|น้อง|เพื่อน|ครอบครัว|วันเกิด/.test(fact) ? "คนรอบตัว"
       : /รหัส|บัญชี|เลขที่|ทะเบียน|wifi|password/i.test(fact) ? "ของสำคัญ"
       : "ทั่วไป";
-    await rememberOwnerFact(fact, { category, source: text });
+    const r = await rememberOwnerFact(fact, {
+      category, source: text, sourceMsgId: ctx.userChatRowId, sourceChannel: ctx.channel, checkConflict: true,
+    });
+    if (!r.saved && r.conflict) {
+      // ขัดกับความจำเดิม — ห้ามทับเงียบ ๆ ต้องถาม (จิตใจเฟส 2)
+      await setSetting(CONFLICT_KEY, JSON.stringify({
+        fact, category, source: text.slice(0, 300), sourceMsgId: ctx.userChatRowId, sourceChannel: ctx.channel,
+        existingId: r.conflict.existingId, existingFact: r.conflict.existingFact, at: Date.now(),
+      } satisfies PendingConflict));
+      const ask = await vexLine(
+        `ข้อมูลใหม่ "${fact}" ขัดกับที่เคยจำไว้ว่า "${r.conflict.existingFact}" — ยังไม่บันทึกทับ ถามว่าเปลี่ยนใจแล้วหรือผมจำผิด (ตอบ "เปลี่ยน" = เอาอันใหม่ · "คงเดิม" = เก็บของเดิม)`,
+      );
+      return reply([{ kind: "text", text: ask, replyTo: msgId }]);
+    }
     const t = await vexSay(
       `เจ้าของสั่งให้จำ: "${fact}" (หมวด ${category}) — ยืนยันสั้น ๆ ว่าจำถาวรแล้ว`,
       [`จำไว้แล้ว: ${fact}`],
@@ -123,6 +220,66 @@ export const rememberHandler: Handler = async (ctx) => {
     return reply([{ kind: "text", text: t, replyTo: msgId }]);
   }
   return null;
+};
+
+/**
+ * "รู้เรื่องนี้มาจากไหน" — ตอบที่มาของความจำได้ทุกครั้ง (จิตใจเฟส 2 — กฎเหล็ก 6: อธิบายที่มาได้)
+ * ค้นทั้งข้อเท็จจริงและบทเรียน แล้วตอบด้วยหลักฐานจริง: quote + วันเวลา + ช่องทาง
+ * แถวเก่าที่เก็บก่อนมีระบบที่มา = บอกตรง ๆ ห้ามแต่งที่มาขึ้นเอง
+ */
+export const memorySourceHandler: Handler = async (ctx) => {
+  const { text, replyText, msgId, is, reply } = ctx;
+  if (!is("memory_source")) return null;
+
+  const { db } = await import("@/lib/db");
+  // เอาของที่ถูกลบแล้วมาด้วย — เจ้าของมักถามถึงที่มาของ "ความจำเดิมที่เพิ่งเปลี่ยน"
+  // (เจอตอนเทส: ของเก่าถูกปิด active แล้วหลุดจากหลักฐาน สมองเลยแต่งเองว่า "ไม่มีที่มา" ทั้งที่มี)
+  const facts = await db.ownerFact.findMany({ orderBy: { updatedAt: "desc" }, take: 150 }).catch(() => []);
+  const lessons = await db.lessonLearned.findMany({ where: { active: true }, take: 30 }).catch(() => []);
+  const all = [
+    ...facts.map((f) => ({ kind: "fact" as const, id: f.id, text: `${f.fact}${f.active ? "" : " (ถูกลบ/แทนที่ไปแล้ว)"}`, source: f.source, sourceMsgId: f.sourceMsgId, channel: f.sourceChannel, at: f.createdAt })),
+    ...lessons.map((l) => ({ kind: "lesson" as const, id: l.id, text: `${l.whatWasWrong} → ${l.correction}`, source: l.evidence, sourceMsgId: l.evidenceMsgId, channel: null as string | null, at: l.createdAt })),
+  ];
+  if (!all.length) {
+    return reply([{ kind: "text", text: await vexLine("ยังไม่มีความจำในระบบเลยครับ เลยไม่มีที่มาให้เล่า"), replyTo: msgId }]);
+  }
+
+  // หาว่าเจ้าของถามถึงความจำข้อไหน — โมเดลเลือกจากความหมาย (reply ถึงข้อความเก่าก็ใช้ประกอบ)
+  const j = await askGeminiJson<{ ids?: number[] }>(
+    `เจ้าของถามถึง "ที่มา" ของสิ่งที่เลขารู้: """${text.slice(0, 400)}"""${replyText ? `\n(กำลัง reply ถึง: """${replyText.slice(0, 400)}""")` : ""}\n\nความจำทั้งหมด:\n${all.map((a, i) => `${i + 1}. ${a.text.slice(0, 120)}`).join("\n")}\n\nตอบ JSON: {"ids":[เลขข้อที่เจ้าของน่าจะหมายถึง สูงสุด 3]} — ไม่ตรงสักอัน = []`,
+    "",
+    25_000,
+  ).catch(() => null);
+  const picked = (j?.ids || []).map((n) => all[n - 1]).filter(Boolean).slice(0, 3);
+  if (!picked.length) {
+    return reply([{ kind: "text", text: await vexLine("ยังไม่แน่ใจว่าโด้ถามถึงความจำข้อไหนครับ บอกใจความของเรื่องนั้นมาหน่อย เดี๋ยวผมไล่ที่มาให้"), replyTo: msgId }]);
+  }
+
+  // ดึงข้อความต้นทางจริงจากประวัติ (ถ้ามี sourceMsgId)
+  const evidence: string[] = [];
+  for (const p of picked) {
+    const when = p.at.toLocaleString("th-TH-u-ca-gregory", { day: "numeric", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+    if (p.sourceMsgId) {
+      const msg = await db.kikiChat.findUnique({ where: { id: p.sourceMsgId } }).catch(() => null);
+      if (msg) {
+        const msgWhen = msg.createdAt.toLocaleString("th-TH-u-ca-gregory", { day: "numeric", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+        evidence.push(`"${p.text.slice(0, 100)}" ← มาจากข้อความของโด้เมื่อ ${msgWhen} ทาง ${msg.channel}: "${msg.content.slice(0, 180)}"`);
+        continue;
+      }
+    }
+    if (p.source) {
+      evidence.push(`"${p.text.slice(0, 100)}" ← มาจากที่โด้บอกไว้ (บันทึกเมื่อ ${when}${p.channel ? ` ทาง ${p.channel}` : ""}): "${p.source.slice(0, 180)}"`);
+    } else {
+      evidence.push(`"${p.text.slice(0, 100)}" ← บันทึกเมื่อ ${when} แต่เป็นความจำรุ่นก่อนมีระบบเก็บที่มา เลยไม่มีข้อความต้นทางให้ดู`);
+    }
+  }
+
+  const answer = await askKiki(
+    text,
+    `[เจ้าของถามที่มาของความจำ] หลักฐานจริงจากระบบ (ตอบจากนี้เท่านั้น ห้ามแต่งที่มาเพิ่ม):\n${evidence.join("\n")}\n\n` +
+      `เล่าที่มาให้ฟังตรง ๆ พร้อมวันเวลา · ข้อไหนไม่มีที่มาบันทึกไว้ให้ยอมรับตรง ๆ ว่าจำมาก่อนมีระบบบันทึกที่มา ห้ามเดา · ไม่เกิน 4 บรรทัด`,
+  );
+  return reply([{ kind: "text", text: answer, replyTo: msgId }]);
 };
 
 export const forgetHandler: Handler = async (ctx) => {

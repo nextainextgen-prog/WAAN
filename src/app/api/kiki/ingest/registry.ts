@@ -14,7 +14,7 @@ import {
   groupPostHandler, dmHandler, chatSummaryHandler,
 } from "./handlers/telegram";
 import { imageSaveHandler, imageFindHandler } from "./handlers/media";
-import { ruleTeachHandler, ruleListHandler, rememberHandler, forgetHandler, memoryListHandler } from "./handlers/memory";
+import { ruleTeachHandler, ruleListHandler, rememberHandler, forgetHandler, memoryListHandler, factConflictAnswerHandler, memorySourceHandler } from "./handlers/memory";
 import { lessonsListHandler, lessonDeleteHandler } from "./handlers/lessons";
 import { wishHandler, debtHandler, recurringHandler, fitnessHandler, diaryHandler } from "./handlers/life";
 import { linkSaveHandler, researchHandler, docSummaryHandler } from "./handlers/research";
@@ -51,6 +51,8 @@ export const HANDLERS: Handler[] = [
   undoSendHandler,
   // ยืนยัน/แก้ร่างที่อ่านทวนไปแล้ว — ต้องมาก่อนตัวที่สร้างร่างใหม่
   confirmReplyHandler,
+  // คำตอบของคำถาม "ความจำใหม่ขัดของเก่า เอาอันไหน" — มีคำถามค้างเท่านั้นถึงรับ ไม่ยึดเทิร์น
+  factConflictAnswerHandler,
 
   // ทักครั้งแรก + ไฟล์เอกสาร — ต้องมาก่อนตัวอ่านเจตนา
   introHandler,
@@ -58,6 +60,8 @@ export const HANDLERS: Handler[] = [
 
   // กระดานงาน + ความจำบทสนทนา
   tasksHandler,
+  // "รู้เรื่องนี้มาจากไหน" ต้องมาก่อน memoryRecall — ถามถึงที่มา ไม่ใช่ถามเนื้อเรื่องเก่า
+  memorySourceHandler,
   memoryRecallHandler,
 
   // Vex ประเมินตัวเอง — ต้องมาก่อน selfDev และก่อนเส้นทางเงิน

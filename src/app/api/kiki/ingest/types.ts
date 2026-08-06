@@ -43,6 +43,8 @@ export interface Ctx {
   docFiles: { path: string; name: string }[];
   videoFiles: { path: string; name: string }[];
   msgId?: number | string;
+  /** KikiChat.id ของข้อความเจ้าของที่เพิ่งบันทึก — ใช้เป็น "ที่มา" ของความจำ (จิตใจเฟส 2) */
+  userChatRowId?: string | null;
   callbackData: string;
   voiceNote: string; // ข้อความที่ถอดมาจากเสียงที่เจ้าของอัดส่งมา (ว่าง = พิมพ์มา)
   /** กำลัง reply "ภาพหน้าจอเครื่อง" ที่ Vex แคปมาให้ — คำว่าห้อง/ช่อง/แท็บ หมายถึงของในภาพนั้น ไม่ใช่กลุ่มแชท */
@@ -62,6 +64,10 @@ export interface Ctx {
   reply: (sends: Send[]) => Promise<NextResponse>;
   /** เตือนงานที่ผูกเงื่อนไขไว้ — ต่อท้ายคำตอบของเส้นทางไหนก็ได้ */
   setTriggerNote: (note: string) => void;
+  /** แจ้ง "หลักฐานว่าระบบทำจริง" ให้ด่านตรวจก่อนส่ง — ไม่ตั้ง = ด่านตรวจถือว่าไม่มีหลักฐาน
+   *  (6 ส.ค. 2026: ตัวแปร evidence ไม่เคยถูกตั้งเลยตั้งแต่เกิด ด่านตรวจเลยตีความว่าคำยืนยันสั้น ๆ
+   *   "ยังไม่ได้ทำ" แล้วส่งรอบตามเก็บไปงอกความจำซ้ำ) */
+  setEvidence: (e: string) => void;
 }
 
 /**
