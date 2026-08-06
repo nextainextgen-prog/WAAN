@@ -237,6 +237,7 @@ export const memorySourceHandler: Handler = async (ctx) => {
   const facts = await db.ownerFact.findMany({ orderBy: { updatedAt: "desc" }, take: 150 }).catch(() => []);
   const lessons = await db.lessonLearned.findMany({ where: { active: true }, take: 30 }).catch(() => []);
   const all = [
+    // canned-ok: ป้ายสถานะในข้อมูลดิบที่ส่งให้โมเดลเลือก ไม่ใช่ข้อความที่ส่งหาเจ้าของ
     ...facts.map((f) => ({ kind: "fact" as const, id: f.id, text: `${f.fact}${f.active ? "" : " (ถูกลบ/แทนที่ไปแล้ว)"}`, source: f.source, sourceMsgId: f.sourceMsgId, channel: f.sourceChannel, at: f.createdAt })),
     ...lessons.map((l) => ({ kind: "lesson" as const, id: l.id, text: `${l.whatWasWrong} → ${l.correction}`, source: l.evidence, sourceMsgId: l.evidenceMsgId, channel: null as string | null, at: l.createdAt })),
   ];

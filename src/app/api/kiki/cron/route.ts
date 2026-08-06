@@ -302,6 +302,9 @@ export async function POST(req: Request) {
   // ===== C2) เย็น 19:00 — ไล่ถามรายการ "รอระบุ" ที่ค้าง (กันหมวดรอระบุบวมเงียบ ๆ) =====
   try {
     if (mainChat && now.getHours() >= 19 && (await getSetting("kiki_last_pending_nag")) !== today) {
+      // สภาพเจ้าของ (จิตใจเฟส 3): ช่วงควรเงียบ = เลื่อนการทวงไปรอบถัดไป
+      const { ownerPrefersQuiet } = await import("@/lib/kiki-world");
+      if (!(await ownerPrefersQuiet().catch(() => false))) {
       await setSetting("kiki_last_pending_nag", today);
       const pend = await db.financeTxn.findMany({ where: { category: PENDING_CATEGORY }, orderBy: { occurredAt: "asc" }, take: 15 });
       if (pend.length) {
@@ -316,6 +319,7 @@ export async function POST(req: Request) {
         });
         sends.push({ chatId: mainChat, kind: "text", text: block.text, parseMode: block.parseMode });
         await saveKikiChat("assistant", block.text.replace(/<[^>]+>/g, ""));
+      }
       }
     }
   } catch { /* พรุ่งนี้ค่อยถาม */ }
@@ -691,11 +695,15 @@ ${nags.join("\n")}`);
   // ===== J) ค่ำ 21:30 ถามไถ่วันนี้ (journal + mood) =====
   try {
     if (mainChat && now.getHours() >= 21 && now.getMinutes() >= 30 && (await getSetting("kiki_last_journal_ask")) !== today) {
-      await setSetting("kiki_last_journal_ask", today);
-      await setSetting("kiki_journal_pending", today);
-      const t = await askKiki(`[ถามไถ่ก่อนนอน] ทักถามเจ้าของสั้น ๆ ว่าวันนี้เป็นยังไงบ้าง (เล่ามาได้เลย เดี๋ยวจดไดอารี่ให้) — โทนเพื่อนถาม ไม่เกิน 2 บรรทัด อย่าซ้ำกับที่เคยถาม`).catch(() => `วันนี้เป็นไงบ้างครับ เล่าให้ฟังหน่อย เดี๋ยวผมจดไดอารี่ให้ 🗓`);
-      sends.push({ chatId: mainChat, kind: "text", text: t });
-      await saveKikiChat("assistant", t);
+      // สภาพเจ้าของ (จิตใจเฟส 3): อารมณ์ไม่ดี/เหนื่อยอยู่ = เลื่อนไปก่อน (รอบ cron ถัดไปลองใหม่ ไม่ใช่ยกเลิก)
+      const { ownerPrefersQuiet } = await import("@/lib/kiki-world");
+      if (!(await ownerPrefersQuiet().catch(() => false))) {
+        await setSetting("kiki_last_journal_ask", today);
+        await setSetting("kiki_journal_pending", today);
+        const t = await askKiki(`[ถามไถ่ก่อนนอน] ทักถามเจ้าของสั้น ๆ ว่าวันนี้เป็นยังไงบ้าง (เล่ามาได้เลย เดี๋ยวจดไดอารี่ให้) — โทนเพื่อนถาม ไม่เกิน 2 บรรทัด อย่าซ้ำกับที่เคยถาม`).catch(() => `วันนี้เป็นไงบ้างครับ เล่าให้ฟังหน่อย เดี๋ยวผมจดไดอารี่ให้ 🗓`);
+        sends.push({ chatId: mainChat, kind: "text", text: t });
+        await saveKikiChat("assistant", t);
+      }
     }
   } catch { /* พรุ่งนี้ค่อยถาม */ }
 

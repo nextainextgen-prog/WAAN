@@ -921,9 +921,12 @@ export async function askKiki(
     // บทเรียนจากที่เคยโดนตำหนิ — ฉีดทุกคำตอบ ไม่ใช่เก็บไว้เฉย ๆ (จิตใจเฟส 1, 6 ส.ค. 2026)
     import("./kiki-lessons").then((l) => l.lessonsContext()).catch(() => ""),
   ]);
-  const now = new Date();
-  const nowLine = `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
-  const parts = [KIKI_PERSONA, caps, rules, lessons, nowLine, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
+  // สถานะโลกก้อนเดียว (จิตใจเฟส 3) — เวลา นัด งานค้าง งานรัน สภาพเจ้าของ อยู่ในนี้หมด
+  const world = await import("./kiki-world").then((w) => w.worldState()).catch(() => {
+    const now = new Date();
+    return `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
+  });
+  const parts = [KIKI_PERSONA, caps, rules, lessons, world, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
   const sys = parts.join("\n\n");
   // มีรูปแนบ = ต้องเปิดสิทธิ์เครื่องมือ Read ให้ CLI ก่อน
   // (บั๊ก 6 ส.ค. 2026: บอกโมเดลให้ "เปิดอ่านรูปตาม path" มาตลอด แต่ไม่เคยเปิดสิทธิ์ให้
@@ -1066,12 +1069,15 @@ export async function askKikiVoice(
           .catch(() => "")
       : Promise.resolve(""),
   ]);
-  const now = new Date();
+  const world = await import("./kiki-world").then((w) => w.worldState()).catch(() => {
+    const now = new Date();
+    return `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
+  });
   const sys = [
     KIKI_PERSONA,
     rules,
     lessons,
-    `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`,
+    world,
     facts, tasks, focus, convo, extraContext || "",
     gathered
       ? `=== ข้อเท็จจริงที่ระบบไปหามาให้สด ๆ ก่อนตอบ (เชื่อถือได้ ใช้ตอบได้เลย) ===\n${gathered}\n\n` +
