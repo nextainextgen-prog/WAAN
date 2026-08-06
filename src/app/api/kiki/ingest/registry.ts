@@ -8,7 +8,7 @@ import {
   financeRecordHandler,
 } from "./handlers/finance";
 import { socialStatusHandler, socialDraftHandler } from "./handlers/social";
-import { hermesHandler, sayVoiceHandler, voiceAnnounceHandler, voiceModeHandler, devConfirmHandler, selfDevHandler, macHandler, voicePickHandler } from "./handlers/system";
+import { hermesHandler, sayVoiceHandler, voiceAnnounceHandler, voiceModeHandler, devConfirmHandler, devPushHandler, selfDevHandler, macHandler, voicePickHandler } from "./handlers/system";
 import {
   dmConfirmHandler, groupConfirmHandler, createGroupHandler, listChatsHandler, aliasHandler,
   groupPostHandler, dmHandler, chatSummaryHandler,
@@ -55,6 +55,8 @@ export const HANDLERS: Handler[] = [
   factConflictAnswerHandler,
   // คำตอบข้อเสนอ "เลื่อนระดับความอิสระ" — มีข้อเสนอค้างเท่านั้นถึงรับ
   autonomyPromoteHandler,
+  // เคาะ commit ของงานพัฒนา (push/ย้อน) — มีของค้างเท่านั้นถึงรับ
+  devPushHandler,
 
   // ทักครั้งแรก + ไฟล์เอกสาร — ต้องมาก่อนตัวอ่านเจตนา
   introHandler,

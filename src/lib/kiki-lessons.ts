@@ -283,6 +283,28 @@ different=false เมื่อแก้แค่ตัวสะกด/เว้
   });
 }
 
+/**
+ * บทเรียนที่พิสูจน์ตัวเองแล้ว (จิตใจเฟส 7) — 14 วันไม่พลาดซ้ำ + ถูกฉีดใช้จริงสม่ำเสมอ
+ * → รอบสัปดาห์เสนอ "ยกเป็นกฎถาวร" ให้เจ้าของเคาะด้วย "สอนว่า..." (ไม่ยกเอง — กฎใหม่ต้องผ่านเจ้าของ)
+ */
+export async function graduationCandidates(now = new Date()): Promise<Lesson[]> {
+  const cutoff = new Date(now.getTime() - 14 * 86400_000);
+  const rows = await db.lessonLearned.findMany({
+    where: {
+      active: true,
+      createdAt: { lte: cutoff },
+      useCount: { gte: 20 }, // ถูกฉีดเข้าบริบทจริงมาพอสมควร ไม่ใช่บทเรียนที่นอนเฉย ๆ
+      OR: [{ lastRepeatAt: null }, { lastRepeatAt: { lte: cutoff } }],
+    },
+    take: 5,
+  }).catch(() => []);
+  return rows.map((r) => ({
+    id: r.id, trigger: r.trigger, whatIDid: r.whatIDid, whatWasWrong: r.whatWasWrong,
+    correction: r.correction, evidence: r.evidence, severity: r.severity, scope: r.scope,
+    timesRepeated: r.timesRepeated,
+  }));
+}
+
 /** ตัวเลขพลาดซ้ำในช่วงเวลา — เฟส 6/7 ใช้รายงานเทรนด์ (ทุกการอ้างว่าดีขึ้นต้องมีตัวเลข) */
 export async function repeatStats(sinceMs: number): Promise<{ newLessons: number; repeats: number }> {
   const since = new Date(sinceMs);

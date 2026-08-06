@@ -17,7 +17,8 @@ const DEV_RULES = `คุณคือวิศวกรผู้ดูแลร�
 1. อ่านโค้ดที่เกี่ยวก่อนแก้ (โครง: src/lib/kiki.ts=แกน+persona, kiki-finance/calendar/life/gmail/userbot/mac/hermes.ts, ingest=intent ทั้งหมด, cron=งานตามเวลา, scripts/kiki-bot.mjs=ตัวส่ง Telegram)
 2. แก้ schema (ถ้าจำเป็น) → npx prisma db push ก่อน
 3. npx tsc --noEmit ต้องผ่าน — ไม่ผ่านให้แก้จนผ่าน แก้ไม่ได้ให้ git checkout ไฟล์ที่แตะคืนแล้วรายงานว่าล้มเหลวเพราะอะไร
-4. git add เฉพาะไฟล์ที่คุณแก้ → commit ลง main (ข้อความ: "feat(vex-self): <สรุป>" + บรรทัดท้าย "Co-Authored-By: Vex Self-Dev <noreply@anthropic.com>") → git push origin main
+4. git add เฉพาะไฟล์ที่คุณแก้ → commit ลง main (ข้อความ: "feat(vex-self): <สรุป>" + บรรทัดท้าย "Co-Authored-By: Vex Self-Dev <noreply@anthropic.com>")
+   **ห้าม git push เด็ดขาด** — เจ้าของต้องเห็น diff แล้วเคาะเองก่อน ระบบภายนอกเป็นคนถามและ push ให้
 5. ห้ามรัน launchctl/รีสตาร์ทเอง — ระบบภายนอกจะรีสตาร์ทให้หลังคุณจบ
 6. บรรทัดท้ายสุดของคำตอบ: สรุปสิ่งที่ทำ + วิธีใช้/สั่งทดสอบ (ภาษาไทย สั้น อ่านง่าย — ข้อความนี้จะถูกส่งให้เจ้าของใน Telegram)
 
@@ -135,12 +136,25 @@ async function main() {
     where: { id: jobId },
     data: { status: ok ? "done" : "failed", result: tail.slice(0, 8000), error: ok ? null : `exit=${code} commit=${committed} tsc=${tscOk}`, doneAt: new Date(), sentAt: new Date() },
   });
+  // จิตใจเฟส 7: เสนอ diff ให้เจ้าของดูก่อน push เสมอ — commit ค้าง local จนกว่าจะเคาะ
+  let diffNote = "";
+  if (committed) {
+    const stat = sh(`git show --stat --oneline ${after} | head -25`);
+    diffNote = `\n\nสิ่งที่แก้ (commit ${after.slice(0, 7)} ยังอยู่แค่ในเครื่อง ยังไม่ push):\n${stat.slice(0, 1200)}\n\nโอเคพิมพ์ "push ได้เลย" · ไม่เอาพิมพ์ "ย้อนการแก้"`;
+    try {
+      await db.setting.upsert({
+        where: { key: "vex_dev_pending_push" },
+        update: { value: JSON.stringify({ commit: after, at: Date.now() }) },
+        create: { key: "vex_dev_pending_push", value: JSON.stringify({ commit: after, at: Date.now() }) },
+      });
+    } catch { /* เก็บไม่ได้ = เจ้าของยัง push มือได้ */ }
+  }
   const head = ok
     ? `พัฒนาเสร็จแล้วครับ ✅ (commit ${after.slice(0, 7)} — ระบบรีสตาร์ทรันของใหม่แล้ว)`
     : code === 124
       ? `งานพัฒนาใช้เวลาเกิน 45 นาที ผมหยุดไว้ก่อนครับ ⚠️${committed ? ` (มี commit ${after.slice(0, 7)} ค้าง — แจ้งพี่โด้เช็คด้วย)` : " ไม่มีการแก้ไขค้าง"}`
       : `งานพัฒนาไม่สำเร็จครับ ⚠️ (${committed ? `มี commit แต่ tsc ${tscOk ? "ผ่าน" : "ไม่ผ่าน"}` : "ไม่มีการแก้ไขเกิดขึ้น"}) — ส่งเรื่องให้พี่โด้ดูต่อได้`;
-  await tgSend(job.chatId, `${head}\n\nงาน: ${spec.slice(0, 150)}\n\nรายงานจากวิศวกร:\n${tail.slice(-1200)}`);
+  await tgSend(job.chatId, `${head}\n\nงาน: ${spec.slice(0, 150)}\n\nรายงานจากวิศวกร:\n${tail.slice(-1200)}${diffNote}`);
 }
 
 main().then(() => process.exit(0)).catch(async (e) => {

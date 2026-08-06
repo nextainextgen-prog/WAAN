@@ -105,6 +105,7 @@ export async function promoteAction(key: string): Promise<void> {
   const ov = await overrides();
   ov[key] = 1;
   await setSetting(OVERRIDE_KEY, JSON.stringify(ov)).catch(() => {});
+  await logChange("promote", key, "เจ้าของอนุมัติเลื่อนเป็นระดับ 1 (ทำเลยแล้วบอก)");
 }
 
 /** เจ้าของไม่พอใจการกระทำนี้ → กลับไประดับ 2 ทันที + ล้าง streak (บทเรียนบันทึกโดยชั้นบทเรียนอยู่แล้ว) */
@@ -117,6 +118,7 @@ export async function demoteAction(key: string): Promise<void> {
     t[key] = { streak: 0, proposed: false, at: Date.now() };
     await setSetting(TRACK_KEY, JSON.stringify(t)).catch(() => {});
   }
+  await logChange("demote", key, "เจ้าของไม่พอใจ ลดกลับระดับ 2 (ถามก่อนทุกครั้ง)");
 }
 
 // ===== ทางเร็ว / ทางช้า =====
@@ -125,20 +127,77 @@ export async function demoteAction(key: string): Promise<void> {
 // การเรียนรู้: intent ไหนเคยทำให้เกิด "บทเรียน" (เจ้าของตำหนิ) → ยกเพดานความมั่นใจของ intent นั้น
 // ไม่มั่นใจพอ = ตกไปทางช้า — คือการ "ย้ายเรื่องที่เคยพลาดไปทางที่คิดเยอะกว่า" ตามสเปกเจ้าของ
 
-const SLOWPATH_KEY = "vex_slowpath"; // {"finance_itemize":0.7}
+const SLOWPATH_KEY = "vex_slowpath"; // {"finance_itemize":{"min":0.7,"at":ms}} (รุ่นแรกเก็บเป็นเลขเดี่ยว — อ่านได้ทั้งคู่)
 
-export async function slowpathMap(): Promise<Record<string, number>> {
+interface SlowEntry { min: number; at: number }
+
+async function slowpathRaw(): Promise<Record<string, SlowEntry>> {
   try {
-    return JSON.parse((await getSetting(SLOWPATH_KEY)) || "{}") as Record<string, number>;
+    const raw = JSON.parse((await getSetting(SLOWPATH_KEY)) || "{}") as Record<string, number | SlowEntry>;
+    const out: Record<string, SlowEntry> = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = typeof v === "number" ? { min: v, at: 0 } : v;
+    return out;
   } catch {
     return {};
   }
 }
 
+export async function slowpathMap(): Promise<Record<string, number>> {
+  const raw = await slowpathRaw();
+  return Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, v.min]));
+}
+
 /** เจตนานี้เพิ่งทำให้เจ้าของตำหนิ → ยกเพดานความมั่นใจ (ครั้งถัดไปไม่มั่นใจจริงจะตกไปทางช้า) */
 export async function raiseSlowpath(intent: string): Promise<void> {
   if (!intent || intent === "chat" || intent === "error") return;
-  const m = await slowpathMap();
-  m[intent] = 0.7;
+  const m = await slowpathRaw();
+  m[intent] = { min: 0.7, at: Date.now() };
   await setSetting(SLOWPATH_KEY, JSON.stringify(m)).catch(() => {});
+  await logChange("slowpath", intent, "ยกเพดานความมั่นใจเป็น 0.7 หลังเกิดบทเรียน");
+}
+
+/**
+ * ทบทวนทางช้ารายสัปดาห์ (จิตใจเฟส 7): เพดานที่ยกไว้เกิน 14 วันโดยไม่มีบทเรียนใหม่ = พิสูจน์แล้วว่าหาย
+ * → ปลดกลับ (การปรับต้องวัดผลและย้อนกลับได้ ไม่ใช่กองสะสมตลอดไป) · คืนรายชื่อที่ปลดไว้รายงาน
+ */
+export async function reviewSlowpath(now = new Date()): Promise<string[]> {
+  const m = await slowpathRaw();
+  const released: string[] = [];
+  const cutoff = now.getTime() - 14 * 86400_000;
+  for (const [intent, e] of Object.entries(m)) {
+    if (e.at && e.at < cutoff) {
+      delete m[intent];
+      released.push(intent);
+    }
+  }
+  if (released.length) {
+    await setSetting(SLOWPATH_KEY, JSON.stringify(m)).catch(() => {});
+    for (const i of released) await logChange("slowpath-release", i, "ครบ 14 วันไม่มีบทเรียนซ้ำ ปลดกลับทางเร็ว");
+  }
+  return released;
+}
+
+// ===== บันทึกการปรับพฤติกรรม (จิตใจเฟส 7) =====
+// ทุกการเปลี่ยนพฤติกรรมต้องมีร่องรอย — รายงานสัปดาห์เอาไปโชว์ว่า "ปรับอะไรไป ผลเป็นยังไง"
+// เก็บใน Setting เดียวแบบวน 40 รายการ (ไม่สร้างตารางใหม่เพื่อของที่อ่านสัปดาห์ละครั้ง)
+
+const CHANGE_LOG_KEY = "vex_behavior_log";
+
+export interface BehaviorChange { at: number; kind: string; ref: string; note: string }
+
+export async function logChange(kind: string, ref: string, note: string): Promise<void> {
+  try {
+    const log = JSON.parse((await getSetting(CHANGE_LOG_KEY)) || "[]") as BehaviorChange[];
+    log.push({ at: Date.now(), kind, ref, note: note.slice(0, 150) });
+    await setSetting(CHANGE_LOG_KEY, JSON.stringify(log.slice(-40)));
+  } catch { /* บันทึกไม่ได้ก็ข้าม */ }
+}
+
+export async function recentChanges(sinceMs: number): Promise<BehaviorChange[]> {
+  try {
+    const log = JSON.parse((await getSetting(CHANGE_LOG_KEY)) || "[]") as BehaviorChange[];
+    return log.filter((c) => c.at >= sinceMs);
+  } catch {
+    return [];
+  }
 }

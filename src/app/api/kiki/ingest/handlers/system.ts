@@ -119,6 +119,56 @@ export const voiceModeHandler: Handler = async (ctx) => {
   return null;
 };
 
+/**
+ * เจ้าของเคาะ commit ที่งานพัฒนาทิ้งค้างไว้ (จิตใจเฟส 7 — เสนอ diff ก่อน push เสมอ)
+ * "push ได้เลย" = push ขึ้น origin · "ย้อนการแก้" = revert commit นั้น (ยังเป็น commit ใหม่ ย้อนกลับได้อีก)
+ * มีของค้างเท่านั้นถึงรับ — ไม่ยึดเทิร์น · ห้าม \b กับคำไทย
+ */
+export const devPushHandler: Handler = async (ctx) => {
+  const { text, msgId, reply } = ctx;
+  let pending: { commit: string; at: number } | null = null;
+  try {
+    pending = JSON.parse((await getSetting("vex_dev_pending_push")) || "null") as { commit: string; at: number } | null;
+  } catch { pending = null; }
+  if (!pending?.commit || Date.now() - pending.at > 24 * 3600_000) return null;
+  const t = text.trim();
+  if (t.length > 30) return null;
+
+  const run = async (cmd: string[]): Promise<{ ok: boolean; out: string }> => {
+    const { execFile } = await import("node:child_process");
+    return new Promise((resolve) => {
+      execFile("git", cmd, { cwd: process.cwd(), timeout: 60_000 }, (err, stdout, stderr) =>
+        resolve({ ok: !err, out: `${stdout}${stderr}`.trim().slice(0, 300) }));
+    });
+  };
+
+  if (/(ย้อนการแก้|ย้อน commit|ไม่เอาการแก้|revert)/i.test(t)) {
+    const r = await run(["revert", "--no-edit", pending.commit]);
+    await setSetting("vex_dev_pending_push", "");
+    ctx.setEvidence(r.ok ? `ระบบ revert commit ${pending.commit.slice(0, 7)} แล้วจริง` : `revert ไม่สำเร็จ: ${r.out}`);
+    return reply([{
+      kind: "text",
+      text: r.ok
+        ? await vexLine(`ย้อนการแก้ ${pending.commit.slice(0, 7)} ให้แล้วครับ โค้ดกลับเป็นเหมือนก่อนพัฒนา (ตัว revert เป็น commit ใหม่ ถ้าเปลี่ยนใจย้อนกลับได้อีก)`)
+        : `ย้อนไม่สำเร็จครับ ⚠️ ${r.out}`, // canned-ok: ผล git ต้องตรงตัว
+      replyTo: msgId,
+    }]);
+  }
+  if (/(push ได้|push เลย|พุชได้|พุชเลย|ส่งขึ้นได้)/i.test(t)) {
+    const r = await run(["push", "origin", "main"]);
+    await setSetting("vex_dev_pending_push", "");
+    ctx.setEvidence(r.ok ? `ระบบ push commit ${pending.commit.slice(0, 7)} ขึ้น origin/main แล้วจริง` : `push ไม่สำเร็จ: ${r.out}`);
+    return reply([{
+      kind: "text",
+      text: r.ok
+        ? await vexLine(`push ขึ้น origin/main แล้วครับ (${pending.commit.slice(0, 7)})`)
+        : `push ไม่สำเร็จครับ ⚠️ ${r.out}`, // canned-ok: ผล git ต้องตรงตัว
+      replyTo: msgId,
+    }]);
+  }
+  return null;
+};
+
 export const devConfirmHandler: Handler = async (ctx) => {
   const { chatId, text, msgId, channel, reply } = ctx;
   // ===== พัฒนาตัวเอง: ยืนยัน/ยกเลิก =====

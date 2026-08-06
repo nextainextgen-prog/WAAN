@@ -130,13 +130,35 @@ export async function weeklySelfReview(now = new Date()): Promise<string> {
   const lessons = await db.lessonLearned.findMany({ where: { active: true }, orderBy: { timesRepeated: "desc" }, take: 10 }).catch(() => []);
   const log = chats.map((c) => `${c.role === "user" ? "เจ้าของ" : "Vex"}: ${c.content.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").slice(0, 180)}`).join("\n");
 
+  // จิตใจเฟส 7 — วงจรพัฒนาตัวเอง: การปรับที่ทำไป · ที่พิสูจน์แล้ว · ที่ครบกำหนดปลด
+  const extras: string[] = [];
+  try {
+    const { graduationCandidates } = await import("./kiki-lessons");
+    const grads = await graduationCandidates(now);
+    if (grads.length) {
+      extras.push(`บทเรียนที่พิสูจน์ตัวเองแล้ว (14 วันไม่พลาดซ้ำ ถูกใช้จริง) — ควรเสนอยกเป็นกฎถาวร:\n${grads.map((g) => `- ${g.correction}`).join("\n")}`);
+    }
+  } catch { /* ข้าม */ }
+  try {
+    const { reviewSlowpath, recentChanges } = await import("./kiki-autonomy");
+    const released = await reviewSlowpath(now);
+    if (released.length) extras.push(`เจตนาที่ปลดกลับทางเร็วสัปดาห์นี้ (ครบ 14 วันไม่มีบทเรียนซ้ำ): ${released.join(", ")}`);
+    const changes = await recentChanges(now.getTime() - 7 * 86400_000);
+    if (changes.length) {
+      extras.push(`การปรับพฤติกรรมที่เกิดสัปดาห์นี้ (ของจริงจากบันทึก):\n${changes.slice(-10).map((c) => `- [${c.kind}] ${c.ref}: ${c.note}`).join("\n")}`);
+    }
+  } catch { /* ข้าม */ }
+
   return await askKiki(
     `[รีวิวตัวเองรายสัปดาห์ — ต้องอิงตัวเลขจริง ห้ามอ้างว่าดีขึ้น/แย่ลงลอย ๆ]\n\n` +
       `ตัวเลขจริงสัปดาห์นี้: บทเรียนใหม่ ${current.newLessons} · **พลาดซ้ำ ${current.repeats} ครั้ง** · เทิร์นน่าสงสัย ${current.suspects}\n${trend}\n\n` +
       (lessons.length ? `บทเรียนที่ยังติดตัว (เรียงตามพลาดซ้ำ):\n${lessons.map((l) => `- ${l.whatWasWrong}${l.timesRepeated ? ` (ซ้ำ ${l.timesRepeated})` : ""}`).join("\n")}\n\n` : "") +
-      `บทสนทนา 7 วัน:\n${log.slice(0, 11_000)}\n\n` +
+      (extras.length ? `${extras.join("\n\n")}\n\n` : "") +
+      `บทสนทนา 7 วัน:\n${log.slice(0, 10_000)}\n\n` +
       `เขียนรีวิว: 1) ตัวเลขพลาดซ้ำสัปดาห์นี้เทียบก่อน — ดีขึ้นหรือแย่ลง บอกตรง ๆ ด้วยตัวเลข ` +
-      `2) พลาดเรื่องเดิมเรื่องไหนซ้ำบ้าง 3) เสนอ "กฎใหม่ 2-3 ข้อ" ที่จะกันไม่ให้พลาดซ้ำ (สั้น ทำได้จริง) ` +
-      `ปิดท้ายบอกเจ้าของว่าเห็นด้วยข้อไหนพิมพ์ "สอนว่า <กฎ>" มาได้เลยจะจำถาวร — ไม่เกิน 12 บรรทัด`,
+      `2) พลาดเรื่องเดิมเรื่องไหนซ้ำบ้าง 3) การปรับที่ทำไปแล้วได้ผล/ไม่ได้ผล (จากบันทึกการปรับ ถ้ามี) ` +
+      `4) บทเรียนที่พิสูจน์แล้ว (ถ้ามี) เสนอยกเป็นกฎถาวรพร้อมข้อความ "สอนว่า <กฎ>" ให้ก็อปได้เลย ` +
+      `5) เสนอ "กฎใหม่ 2-3 ข้อ" กันพลาดซ้ำ (สั้น ทำได้จริง) ` +
+      `ปิดท้ายบอกเจ้าของว่าเห็นด้วยข้อไหนพิมพ์ "สอนว่า <กฎ>" มาได้เลยจะจำถาวร — ไม่เกิน 14 บรรทัด`,
   ).catch(() => "");
 }
