@@ -901,6 +901,25 @@ export async function findPersonalImages(query: string, maxResults = 4): Promise
 
 // ===== สมองของ kiki =====
 
+/**
+ * คำขึ้นต้นของ 3 คำตอบล่าสุด (จิตใจเฟส 4 — 6 ส.ค. 2026)
+ * "ห้ามขึ้นต้นซ้ำ" ที่สั่งไว้ใน persona ไม่เคยได้ผลจริง เพราะโมเดลไม่รู้ว่าตัวเองเพิ่งพูดขึ้นต้นว่าอะไร
+ * ก้อนนี้เอาของจริงมาให้เห็น — เทียบตรงเป๊ะเท่านั้น (แค่กันขึ้นต้นชุดเดิม ไม่ใช่เรื่อง semantic)
+ */
+async function recentOpeners(): Promise<string> {
+  const rows = await db.kikiChat.findMany({
+    where: { role: "assistant", scope: "owner", NOT: { channel: "event" } },
+    orderBy: { createdAt: "desc" },
+    take: 3,
+    select: { content: true },
+  });
+  const heads = rows
+    .map((r) => r.content.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 22))
+    .filter((h) => h.length >= 6);
+  if (!heads.length) return "";
+  return `คำตอบ 3 ครั้งล่าสุดของคุณขึ้นต้นว่า: ${heads.map((h) => `"${h}…"`).join(" · ")}\nห้ามขึ้นต้นคำตอบครั้งนี้ด้วยคำ/วลีเดียวกับพวกนี้ — เปลี่ยนวิธีเปิดประโยคใหม่`;
+}
+
 export async function askKiki(
   message: string,
   extraContext?: string,
@@ -926,7 +945,10 @@ export async function askKiki(
     const now = new Date();
     return `ตอนนี้คือ ${now.toLocaleString("th-TH-u-ca-gregory", { dateStyle: "full", timeStyle: "short" })}`;
   });
-  const parts = [KIKI_PERSONA, caps, rules, lessons, world, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
+  // ห้ามขึ้นต้นซ้ำ (จิตใจเฟส 4) — persona สั่ง "ห้ามขึ้นต้นซ้ำ" มานานแล้ว
+  // แต่โมเดลไม่เคยเห็นว่าตัวเองเพิ่งขึ้นต้นว่าอะไร = สั่งลอย ๆ ไม่มีทางทำตามได้จริง
+  const openers = await recentOpeners().catch(() => "");
+  const parts = [KIKI_PERSONA, caps, rules, lessons, world, openers, profile, facts, tasks, focus, memory, convo, extraContext || ""].filter(Boolean);
   const sys = parts.join("\n\n");
   // มีรูปแนบ = ต้องเปิดสิทธิ์เครื่องมือ Read ให้ CLI ก่อน
   // (บั๊ก 6 ส.ค. 2026: บอกโมเดลให้ "เปิดอ่านรูปตาม path" มาตลอด แต่ไม่เคยเปิดสิทธิ์ให้
