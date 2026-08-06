@@ -1,4 +1,5 @@
 import { geminiFetch } from "./gemini-usage";
+import type { Send } from "@/app/api/kiki/ingest/types";
 
 /**
  * ตรวจคำตอบตัวเองก่อนส่ง (เจ้าของสั่ง 6 ส.ค. 2026)
@@ -112,5 +113,59 @@ export async function reviewAnswer(question: string, answer: string, evidence = 
     };
   } catch {
     return { ...nope, ms: Date.now() - t0 }; // ตรวจไม่ได้ = ปล่อยผ่าน ห้ามทำให้คำตอบหาย
+  }
+}
+
+/**
+ * ตัดข้อความที่ "พูดเรื่องเดิมด้วยคำใหม่" ออก (6 ส.ค. 2026)
+ *
+ * เจ้าของเจอเอง: สอนกฎหนึ่งข้อ แล้วได้ 3 บับเบิลที่พูดเรื่องเดียวกันติดกัน
+ *   "รับทราบครับว่าต้องการให้เพิ่มอิโมจิ ✅ ... จะจดจำไว้เป็นนิสัยถาวร"
+ *   "รับทราบครับโด้ ต่อไปเวลาแจ้งว่าจดงานเข้ากระดาน ผมจะปิดท้ายด้วย ✅ ทุกครั้ง"
+ *   "ตรวจความจำแล้วด้วย กฎนี้ถูกบันทึกถาวรเรียบร้อย"
+ *
+ * **วิธีที่ลองแล้วไม่ได้ผล:** วัดความคล้ายของตัวอักษร (Jaccard บน 3-gram)
+ * สามคู่นี้ได้แค่ 16% / 3% / 2% — แยกไม่ออกจากข้อความคนละเรื่องซึ่งอยู่ที่ 2-4%
+ * ภาษาไทยพูดเรื่องเดียวกันด้วยคำคนละชุดได้สนิท เกณฑ์ตัวเลขจึงใช้ไม่ได้เลย
+ *
+ * → ให้สมองตัดสินจากความหมาย · ตัดสินไม่ได้/ล่ม = เก็บทุกก้อนไว้ (ห้ามทำข้อมูลหาย)
+ */
+export async function dropRepeats(sends: Send[]): Promise<Send[]> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  const idx = sends.map((s, i) => ({ s, i })).filter(({ s }) => s.kind === "text" && s.text && !s.chatId && !s.parseMode);
+  if (!key || idx.length < 2) return sends;
+
+  try {
+    const listed = idx.map(({ s }, n) => `[${n + 1}] ${s.text!.slice(0, 900)}`).join("\n\n");
+    const res = await geminiFetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: `ข้อความหลายก้อนกำลังจะถูกส่งติดกันในแชทเดียว หาว่าก้อนไหน "พูดเรื่องเดิมซ้ำ" กับก้อนก่อนหน้า
+
+ตอบ JSON เท่านั้น: {"drop":[เลขก้อนที่ควรตัดทิ้ง]}
+
+นับว่าซ้ำเมื่อ: ใจความหลักเหมือนก้อนก่อนหน้า แม้ใช้คำคนละชุด (เช่น ยืนยันเรื่องเดียวกัน 3 รอบ)
+ไม่นับว่าซ้ำเมื่อ: เพิ่มข้อมูลใหม่ · ตัวเลขใหม่ · ถามคำถามใหม่ · เป็นคนละหัวข้อ
+เก็บก้อนที่ให้ข้อมูลครบที่สุดไว้เสมอ · ไม่มีก้อนไหนซ้ำให้ตอบ {"drop":[]}` }] },
+          contents: [{ role: "user", parts: [{ text: listed }] }],
+          generationConfig: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } },
+        }),
+        signal: AbortSignal.timeout(20_000),
+      },
+      "review",
+    );
+    const j = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const raw = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
+    const drop = (JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || "{}") as { drop?: number[] }).drop || [];
+    if (!drop.length) return sends;
+    // กันพัง: ห้ามตัดจนไม่เหลือข้อความเลย
+    const kill = new Set(drop.map((n) => idx[n - 1]?.i).filter((v) => v !== undefined));
+    if (kill.size >= idx.length) return sends;
+    return sends.filter((_, i) => !kill.has(i));
+  } catch {
+    return sends;
   }
 }
