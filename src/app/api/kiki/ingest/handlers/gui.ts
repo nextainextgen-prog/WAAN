@@ -16,6 +16,10 @@ export const guiHandler: Handler = async (ctx) => {
   const { msgId, route, is, arg, reply } = ctx;
   if (!is("gui_type") && !is("gui_switch") && !is("warp_cmd")) return null;
 
+  // แนบรูปมาเองแล้วให้ "ไปดู" = ให้ดูรูปที่แนบ ไม่ใช่ไปเปิดแอปบนจอมาส่อง
+  // (คู่กับกันชนตัวเดียวกันใน macHandler — เคสจริง 6 ส.ค. 2026)
+  if (is("gui_switch") && ctx.imageFiles.length && !/หน้าจอ|แคป|แท็บ|เปิดแอป|\bwarp\b|โครม|chrome/i.test(ctx.text)) return null;
+
   const { typeInApp, switchTo, runInWarp, guessAppFromText, currentAppName } = await import("@/lib/kiki-gui");
   // ตัวอ่านเจตนาบางรอบกรอก args ไม่ครบ (ใช้ชื่อคีย์อื่น/ไม่ใส่ชื่อแอป) — เดาต่อเองแทนที่จะถามกลับ
   // ลำดับ: ที่สั่งมาตรง ๆ → Warp (ถ้าเป็นคำสั่งเทอร์มินัล) → เดาจากคำพูด → แอปที่อยู่บนจอ (ตอน reply ภาพหน้าจอ)

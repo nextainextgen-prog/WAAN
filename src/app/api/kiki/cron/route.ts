@@ -9,7 +9,7 @@ import { eventCardHtml, agendaCardHtml, weatherFor, evStart, evEnd, fmtCountdown
 import { dueRecurrings, debtNagFacts, weeklyReportFacts, debtDueReminders, autoRememberFromToday } from "@/lib/kiki-life";
 import { pollBankEmails } from "@/lib/kiki-gmail";
 import { collectHermesDeliveries, collectJobPings, markDelivered } from "@/lib/kiki-hermes";
-import { tasksToNag, markNagged } from "@/lib/kiki-tasks";
+import { tasksToNag, markNagged, openTasks } from "@/lib/kiki-tasks";
 import { rollupRecentDays } from "@/lib/kiki-memory";
 import { vexSections, vexList, type VexSection, type VexRow } from "@/lib/kiki-format";
 import { askClaude } from "@/lib/claude";
@@ -257,19 +257,37 @@ export async function POST(req: Request) {
           : ["ไม่มีรายการ"],
       });
 
-      // งานค้างในกระดาน (ระบบใหม่ 4 ส.ค.) — ทวงเช้าละครั้ง
-      const nagTasks = await tasksToNag(now).catch(() => []);
-      if (nagTasks.length) {
+      // ===== งานค้างในกระดาน — บรีฟเช้าต้องโชว์ "ทั้งกระดาน" =====
+      //
+      // เจ้าของจับได้ 7 ส.ค. 2026: จดไว้ 4 งาน บรีฟเช้าแจ้งมางานเดียว
+      // เพราะเดิมใช้ลิสต์ของ tasksToNag() ซึ่งเป็น "เกณฑ์ทวง" (เลยกำหนด / เก่ากว่า 20 ชม. /
+      // สำคัญ / ยังไม่เคยทวงใน 20 ชม.) มาเป็นลิสต์ "แสดงผล" — งานที่เพิ่งจดเมื่อวานเย็น
+      // จึงหายไปทั้งหมด ทั้งที่บรีฟเช้าคือที่เดียวที่เจ้าของเปิดดูว่าวันนี้ต้องทำอะไร
+      // ตอนนี้: แสดงทุกงานที่ยังเปิดอยู่ · ใช้เกณฑ์ทวงแค่ติดดาวว่าตัวไหนควรลงมือก่อน
+      const [allOpen, nagTasks] = await Promise.all([
+        openTasks().catch(() => []),
+        tasksToNag(now).catch(() => []),
+      ]);
+      if (allOpen.length) {
+        const nagIds = new Set(nagTasks.map((t) => t.id));
         await markNagged(nagTasks.map((t) => t.id)).catch(() => {});
+        const shown = [...allOpen].sort((a, b) => Number(nagIds.has(b.id)) - Number(nagIds.has(a.id)));
         sections.push({
           icon: "📌",
           head: "งานค้างในกระดาน",
-          sub: `${nagTasks.length} งาน`,
-          lines: nagTasks.slice(0, 10).map((t) => {
+          sub: `${allOpen.length} งาน${nagTasks.length ? ` · ต้องลงมือ ${nagTasks.length}` : ""}`,
+          lines: shown.slice(0, 12).map((t) => {
             const days = Math.floor((now.getTime() - t.createdAt.getTime()) / 86400_000);
-            return { main: t.title, value: days >= 1 ? `ค้างมา ${days} วัน` : undefined };
+            const due = t.dueDate ? Math.ceil((t.dueDate.getTime() - now.getTime()) / 86400_000) : null;
+            const val = due !== null
+              ? due < 0 ? `เลยกำหนด ${-due} วัน` : due === 0 ? "ครบกำหนดวันนี้" : `อีก ${due} วัน`
+              : days >= 1 ? `ค้างมา ${days} วัน` : "จดไว้วันนี้";
+            return { main: `${nagIds.has(t.id) ? "‼️ " : ""}${t.title}`, value: val };
           }),
         });
+        if (allOpen.length > 12) {
+          sections[sections.length - 1].lines.push({ main: `…และอีก ${allOpen.length - 12} งาน (ขอลิสต์เต็มได้ตลอด)`, lead: "→" });
+        }
       }
 
       if (pendingRows.length) {
