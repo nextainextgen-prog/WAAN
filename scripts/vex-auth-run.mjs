@@ -62,7 +62,10 @@ let fed = 0;
 const pump = setInterval(() => {
   let lines = [];
   try {
-    lines = fs.readFileSync(F("in"), "utf8").split("\n").filter((l) => l.length > 0);
+    // ตัดเฉพาะ "บรรทัดว่างท้ายไฟล์" ที่เกิดจาก \n ปิดท้าย — บรรทัดว่างจริง ๆ ต้องเก็บไว้
+    // (ตอบ "ไม่มี 2FA" = กด Enter เปล่า ๆ ของเดิมกรองทิ้งหมด เลยป้อนคำตอบว่างไม่ได้เลย)
+    lines = fs.readFileSync(F("in"), "utf8").split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
   } catch { return; }
   while (fed < lines.length) {
     try { child.stdin.write(`${lines[fed]}\n`); } catch { /* stdin ปิดไปแล้ว */ }

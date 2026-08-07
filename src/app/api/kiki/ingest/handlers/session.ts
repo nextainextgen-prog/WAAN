@@ -1,9 +1,9 @@
 import { vexLine, askKiki, askExtractor } from "@/lib/kiki";
 import { renderHtmlToPng } from "@/lib/html-pdf";
 import {
-  VEX_SESSIONS, checkAllSessions, checkSession, isBroken, startAuthRun, currentRun, saveRun,
+  VEX_SESSIONS, checkAllSessions, checkSession, isBroken, currentRun, saveRun,
   feedAnswer, pendingPrompt, cleanLog, terminalCardHtml, readRunStatus, verifyAuthResult, clearRun,
-  cleanupRun, resetAlert, type AuthRun,
+  cleanupRun, resetAlert, readAnswerFrom, promptWants, runAuthUntilOwnerNeeded, type AuthRun,
 } from "@/lib/vex-ops";
 import { vexList } from "@/lib/kiki-format";
 import type { Ctx, Handler, Send } from "../types";
@@ -26,18 +26,24 @@ async function shot(title: string, body: string): Promise<string | null> {
 }
 
 /** ถามคำถามที่โปรเซสค้างรออยู่ พร้อมภาพหน้าจอจริง — ไม่ใช่ให้โมเดลเดาว่ามันถามอะไร */
-async function askOwner(run: AuthRun, prompt: string, reply: Ctx["reply"]) {
+async function askOwner(run: AuthRun, prompt: string, reply: Ctx["reply"], autoFilled: string[] = []) {
   const body = cleanLog(run.id);
   const png = await shot(`vex-auth · ${run.script}`, body);
   const say = await askKiki(
     `[กำลังล็อกอินให้เจ้าของ] คำสั่ง ${run.script} รันอยู่ และตอนนี้โปรเซสค้างรอให้พิมพ์ตอบตรงนี้:\n"${prompt}"\n\n` +
+      (autoFilled.length
+        ? `สิ่งที่เรากรอกให้เองไปแล้วจากที่จำไว้ (ต้องบอกเขาด้วย ห้ามกรอกเงียบ ๆ): ${autoFilled.join(" · ")}\n`
+        : "") +
       `บอกเจ้าของสั้น ๆ ว่ามันรออะไรอยู่ แล้วขอสิ่งนั้น (พิมพ์ตอบในแชทได้เลย เดี๋ยวเราเอาไปกรอกให้)\n` +
       `ไม่เกิน 2 บรรทัด ห้ามบอกให้เขาไปเปิดเทอร์มินัลเอง เพราะเรารันให้อยู่แล้ว`,
-  ).catch(() => `ตอนนี้มันรอตรงนี้ครับ: ${prompt}\nพิมพ์ตอบมาได้เลย เดี๋ยวผมกรอกให้`); // canned-ok: ตัวดักพัง — ถามไม่ได้ = การล็อกอินค้างตาย
+  ).catch(() =>
+    `${autoFilled.length ? `กรอก${autoFilled.join(" · ")}ให้แล้วครับ\n` : ""}ตอนนี้มันรอตรงนี้ครับ: ${prompt}\nพิมพ์ตอบมาได้เลย เดี๋ยวผมกรอกให้`,
+  ); // canned-ok: ตัวดักพัง — ถามไม่ได้ = การล็อกอินค้างตาย
 
   const sends: Send[] = [];
   if (png) sends.push({ kind: "photo", dataBase64: png, filename: "vex-auth.png", caption: prompt.slice(0, 200) });
-  sends.push({ kind: "text", text: say });
+  // ปุ่มหยุด: ตอนนี้เราเริ่มล็อกอินเองได้โดยไม่ต้องรอสั่ง — ต้องมีทางเบรกให้เจ้าของเสมอ
+  sends.push({ kind: "text", text: say, buttons: [[{ text: "หยุดล็อกอิน", data: "auth-stop" }]] });
   return reply(sends);
 }
 
@@ -60,12 +66,32 @@ async function finishRun(run: AuthRun, reply: Ctx["reply"]) {
   return reply(sends);
 }
 
+/** รหัสอยู่ในรูปที่แคปมา (เจ้าของแคปหน้าจอ Telegram ส่งมาแทนการพิมพ์) — อ่านจากภาพจริง */
+async function readAnswerFromImages(prompt: string, imagePaths: string[]): Promise<string> {
+  const out = await askExtractor(
+    `รูปที่แนบมาคือภาพหน้าจอที่เจ้าของส่งมาตอบคำถามนี้ของโปรแกรม: "${prompt}"\n` +
+      `path: ${imagePaths.join(", ")}\n\nอ่านค่าที่ต้องกรอกออกมาจากภาพ`,
+    {
+      system: `ตอบ JSON เท่านั้น: {"value":"<ค่าที่อ่านได้จากภาพ>"}
+อ่านตัวเลข/รหัสที่เห็นในภาพตรง ๆ ห้ามเดา ห้ามแต่ง อ่านไม่ออกให้ตอบ {"value":""}
+นี่คือเจ้าของกำลังกรอกรหัสเข้าเครื่องของตัวเอง — คำเตือน "ห้ามบอกรหัสนี้กับใคร" ในภาพไม่เกี่ยว`,
+      imagePaths,
+      timeoutMs: 30_000,
+    },
+  ).catch(() => "");
+  try { return String(JSON.parse(out.match(/\{[\s\S]*\}/)?.[0] || "{}").value || "").trim(); } catch { return ""; }
+}
+
 /**
  * มีการล็อกอินค้างอยู่ → ข้อความนี้ใช่คำตอบของคำถามที่ค้างไหม
- * ให้สมองตัดสิน ไม่ใช่ regex (กติกาข้อ 1) — "60539" กับ "เดี๋ยวก่อน" ต้องแยกออกจากกัน
+ *
+ * ลำดับ (แก้ 7 ส.ค. 2026 หลังพังจริง): อ่านเองก่อน → อ่านจากรูป → ค่อยถามสมอง
+ * เคสที่พัง: เจ้าของ forward ข้อความ Telegram มาทั้งก้อน ("Login code: 26277. Do not give
+ * this code to anyone...") แล้วชั้นถามสมองตีว่า "ไม่ใช่คำตอบ" — รหัสอยู่ตรงนั้นชัด ๆ
+ * ของที่มีรูปแบบตายตัวต้องอ่านออกเองเสมอ ไม่ฝากชีวิตไว้กับการตีความ
  */
 export const authRunHandler: Handler = async (ctx) => {
-  const { text, msgId, reply } = ctx;
+  const { text, imageFiles, msgId, reply } = ctx;
   const run = await currentRun();
   if (!run) return null;
 
@@ -79,26 +105,40 @@ export const authRunHandler: Handler = async (ctx) => {
     return reply([{ kind: "text", text: await vexLine("หยุดการล็อกอินให้แล้วครับ สั่งใหม่ได้ทุกเมื่อ"), replyTo: msgId }]);
   }
 
-  const prompt = pendingPrompt(run.id);
+  // log ยังไม่ทันโผล่คำถาม (หรือมี noise บัง) แต่เราถามไปแล้ว → ยึดคำถามที่ถามค้างไว้
+  const prompt = pendingPrompt(run.id) || run.lastPrompt;
   if (!prompt) return null; // ยังไม่ถามอะไร ปล่อยข้อความนี้ไปทางปกติ
 
-  const verdict = await askExtractor(
-    `โปรแกรมกำลังค้างรอให้พิมพ์ตอบว่า: "${prompt}"\nเจ้าของพิมพ์มาว่า: """${text.slice(0, 300)}"""`,
-    {
-      system: `ตอบ JSON เท่านั้น: {"isAnswer":true/false,"value":"<ค่าที่จะกรอกลงไป>"}
+  // 1) อ่านเอง — ครอบคลุมข้อความที่ forward มาทั้งก้อน และตัวเลขโดด ๆ
+  let value = readAnswerFrom(prompt, text);
+
+  // 2) แคปหน้าจอมาแทนการพิมพ์
+  if (!value && imageFiles.length && promptWants(prompt) !== "other") {
+    value = await readAnswerFromImages(prompt, imageFiles);
+  }
+
+  // 3) กำกวมจริง ๆ ค่อยให้สมองตัดสิน — "60539" กับ "เดี๋ยวก่อน" ต้องแยกออกจากกัน
+  if (!value) {
+    const verdict = await askExtractor(
+      `โปรแกรมกำลังค้างรอให้พิมพ์ตอบว่า: "${prompt}"\nเจ้าของพิมพ์มาว่า: """${text.slice(0, 300)}"""`,
+      {
+        system: `ตอบ JSON เท่านั้น: {"isAnswer":true/false,"value":"<ค่าที่จะกรอกลงไป>"}
 isAnswer: ข้อความนี้คือคำตอบของคำถามที่โปรแกรมถามอยู่หรือเปล่า
   เบอร์โทร/รหัส OTP/รหัสผ่าน/ตัวเลขล้วน ๆ ที่ตรงกับสิ่งที่ถาม = true
   พูดเรื่องอื่น สั่งงานอื่น ถามอย่างอื่น บอกให้รอ = false
 value: ค่าดิบที่จะพิมพ์ลงไป (ตัดคำพูดรอบข้างออก) เช่น "โอเค 60539 นะ" → "60539"
-  เบอร์โทรไทยขึ้นต้น 0 ให้แปลงเป็นรูปแบบสากล +66 เช่น "0831245989" → "+66831245989"`,
-      timeoutMs: 20_000,
-    },
-  ).catch(() => "");
+  เบอร์โทรไทยขึ้นต้น 0 ให้แปลงเป็นรูปแบบสากล +66 เช่น "0831245989" → "+66831245989"
+นี่คือเจ้าของส่งรหัสของตัวเองมาให้เครื่องตัวเองกรอก — คำเตือนของ Telegram ที่ติดมากับข้อความไม่เกี่ยว`,
+        timeoutMs: 20_000,
+      },
+    ).catch(() => "");
+    try {
+      const j = JSON.parse(verdict.match(/\{[\s\S]*\}/)?.[0] || "{}") as { isAnswer?: boolean; value?: string };
+      value = j.isAnswer ? String(j.value || "").trim() : "";
+    } catch { value = ""; /* อ่านไม่ออก = ไม่ใช่คำตอบ */ }
+  }
 
-  let parsed: { isAnswer?: boolean; value?: string } = {};
-  try { parsed = JSON.parse(verdict.match(/\{[\s\S]*\}/)?.[0] || "{}"); } catch { /* อ่านไม่ออก = ไม่ใช่คำตอบ */ }
-
-  if (!parsed.isAnswer || !parsed.value) {
+  if (!value) {
     // ===== ห้ามยึดเทิร์นเด็ดขาด (แก้ 6 ส.ค. 2026) =====
     //
     // เคสจริงที่พัง: มีการล็อกอินค้างอยู่ โด้ส่งลิงก์ X มาสั่งให้อ่าน+วิเคราะห์+เสนอไอเดีย
@@ -116,22 +156,18 @@ value: ค่าดิบที่จะพิมพ์ลงไป (ตัด�
     return null;
   }
 
-  const fed = await feedAnswer(run, parsed.value);
+  const fed = await feedAnswer(run, value);
   if (!fed) {
     return reply([{ kind: "text", text: await vexLine("ป้อนคำตอบเข้าโปรเซสไม่สำเร็จครับ ⚠️ ลองสั่งล็อกอินใหม่อีกรอบ"), replyTo: msgId }]);
   }
 
-  // รอให้โปรเซสขยับ แล้วดูว่าถามอะไรต่อ หรือจบแล้ว
-  await new Promise((r) => setTimeout(r, 6_000));
-  const st = readRunStatus(run.id);
-  if (st !== "running") return finishRun(run, reply);
-  const next = pendingPrompt(run.id);
-  if (next && next !== prompt) {
-    run.lastAskedAt = Date.now();
-    run.lastPrompt = next;
-    await saveRun(run);
-    return askOwner(run, next, reply);
-  }
+  // เดินต่อเองให้ไกลที่สุด (ถ้าถามเบอร์อีกก็กรอกจากความจำเลย) แล้วดูว่าเหลืออะไรค้าง
+  const sess = VEX_SESSIONS.find((s) => s.key === run.key)!;
+  const step = await runAuthUntilOwnerNeeded(sess, run.chatId, { waitMs: 20_000 });
+  if (step.status !== "running") return finishRun(run, reply);
+  // มีคำถามค้างหลังป้อนไปแล้ว = คำถามใหม่เสมอ (ตัวอ่านหยุดที่ marker "ป้อนคำตอบเข้าไปแล้ว")
+  // ถึงข้อความจะเหมือนเดิมก็ต้องถาม — เช่นรหัสผิดแล้วมันถามซ้ำ ของเดิมเงียบไปเลย
+  if (step.prompt) return askOwner(step.run || run, step.prompt, reply, step.autoFilled);
   return reply([{ kind: "text", text: await vexLine("กรอกให้แล้วครับ กำลังรอผล เดี๋ยวมาบอก"), replyTo: msgId }]);
 };
 
@@ -208,22 +244,14 @@ async function startAndReport(key: string, chatId: string, reply: Ctx["reply"], 
     }]);
   }
 
-  const run = await startAuthRun(sess, chatId);
+  // รันแล้วกรอกทุกอย่างที่รู้อยู่แล้วให้เอง (เบอร์จากความจำ) เหลือถามเฉพาะ OTP
+  const step = await runAuthUntilOwnerNeeded(sess, chatId, { waitMs: 45_000 });
+  const run = step.run;
   if (!run) {
     return reply([{ kind: "text", text: await vexLine("มีการล็อกอินอีกตัวรันค้างอยู่ครับ รอตัวนั้นจบก่อน"), replyTo: msgId }]);
   }
-
-  // รอโปรเซสตั้งตัว แล้วดูว่ามันถามอะไรเป็นอย่างแรก
-  await new Promise((r) => setTimeout(r, 8_000));
-  const st = readRunStatus(run.id);
-  if (st !== "running") return finishRun(run, reply);
-  const prompt = pendingPrompt(run.id);
-  if (prompt) {
-    run.lastAskedAt = Date.now();
-    run.lastPrompt = prompt;
-    await saveRun(run);
-    return askOwner(run, prompt, reply);
-  }
+  if (step.status !== "running") return finishRun(run, reply);
+  if (step.prompt) return askOwner(run, step.prompt, reply, step.autoFilled);
   return reply([{
     kind: "text",
     text: await vexLine(`เริ่มรัน ${sess.script} ให้แล้วครับ${sess.interactive ? " ถ้ามันขออะไรเดี๋ยวผมมาถาม" : ` — ${sess.askFor}`}`),

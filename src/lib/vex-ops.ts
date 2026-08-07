@@ -168,20 +168,193 @@ export function readRunStatus(id: string): "running" | "done" | "failed" | "time
 }
 
 /**
+ * log ของไลบรารีที่พ่นออกมาเรื่อย ๆ ระหว่างรอ input — ไม่ใช่คำถาม ไม่ใช่คำตอบ
+ * ต้องกวาดได้ทั้ง "ทั้งบรรทัด" และ "ที่ไปต่อท้ายบรรทัดคำถาม" เพราะคำถามของ readline
+ * ไม่มี \n ปิดท้าย — ของจริงจึงออกมาเป็น `รหัส OTP ...: [2026-...] [INFO] - [Connection ...]`
+ */
+const LOG_NOISE = /\[[\d:.TZ+-]+\]\s*\[(?:INFO|WARN|DEBUG|ERROR)\][^\n]*/gi;
+
+/** ร่องรอยว่า "ตรงนี้ผ่านไปแล้ว" — ตัดทุกอย่างก่อนหน้านี้ทิ้ง กันขุดคำถามเก่ามาถามซ้ำ */
+const DONE_MARK = /\[(?:ป้อนคำตอบเข้าไปแล้ว|จบแล้ว|หมดเวลา)[^\n]*\]/g;
+
+/**
  * โปรเซสกำลังรอให้พิมพ์อะไรอยู่ไหม
  *
- * ดูจาก "บรรทัดสุดท้ายที่ยังไม่ขึ้นบรรทัดใหม่" — เทอร์มินัลค้างรอ input จะพิมพ์คำถามแล้วหยุดตรงนั้น
+ * เดิมดู "บรรทัดสุดท้ายของ log" ตรง ๆ — **พังจริงเมื่อ 7 ส.ค. 2026**
+ * คำถามของ readline ไม่มี \n ปิดท้าย พอ gramJS พ่น log ระหว่างรอ มันจึงไปเกาะ
+ * ต่อท้ายบรรทัดคำถามเลย: `รหัส OTP ที่เด้งในแอป Telegram: [2026-...] [INFO] - [Connection ...]`
+ * บรรทัดสุดท้ายไม่ลงท้ายด้วย ":" อีกต่อไป → ระบบสรุปว่า "ไม่มีอะไรค้างรอ"
+ * → OTP ที่เจ้าของ forward มาหลุดไปเข้าเส้นทางค้นข้อมูล แล้วการล็อกอินค้างตายจนหมดเวลา
+ *
+ * ตอนนี้: ตัด log ตั้งแต่ต้นจนถึงร่องรอย "ตอบไปแล้ว/จบแล้ว" ล่าสุดทิ้ง (กันขุดคำถามเก่ามาถามซ้ำ)
+ * แล้วกวาด noise ออกทุกที่ ทั้งเต็มบรรทัดและที่ไปเกาะท้ายบรรทัดคำถาม เหลือคำถามจริง ๆ
  * นี่คือการอ่านผลลัพธ์ของโปรแกรม ไม่ใช่การเดาเจตนาของคน (กติกาข้อ 1 ยอมให้ใช้ได้)
  */
 export function pendingPrompt(id: string): string {
   const raw = readRunLog(id);
   if (!raw) return "";
   const clean = raw.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
-  const tail = clean.split("\n").pop() || "";
-  const t = tail.trim();
+
+  // ทุกอย่างก่อนคำตอบล่าสุดคือเรื่องที่ผ่านไปแล้ว
+  DONE_MARK.lastIndex = 0;
+  let cut = 0;
+  for (let m = DONE_MARK.exec(clean); m; m = DONE_MARK.exec(clean)) cut = m.index + m[0].length;
+
+  const tail = clean.slice(cut).replace(LOG_NOISE, "");
+  const last = tail.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
+  return /[:?：]\s*$/.test(last) ? last : "";
+}
+
+// ===== อ่านเองว่าโปรเซสขออะไร แล้วกรอกส่วนที่ "รู้อยู่แล้ว" ให้เอง =====
+//
+// เจ้าของสั่ง 7 ส.ค. 2026: "ผมเคยบอกว่าจำเบอร์ผมไว้ รอบหน้าถ้ามันหมดก็รันเองได้เลย
+//  แล้วค่อยทักมาขอ Code ผม" → อะไรที่อยู่ในความจำแล้วห้ามถามซ้ำ เหลือถามเฉพาะ OTP
+//  ซึ่งมีแต่เจ้าของเท่านั้นที่เห็น
+
+export type PromptWant = "phone" | "otp" | "password" | "other";
+
+/** โปรเซสขออะไร — จับจาก "ข้อความที่โปรแกรมพิมพ์" ซึ่งเราเขียนเองและตายตัว ไม่ใช่คำพูดของคน */
+export function promptWants(prompt: string): PromptWant {
+  const p = prompt.toLowerCase();
+  if (/2fa|password|รหัสผ่าน/.test(p)) return "password";
+  if (/otp|login code|phone code|รหัสยืนยัน|รหัส otp/.test(p)) return "otp";
+  if (/เบอร|phone number|phonenumber/.test(p)) return "phone";
+  return "other";
+}
+
+/** 0831245989 → +66831245989 (gramJS รับเฉพาะรูปแบบสากล) */
+export function normalizePhone(raw: string): string {
+  const d = raw.replace(/[^\d+]/g, "");
+  if (d.startsWith("+")) return d;
+  if (d.startsWith("66") && d.length >= 11) return `+${d}`;
+  if (d.startsWith("0")) return `+66${d.slice(1)}`;
+  return d ? `+${d}` : "";
+}
+
+export const maskPhone = (p: string) => (p.length > 4 ? `${p.slice(0, -4).replace(/\d/g, "x")}${p.slice(-4)}` : p);
+
+/**
+ * เบอร์ของเจ้าของ — เอาจากของที่จำไว้จริง ไม่ฮาร์ดโค้ด
+ * ลำดับ: ตั้งค่าไว้ตรง ๆ → .env → ความจำถาวรที่เจ้าของเคยบอก
+ */
+export async function ownerPhone(): Promise<string> {
+  const saved = (await getSetting("vex_owner_phone").catch(() => null))?.trim();
+  if (saved) return normalizePhone(saved);
+
+  const fromEnv = (process.env.KIKI_TG_PHONE || process.env.VEX_OWNER_PHONE || "").trim();
+  if (fromEnv) return normalizePhone(fromEnv);
+
+  // ความจำถาวร: "เบอร์โทรศัพท์ของเจ้าของคือ 0831245989"
+  try {
+    const { db } = await import("./db");
+    const rows = await db.ownerFact.findMany({
+      where: { active: true, fact: { contains: "เบอร" } },
+      select: { fact: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    // เบอร์คนอื่นก็ถูกจำไว้เหมือนกัน — เอาเฉพาะที่ระบุว่าเป็นของเจ้าของ
+    const mine = rows.filter((r) => /เจ้าของ|ของผม|ตัวเอง|โด้/.test(r.fact));
+    for (const r of mine.length ? mine : rows.length === 1 ? rows : []) {
+      const m = r.fact.match(/(\+?66\d{8,9}|0\d{8,9})/);
+      if (m) {
+        const phone = normalizePhone(m[1]);
+        await setSetting("vex_owner_phone", phone).catch(() => {}); // จำไว้ตรง ๆ รอบหน้าไม่ต้องค้นใหม่
+        return phone;
+      }
+    }
+  } catch { /* ความจำอ่านไม่ได้ = ถามเจ้าของตามเดิม */ }
+  return "";
+}
+
+/** คำตอบที่แปลว่า "กด Enter เปล่า ๆ" (เช่น ไม่ได้ตั้ง 2FA) — "" ถูกใช้แทน "ไม่ใช่คำตอบ" ไปแล้ว */
+export const BLANK_ANSWER = "__ว่าง__";
+
+/**
+ * ข้อความที่เจ้าของส่งมา ใช้ตอบคำถามที่ค้างอยู่ได้เลยไหม — ตอบเองก่อน ไม่ต้องพึ่งสมอง
+ *
+ * ทำไมต้องมีชั้นนี้: 7 ส.ค. 2026 เจ้าของ forward ข้อความจาก Telegram มาทั้งก้อน
+ * ("Login code: 26277. Do not give this code to anyone, even if they say they are from Telegram!")
+ * แล้วตัวถามสมองตีว่าไม่ใช่คำตอบ — ทั้งที่รหัสอยู่ตรงนั้นชัด ๆ
+ * ของที่มีรูปแบบตายตัวแบบนี้ต้องอ่านออกเองเสมอ สมองไว้ใช้กับเคสกำกวมเท่านั้น
+ */
+export function readAnswerFrom(prompt: string, text: string): string {
+  const t = (text || "").replace(/[\u200B-\u200F\uFEFF]/g, "").trim(); // Telegram แปะอักขระล่องหนมากับข้อความที่ forward
   if (!t) return "";
-  // ค้างรอ input = บรรทัดท้ายยังไม่จบด้วยขึ้นบรรทัดใหม่ และลงท้ายด้วยเครื่องหมายถาม/โคลอน
-  return /[:?：]\s*$/.test(t) ? t : "";
+  const want = promptWants(prompt);
+
+  if (want === "otp") {
+    const m =
+      t.match(/login\s*code\s*[:：]?\s*([0-9]{4,7})/i) ||
+      t.match(/(?:รหัส|โค้ด|code|otp)\D{0,12}([0-9]{4,7})/i) ||
+      t.match(/^\s*([0-9]{4,7})\s*$/);
+    return m ? m[1] : "";
+  }
+
+  if (want === "phone") {
+    const m = t.match(/(\+?66\d{8,9}|0\d{8,9})/);
+    return m ? normalizePhone(m[1]) : "";
+  }
+
+  if (want === "password") {
+    // "ไม่มี 2FA" = ต้องกด Enter เปล่า ๆ ไม่ใช่พิมพ์คำว่าไม่มีลงไปเป็นรหัส
+    if (/^(ไม่มี|ไม่ได้ตั้ง|ไม่มีครับ|none|no|-)$/i.test(t)) return BLANK_ANSWER;
+    // รหัส 2FA ไม่มีรูปแบบตายตัว — รับเฉพาะที่พิมพ์มาโดด ๆ สั้น ๆ ไม่ใช่ประโยค
+    return /\s/.test(t) || t.length > 64 ? "" : t;
+  }
+  return "";
+}
+
+export interface AuthProgress {
+  run: AuthRun | null;
+  prompt: string;        // สิ่งที่ยังค้างรอเจ้าของ ("" = ยังไม่ถาม หรือจบแล้ว)
+  autoFilled: string[];  // อะไรที่กรอกให้เองไปแล้ว — ต้องรายงานให้เจ้าของรู้ ห้ามกรอกเงียบ ๆ
+  status: ReturnType<typeof readRunStatus>;
+  log: string;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * เดินการล็อกอินไปให้ไกลที่สุดเท่าที่ทำเองได้ แล้วหยุดตรงที่ต้องพึ่งเจ้าของจริง ๆ
+ * (เริ่มโปรเซสถ้ายังไม่มี → กรอกเบอร์จากความจำ → คืนคำถามที่เหลือ ซึ่งปกติคือ OTP)
+ */
+export async function runAuthUntilOwnerNeeded(
+  sess: VexSession,
+  chatId: string,
+  opts: { waitMs?: number } = {},
+): Promise<AuthProgress> {
+  const run = (await currentRun()) || (await startAuthRun(sess, chatId));
+  if (!run) return { run: null, prompt: "", autoFilled: [], status: "gone", log: "" };
+
+  const autoFilled: string[] = [];
+  const deadline = Date.now() + (opts.waitMs ?? 45_000);
+  let fedFor = "";
+
+  while (Date.now() < deadline) {
+    await sleep(2_000);
+    const status = readRunStatus(run.id);
+    if (status !== "running") return { run, prompt: "", autoFilled, status, log: cleanLog(run.id) };
+
+    const prompt = pendingPrompt(run.id);
+    if (!prompt) continue;
+
+    if (promptWants(prompt) === "phone" && prompt !== fedFor) {
+      const phone = await ownerPhone();
+      if (phone) {
+        fedFor = prompt; // ตัวขับเขียน marker ช้ากว่าเราอ่าน — กันป้อนเบอร์ซ้ำสองรอบ
+        await feedAnswer(run, phone);
+        autoFilled.push(`เบอร์ ${maskPhone(phone)}`);
+        continue;
+      }
+    }
+
+    run.lastAskedAt = Date.now();
+    run.lastPrompt = prompt;
+    await saveRun(run);
+    return { run, prompt, autoFilled, status: "running", log: cleanLog(run.id) };
+  }
+
+  return { run, prompt: pendingPrompt(run.id), autoFilled, status: readRunStatus(run.id), log: cleanLog(run.id) };
 }
 
 /** ตัดโค้ดสี ANSI ออกให้อ่านง่าย — ใช้ทั้งตอนโชว์ในแชทและตอนแคปเป็นภาพ */
@@ -231,7 +404,7 @@ export async function saveRun(run: AuthRun): Promise<void> {
 /** ป้อนคำตอบของเจ้าของเข้า stdin ของโปรเซสที่รออยู่ */
 export async function feedAnswer(run: AuthRun, answer: string): Promise<boolean> {
   try {
-    fs.appendFileSync(runFile(run.id, "in"), `${answer.trim()}\n`);
+    fs.appendFileSync(runFile(run.id, "in"), `${answer === BLANK_ANSWER ? "" : answer.trim()}\n`);
     run.fedCount += 1;
     run.lastPrompt = "";
     await saveRun(run);

@@ -478,25 +478,41 @@ export async function POST(req: Request) {
     }
   } catch { /* รอบหน้าลองใหม่ */ }
 
-  // ===== G1.5) เซสชันของตัวเองหมดอายุ → แจ้งพร้อมปุ่ม "รันเลย" (เจ้าของสั่ง 5 ส.ค.) =====
+  // ===== G1.5) เซสชันของตัวเองหมดอายุ → รันเองเลย แล้วค่อยขอเฉพาะ OTP =====
+  //
+  // เจ้าของสั่ง 7 ส.ค. 2026: "ผมเคยบอกว่าจำเบอร์ผมไว้ รอบหน้าถ้ามันหมดก็รันเองได้เลย
+  //  แล้วค่อยทักมาขอ Code ผม" — ของเดิมยิงปุ่ม "รันเลย/ไว้ก่อน" ทุก 2 ชม.
+  //  ทั้งที่คำตอบมีอยู่แล้วทุกครั้ง = ถามฟรี
   //
   // ตัดสินจากหลักฐานของตัวเซสชันเองเท่านั้น (ไฟล์เซสชัน · log ที่ต้องขยับ)
   // ไม่ใช่จากอาการ "ต่อไม่ติด" — วานเคยพลาดตรงนี้แล้วกล่าวหาผิดตัว สั่งงานเจ้าของฟรี ๆ
+  // เพดาน shouldAlert 120 นาทีคงไว้ = อย่างมากรันเองรอบละ 2 ชม. ไม่ยิง OTP รัวใส่เจ้าของ
   try {
-    const { checkAllSessions, isBroken, shouldAlert, currentRun } = await import("@/lib/vex-ops");
-    if (mainChat && !(await currentRun())) { // กำลังล็อกอินอยู่ = ไม่ต้องแจ้งซ้ำ
-      for (const h of checkAllSessions().filter(isBroken)) {
-        if (!(await shouldAlert(h.key, 120))) continue;
+    const ops = await import("@/lib/vex-ops");
+    if (mainChat && !(await ops.currentRun())) { // กำลังล็อกอินอยู่ = ไม่ต้องเริ่มซ้ำ
+      for (const h of ops.checkAllSessions().filter(ops.isBroken)) {
+        if (!(await ops.shouldAlert(h.key, 120))) continue;
+        const sess = ops.VEX_SESSIONS.find((s) => s.key === h.key)!;
+        const step = await ops.runAuthUntilOwnerNeeded(sess, mainChat, { waitMs: 45_000 });
+        const filled = step.autoFilled.length ? `กรอกให้เองแล้ว: ${step.autoFilled.join(" · ")}` : "ยังไม่มีอะไรที่กรอกเองได้";
+        const now = step.prompt
+          ? `ตอนนี้โปรเซสค้างรอให้พิมพ์ตอบตรงนี้: "${step.prompt}"`
+          : step.status === "running"
+            ? `โปรเซสยังรันอยู่ ยังไม่ขออะไรเพิ่ม (${h.askFor})`
+            : `โปรเซสจบด้วยสถานะ ${step.status}`;
+
         const t = await askKiki(
-          `[เซสชันหมดอายุ] "${h.label}" ใช้ไม่ได้แล้ว\nหลักฐานที่ตรวจได้: ${h.detail}\n` +
-            `${h.interactive ? `ถ้าล็อกอินใหม่จะต้องขอ: ${h.askFor}` : `ล็อกอินใหม่ได้เลย (${h.askFor})`}\n\n` +
-            `บอกเจ้าของสั้น ๆ ว่าตัวไหนหมด กระทบอะไร แล้วถามว่าให้จัดการเลยไหม (กดปุ่มด้านล่างได้) ไม่เกิน 3 บรรทัด`,
-        ).catch(() => `เซสชัน "${h.label}" หมดอายุแล้วครับ 🔑 (${h.detail}) ให้ผมล็อกอินใหม่ให้เลยไหม`); // canned-ok: ตัวดักพัง — ใบแจ้งต้องถึงมือเสมอ
+          `[เซสชันหมดอายุ — เริ่มล็อกอินใหม่ให้เองแล้ว] "${h.label}"\nหลักฐานที่ตรวจได้: ${h.detail}\n` +
+            `${filled}\n${now}\n\n` +
+            `บอกเจ้าของสั้น ๆ ว่าตัวไหนหมด กระทบอะไร เรารันให้แล้วและกรอกอะไรไปเอง ` +
+            `${step.prompt ? "แล้วขอเฉพาะสิ่งที่ยังขาด (พิมพ์ตอบในแชทได้เลย)" : "แล้วบอกสถานะตามจริง"} ไม่เกิน 3 บรรทัด`,
+        ).catch(() => `เซสชัน "${h.label}" หมดอายุครับ 🔑 (${h.detail})\n${filled}\n${now}`); // canned-ok: ตัวดักพัง — ใบแจ้งต้องถึงมือเสมอ
         sends.push({
           chatId: mainChat, kind: "text", text: t,
-          buttons: [[{ text: "รันเลย", data: `auth:${h.key}` }, { text: "ไว้ก่อน", data: "auth-skip" }]],
+          buttons: [[{ text: "หยุดล็อกอิน", data: "auth-stop" }]],
         });
         await saveKikiChat("assistant", t, "owner", "cron");
+        break; // ล็อกอินได้ทีละงาน — ตัวที่เหลือรอบหน้าค่อยว่ากัน
       }
     }
   } catch { /* รอบหน้าลองใหม่ */ }
