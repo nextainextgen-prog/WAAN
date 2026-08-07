@@ -549,6 +549,7 @@ export async function POST(req: Request) {
         : i.startsWith("finance") || i === "debt" || i === "bill" ? "ไล่ตัวเลขเงินจริงทั้งชุด"
         : i.startsWith("calendar") ? "จัดตารางนัดให้"
         : i.startsWith("memory") || i === "rule_teach" ? "จัดความจำตามที่บอก"
+        : i.startsWith("gui") || i === "mac" || i === "warp_cmd" ? "จัดการหน้าจอเครื่องตามที่สั่ง"
         : "ไล่ข้อมูลจริงมาประกอบคำตอบ";
       cancelAck = armSlowAck({ chatId, platform, channel, doing, replyTo: msgId });
     }

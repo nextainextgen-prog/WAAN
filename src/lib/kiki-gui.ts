@@ -161,6 +161,14 @@ export async function typeInApp(opts: {
   const shots: { label: string; path: string }[] = [];
   if (!resolved) return { ok: false, app: opts.app, sent: false, shots, problem: "ไม่รู้ว่าให้พิมพ์ในแอปไหน" };
 
+  // ===== ด่านกันพิมพ์ผิดแชท (7 ส.ค. 2026) =====
+  // เคสจริง: "พิมไปในแชทหน้านี้ว่า ปิดงาน" → target = "แชทหน้านี้" (คำอ้างอิง ไม่ใช่ชื่อ)
+  // ระบบเอาไปค้นด้วย Cmd+K แล้วเกือบพิมพ์ลงแชทคนอื่นที่เปิดค้าง ("my darling") — ถอนไม่ได้ถ้าส่งไป
+  // target กำกวม = ถือว่าไม่มี target (ห้ามเอาคำว่า "แชทหน้านี้" ไปพิมพ์ใส่ช่องค้นหา)
+  const VAGUE_TARGET = /^(แช[ทต]|ห้อง|หน้า|อัน|ช่อง|ที่)?\s*(หน้า)?(นี้|นั้น|ปัจจุบัน|เดิม|ที่เปิดอยู่|ล่าสุด)\s*$/;
+  const vagueTarget = !!opts.target && VAGUE_TARGET.test(opts.target.trim());
+  const realTarget = vagueTarget ? "" : opts.target;
+
   try {
     await osa(`tell application "${resolved.app}" to activate`);
   } catch (e) {
@@ -175,8 +183,23 @@ export async function typeInApp(opts: {
     return { ok: false, app: resolved.app, sent: false, shots, problem: `สลับไป ${resolved.app} ไม่สำเร็จ (หน้าสุดตอนนี้คือ "${front}")` };
   }
 
+  // แอปแชท + ไม่รู้ชื่อแชทปลายทางแน่ ๆ = ห้ามพิมพ์เด็ดขาด (จะลงแชทที่เปิดค้างอยู่ ซึ่งอาจเป็นใครก็ไม่รู้)
+  // แคปหน้าจอปัจจุบันมาถามยืนยันแทน — เจ้าของเห็นเองว่าเปิดแชทไหนอยู่ แล้วค่อยสั่งใหม่พร้อมชื่อ
+  if (CHAT_APPS.has(resolved.app) && !realTarget) {
+    const s0 = await snap("confirm", resolved.app);
+    if (s0) shots.push({ label: "หน้าจอตอนนี้", path: s0 });
+    return {
+      ok: false,
+      app: resolved.app,
+      target: opts.target,
+      sent: false,
+      shots,
+      problem: `ยังไม่ได้พิมพ์ — ${vagueTarget ? `"${opts.target}" ไม่ใช่ชื่อแชท ผมไม่รู้ว่าหมายถึงแชทไหนแน่` : "ไม่ได้ระบุชื่อแชทปลายทาง"} และการพิมพ์ลงแชทที่เปิดค้างอยู่เสี่ยงส่งผิดคน — ดูภาพหน้าจอที่แนบมา ถ้าแชทที่เปิดอยู่คือที่ต้องการ บอกชื่อแชทนั้นมาแล้วผมพิมพ์ให้เลย`,
+    };
+  }
+
   // สลับแท็บ Warp ด้วยเลขแท็บ (Cmd+1..9) — แม่นกว่าค้นด้วยชื่อมาก
-  const tabNo = opts.target && /^\s*(\d)\s*$/.test(opts.target) ? opts.target.trim() : "";
+  const tabNo = realTarget && /^\s*(\d)\s*$/.test(realTarget) ? realTarget.trim() : "";
   if (tabNo && resolved.app === "Warp") {
     try {
       await osa(`tell application "System Events" to key code ${17 + Number(tabNo)} using {command down}`);
@@ -185,11 +208,11 @@ export async function typeInApp(opts: {
   }
 
   // สลับห้อง/แท็บด้วยชื่อ (Discord = Cmd+K · Warp = Cmd+P)
-  else if (opts.target && resolved.opener) {
+  else if (realTarget && resolved.opener) {
     try {
       await pressKey(resolved.opener.key, resolved.opener.mods);
       await wait(900);
-      await pasteText(opts.target);
+      await pasteText(realTarget);
       await wait(1400);
       await pressReturn();
       await wait(1600);
